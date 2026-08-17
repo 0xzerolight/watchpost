@@ -1,9 +1,11 @@
 mod config;
+mod db;
 mod errors;
 
 use axum::Router;
 use axum::routing::get;
 use config::Config;
+use db::Db;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -27,6 +29,17 @@ async fn main() {
         }
     };
     tracing::info!(config = %config.redacted_summary(), "starting watchpost");
+
+    // Opens (or creates + migrates) the sqlite db. Not queried yet — wired in
+    // by later tasks via Db::call; held here so it stays open for the
+    // process lifetime and startup fails fast on a bad db path.
+    let _db = match Db::open(&config.db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("db error: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let app = Router::new().route("/health", get(|| async { "OK" }));
 

@@ -28,6 +28,7 @@ subtle = "2"
 wiremock = "0.6"
 tower = { version = "0.5", features = ["util"] }
 temp-env = "0.3"
+tempfile = "3"
 
 [profile.release]
 strip = true
