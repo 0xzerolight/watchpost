@@ -69,9 +69,15 @@ app exists: it samples hourly and keeps every day it has seen, so history accumu
 window. Days before your first run are gone for good — GitHub will not backfill them.
 
 **Uniques are never summed.** A unique visitor on Monday may be the same person on Tuesday, so
-adding daily uniques would overcount. When a chart or table is zoomed out to weeks or months, the
-uniques figure shown is the peak daily value in that range, not a total. Counts (non-unique views
-and clones) are summed, because those are events.
+adding daily uniques would overcount. Wherever a range covers more than one day — a chart zoomed
+out to weeks or months, or the all-time referrer and path tables — the uniques figure shown is the
+peak daily value in that range, not a total. Counts (non-unique views and clones) are summed,
+because those are events.
+
+**The period selector is a zoom, not a query.** A repo page opens on its whole history and ships
+every day of it to the browser, so switching to 7, 30, 90 days or a year is instant and offline;
+the `?days=` in the address bar is only a starting zoom, and the referrer and path tables ignore it
+entirely (they are always all-time).
 
 **Gaps mean "not observed".** If the app was down for a day, that day has no row, and rate metrics
 (views, clones) render as a gap rather than as zero — an honest hole beats an invented zero.
