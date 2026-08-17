@@ -456,6 +456,17 @@
 }
 
 /*
+ * The sync progress bar. Pico gives `<progress>` full width and a form-layout
+ * bottom margin, which inside a row turns a status indicator into a page-wide
+ * bar with the label pushed onto its own line.
+ */
+.wp-progress {
+  flex: 0 0 8rem;
+  width: 8rem;
+  margin: 0;
+}
+
+/*
  * The shared toast. Fixed to the bottom-right corner so it never displaces the
  * content the user is reading, and capped in width because a full-bleed banner
  * for a one-line confirmation is a page takeover.

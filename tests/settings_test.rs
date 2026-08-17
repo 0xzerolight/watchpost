@@ -273,6 +273,15 @@ async fn settings_page_lists_known_repos() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
+    // The page states what it is for, in the shared header block.
+    assert!(
+        body.contains(r#"<header class="wp-page-header"><hgroup><h1>Settings</h1>"#),
+        "body was {body}"
+    );
+    assert!(
+        body.contains("Choose which repos watchpost tracks."),
+        "body was {body}"
+    );
     assert!(body.contains(REPO_A), "body was {body}");
     assert!(body.contains(REPO_B), "body was {body}");
     // The tracked repo's box is checked, the untracked one's is not.
@@ -620,7 +629,8 @@ async fn sync_status_is_idle_before_any_cycle() {
     let h = harness().await;
     let body = body_string(h.get("/sync/status").await).await;
 
-    assert!(body.contains("No sync yet this session"), "{body}");
+    assert!(body.contains("No sync this session yet."), "{body}");
+    assert!(body.contains("wp-notice-info"), "{body}");
     assert!(!body.contains("hx-trigger"), "body was {body}");
 }
 
@@ -637,8 +647,11 @@ async fn done_fragment_has_no_polling_trigger() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(body.contains("Synced 3 repos at"), "body was {body}");
-    assert!(body.contains("UTC"), "body was {body}");
+    assert!(body.contains("Synced 3 repos"), "body was {body}");
+    // The exact instant survives the move to `<time>`: it is the title, not
+    // the visible text.
+    assert!(body.contains(r#"<time datetime=""#), "body was {body}");
+    assert!(body.contains(" UTC\""), "body was {body}");
     assert!(
         body.contains(REPO_B) && body.contains("github 502"),
         "{body}"

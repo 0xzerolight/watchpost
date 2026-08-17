@@ -21,7 +21,7 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::AppError;
 use crate::routes::html::settings::{repos_picker, sync_status_fragment};
-use crate::routes::html::{NavItem, Notice, base, get_hx_target};
+use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
 use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::RepoRow;
 
@@ -42,7 +42,11 @@ pub async fn settings_page(
         NavItem::Settings,
         &csrf,
         html! {
-            h1 { "Settings" }
+            (page_header(
+                "Settings",
+                Some(html! { "Choose which repos watchpost tracks." }),
+                None,
+            ))
             section {
                 h2 { "Sync" }
                 (sync_status_fragment(&status))
