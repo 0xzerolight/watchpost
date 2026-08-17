@@ -1,12 +1,15 @@
 //! Router-level proofs for the repo page at `GET /repos/{id}`.
 //!
-//! Three properties carry the weight here. The `#chart-data` island must be
+//! Four properties carry the weight here. The `#chart-data` island must be
 //! dense — one slot per UTC day in the window for *every* series, so the
 //! client can plot a category axis and land event markers on the right day.
-//! `downloads_total` must be a per-day sum of per-asset carried-forward
-//! cumulative counts, not a sum of the rows that happen to exist. And the
-//! `days` query parameter is an allowlist, not a clamp: junk falls back to the
-//! 90-day default rather than 400ing or rendering an arbitrary window.
+//! It must also always span the repo's whole history whatever period is
+//! selected, because the period selector zooms client-side over exactly this
+//! payload. `downloads_total` must be a per-day sum of per-asset
+//! carried-forward cumulative counts, not a sum of the rows that happen to
+//! exist. And the `days` query parameter is an allowlist, not a clamp: junk
+//! falls back to the default ("all") rather than 400ing or rendering an
+//! arbitrary window.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -249,6 +252,17 @@ fn series(payload: &Value, name: &str) -> Vec<Option<i64>> {
         .unwrap_or_else(|e| panic!("series {name} missing/ill-shaped: {e}"))
 }
 
+fn labels(payload: &Value) -> Vec<String> {
+    serde_json::from_value(payload["labels"].clone()).expect("labels missing/ill-shaped")
+}
+
+/// The last `n` values of a series. The payload always spans the whole history
+/// (the client zooms by slicing it), so a test about a handful of recent days
+/// asserts on its tail rather than on the whole array.
+fn tail(values: &[Option<i64>], n: usize) -> Vec<Option<i64>> {
+    values[values.len() - n..].to_vec()
+}
+
 /// Position of `needle` in `haystack`, for asserting relative row order.
 fn at(haystack: &str, needle: &str) -> usize {
     haystack
@@ -264,6 +278,7 @@ fn at(haystack: &str, needle: &str) -> usize {
 async fn chart_payload_is_dense_across_every_series() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(100), 9).await;
     h.seed_stars(ID_A, days_ago(3), 12).await;
     h.seed_views(ID_A, days_ago(2), 5, 3).await;
     h.seed_asset(ID_A, days_ago(2), "v1", "app.bin", 7).await;
@@ -271,11 +286,13 @@ async fn chart_payload_is_dense_across_every_series() {
     let body = body_string(h.get("/repos/1?days=30").await).await;
     let payload = island(&body, "chart-data");
 
+    // `days` is the zoom the client opens on; the data is the whole history
+    // regardless, so a 30-day selection still ships 101 days of it.
     assert_eq!(payload["days"], json!(30));
-    let labels: Vec<String> = serde_json::from_value(payload["labels"].clone()).unwrap();
-    assert_eq!(labels.len(), 30);
-    assert_eq!(labels[0], days_ago(29));
-    assert_eq!(labels[29], days_ago(0));
+    let labels = labels(&payload);
+    assert_eq!(labels.len(), 101);
+    assert_eq!(labels[0], days_ago(100));
+    assert_eq!(labels[100], days_ago(0));
 
     for name in [
         "stars",
@@ -287,7 +304,7 @@ async fn chart_payload_is_dense_across_every_series() {
     ] {
         assert_eq!(
             series(&payload, name).len(),
-            30,
+            101,
             "series {name} must be dense: {payload}"
         );
     }
@@ -307,8 +324,10 @@ async fn stars_carry_forward_while_traffic_keeps_its_gaps() {
     let body = body_string(h.get("/repos/1?days=7").await).await;
     let payload = island(&body, "chart-data");
 
+    // The payload spans the whole history (floored at 30 days); the selected
+    // week is its tail, which is what the client slices to.
     assert_eq!(
-        series(&payload, "stars"),
+        tail(&series(&payload, "stars"), 7),
         vec![
             Some(100),
             Some(100),
@@ -320,28 +339,36 @@ async fn stars_carry_forward_while_traffic_keeps_its_gaps() {
         ]
     );
     assert_eq!(
-        series(&payload, "views_count"),
+        tail(&series(&payload, "views_count"), 7),
         vec![Some(5), None, None, None, Some(8), None, None]
     );
     assert_eq!(
-        series(&payload, "views_uniques"),
+        tail(&series(&payload, "views_uniques"), 7),
         vec![Some(3), None, None, None, Some(4), None, None]
+    );
+    // Nothing was observed before the week, so the days ahead of it are gaps
+    // for a rate metric and null for stars until the first observation.
+    assert_eq!(series(&payload, "stars").len(), 30);
+    assert!(
+        series(&payload, "stars")[..23].iter().all(Option::is_none),
+        "stars was {:?}",
+        series(&payload, "stars")
     );
 }
 
 #[tokio::test]
-async fn stars_seed_from_before_the_window() {
-    // The only observation predates the window: no leading null, every slot
-    // carries it.
+async fn stars_seed_from_the_first_observation() {
+    // The window opens on the only observation, and every slot after it
+    // carries the value forward — no holes.
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
     h.seed_stars(ID_A, days_ago(200), 42).await;
 
-    let body = body_string(h.get("/repos/1?days=7").await).await;
-    assert_eq!(
-        series(&island(&body, "chart-data"), "stars"),
-        vec![Some(42); 7]
+    let payload = island(
+        &body_string(h.get("/repos/1?days=7").await).await,
+        "chart-data",
     );
+    assert_eq!(series(&payload, "stars"), vec![Some(42); 201]);
 }
 
 #[tokio::test]
@@ -359,7 +386,7 @@ async fn downloads_total_sums_carried_forward_assets() {
     let downloads = series(&island(&body, "chart-data"), "downloads_total");
 
     assert_eq!(
-        downloads,
+        tail(&downloads, 7),
         vec![
             None,     // -6d: nothing observed yet, anywhere
             Some(10), // -5d: app.bin 10
@@ -373,15 +400,16 @@ async fn downloads_total_sums_carried_forward_assets() {
 }
 
 #[tokio::test]
-async fn downloads_total_seeds_from_assets_observed_before_the_window() {
+async fn downloads_total_carries_from_the_first_asset_observation() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
     h.seed_asset(ID_A, days_ago(60), "v1", "app.bin", 400).await;
 
     let body = body_string(h.get("/repos/1?days=7").await).await;
+    // A release row is an observation like any other, so "all" starts there.
     assert_eq!(
         series(&island(&body, "chart-data"), "downloads_total"),
-        vec![Some(400); 7]
+        vec![Some(400); 61]
     );
 }
 
@@ -390,17 +418,20 @@ async fn downloads_total_seeds_from_assets_observed_before_the_window() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn days_defaults_to_ninety() {
+async fn days_defaults_to_all() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(120), 3).await;
 
     let payload = island(&body_string(h.get("/repos/1").await).await, "chart-data");
-    assert_eq!(payload["days"], json!(90));
-    assert_eq!(series(&payload, "stars").len(), 90);
+    // A bare URL opens on everything watchpost has for the repo.
+    assert_eq!(payload["days"], json!(-1));
+    assert_eq!(labels(&payload).len(), 121);
+    assert_eq!(series(&payload, "stars").len(), 121);
 }
 
 #[tokio::test]
-async fn invalid_days_falls_back_to_ninety() {
+async fn invalid_days_falls_back_to_all() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
 
@@ -411,54 +442,59 @@ async fn invalid_days_falls_back_to_ninety() {
             &body_string(h.get(&format!("/repos/1?{query}")).await).await,
             "chart-data",
         );
-        assert_eq!(payload["days"], json!(90), "{query} should fall back");
-        assert_eq!(series(&payload, "stars").len(), 90, "{query}");
+        assert_eq!(payload["days"], json!(-1), "{query} should fall back");
     }
 }
 
 #[tokio::test]
-async fn days_all_spans_history_with_a_thirty_day_floor() {
+async fn the_payload_spans_all_history_whatever_period_is_asked_for() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
 
-    // Nothing observed: the "all" window still has a floor, so the page is
-    // never a single empty column.
+    // Nothing observed: the window still has a floor, so the page is never a
+    // single empty column.
     let payload = island(
         &body_string(h.get("/repos/1?days=-1").await).await,
         "chart-data",
     );
-    assert_eq!(payload["days"], json!(30));
+    assert_eq!(payload["days"], json!(-1));
+    assert_eq!(labels(&payload).len(), 30);
 
-    // With history, "all" reaches back to the first observed row.
+    // With history, the payload reaches back to the first observed row — and a
+    // narrower period does not shorten it, because the selector is a
+    // client-side zoom over exactly these arrays.
     h.seed_stars(ID_A, days_ago(400), 3).await;
-    let payload = island(
-        &body_string(h.get("/repos/1?days=-1").await).await,
-        "chart-data",
-    );
-    assert_eq!(payload["days"], json!(401));
-    assert_eq!(series(&payload, "stars").len(), 401);
+    for (query, expected_days) in [("days=-1", json!(-1)), ("days=90", json!(90))] {
+        let payload = island(
+            &body_string(h.get(&format!("/repos/1?{query}")).await).await,
+            "chart-data",
+        );
+        assert_eq!(payload["days"], expected_days, "{query}");
+        assert_eq!(labels(&payload).len(), 401, "{query}");
+        assert_eq!(series(&payload, "stars").len(), 401, "{query}");
+    }
 }
 
 #[tokio::test]
-async fn period_select_swaps_the_scope_wrapper() {
+async fn period_select_zooms_client_side() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
 
     let body = body_string(h.get("/repos/1?days=30").await).await;
-    // The select drives the swap itself: htmx serializes its own value, so
-    // `days` needs no hx-include.
+    // No htmx on the select: switching period re-renders from the payload
+    // already on the page and never asks the server for anything.
     assert!(
-        body.contains(r#"<select id="wp-period" name="days""#),
+        body.contains(
+            r#"<select id="wp-period" name="days" onchange="watchpost.setPeriod(this.value)">"#
+        ),
         "body was {body}"
     );
-    assert!(body.contains(r##"hx-target="#period-scope""##), "{body}");
-    assert!(body.contains(r#"hx-swap="outerHTML""#), "body was {body}");
-    assert!(body.contains(r#"hx-push-url="true""#), "body was {body}");
-    // The current period is the selected option.
+    // A shared `?days=` URL still opens on that period.
     assert!(
         body.contains(r#"<option value="30" selected>"#),
         "body was {body}"
     );
+    assert_eq!(body.matches(" selected>").count(), 1, "body was {body}");
 }
 
 #[tokio::test]
@@ -495,7 +531,7 @@ async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
         body.contains(r#"href="https://example.com/home""#),
         "homepage link missing: {body}"
     );
-    assert!(body.contains(r#"id="period-scope""#), "body was {body}");
+    assert!(body.contains(r#"id="chart-data""#), "body was {body}");
     assert!(body.contains(r#"id="events-section""#), "body was {body}");
     for canvas in [
         "chart_stars",
@@ -514,7 +550,11 @@ async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
 }
 
 #[tokio::test]
-async fn period_scope_target_returns_only_the_scope_fragment() {
+async fn the_retired_period_scope_target_gets_the_whole_page() {
+    // Nothing on the page asks for this fragment any more — the period
+    // selector zooms in the browser. A stale bookmark or an extension replaying
+    // the old header must still get a valid response, so the unknown target
+    // falls through to the full page rather than 404ing.
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
 
@@ -522,14 +562,8 @@ async fn period_scope_target_returns_only_the_scope_fragment() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(!body.contains("<!DOCTYPE"), "fragment must not be a page");
-    assert!(body.starts_with(r#"<div id="period-scope""#), "{body}");
-    // The swap replaces the wrapper, so the fragment must carry the charts and
-    // the popular tables that hang off the same period.
-    assert!(body.contains("chart-data"), "body was {body}");
-    assert!(body.contains(r#"id="refs-table""#), "body was {body}");
-    // Events do not depend on the period and stay out of the swap.
-    assert!(!body.contains("events-data"), "body was {body}");
+    assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
+    assert!(!body.contains(r#"id="period-scope""#), "body was {body}");
 }
 
 #[tokio::test]
@@ -584,8 +618,11 @@ async fn referrer_sort_params_round_trip_and_flip_the_order() {
     let junk = body_string(h.get("/repos/1?rsort=drop%20table&rdir=sideways").await).await;
     assert!(at(&junk, "reddit") < at(&junk, "google"), "junk was {junk}");
 
-    // The sort links carry the current period so a sort does not reset it.
+    // Sort links re-state the selected period: hx-replace-url rewrites the
+    // whole address bar, so a link without it would make a reload after
+    // sorting reopen at All. The tables themselves stay all-time regardless.
     let sorted_fragment = body_string(h.get_targeting("/repos/1?days=7", "refs-table").await).await;
+    // maud escapes the separator, so the marker is `&amp;days=7` in markup.
     assert!(sorted_fragment.contains("days=7"), "{sorted_fragment}");
     assert!(
         sorted_fragment.contains("rsort=uniques"),
@@ -595,6 +632,35 @@ async fn referrer_sort_params_round_trip_and_flip_the_order() {
         sorted_fragment.contains(r#"hx-replace-url="true""#),
         "{sorted_fragment}"
     );
+
+    // At the default period the links carry no days at all: the address only
+    // ever names a period the user actually picked.
+    assert!(!junk.contains("days="), "junk was {junk}");
+}
+
+#[tokio::test]
+async fn popular_tables_are_all_time() {
+    // Rows far older than any chart period still count: the tables no longer
+    // share the charts' window, and GitHub's own referrer data is a rolling
+    // fortnight that a narrow window would empty.
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_referrer(ID_A, days_ago(400), "ancient.example", 7, 3)
+        .await;
+    h.seed_path(ID_A, days_ago(400), "/old-post", "Old post", 4)
+        .await;
+    h.seed_referrer(ID_A, days_ago(1), "google", 2, 1).await;
+
+    for query in ["", "?days=7", "?days=-1"] {
+        let body = body_string(h.get(&format!("/repos/1{query}")).await).await;
+        assert!(body.contains("ancient.example"), "{query}: {body}");
+        assert!(body.contains("/old-post"), "{query}: {body}");
+        // Ordered by the all-time count, so the old row outranks the recent one.
+        assert!(
+            at(&body, "ancient.example") < at(&body, "google"),
+            "{query}: {body}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -624,6 +690,13 @@ async fn uniques_columns_explain_that_they_are_never_summed() {
             .count(),
         2,
         "both uniques columns need the tooltip: {body}"
+    );
+    // The count columns are honest about being accumulated, not exact totals.
+    assert_eq!(
+        body.matches(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#)
+            .count(),
+        2,
+        "both count columns need the tooltip: {body}"
     );
 }
 

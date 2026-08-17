@@ -13,6 +13,11 @@
  * Every series is dense — one slot per UTC day in the window — which is what
  * lets a category axis double as a date index. A `null` is a genuine "not
  * observed" gap and is never plotted as zero.
+ *
+ * `#chart-data` always spans the repo's whole history; `days` is only the
+ * period to open on. Zooming is therefore a tail slice of arrays already in the
+ * page (`setPeriod`), not a request — the server never re-renders for a period
+ * change.
  */
 (function () {
   "use strict";
@@ -162,9 +167,9 @@
   /*
    * How wide a bucket has to be for the x-axis to stay readable: a day each up
    * to a quarter, a week each up to a year, a month each beyond that. The span
-   * comes from the first and last label rather than `payload.days`, because the
-   * "All" period arrives as -1 and only the labels know how far back the repo's
-   * history actually reaches.
+   * comes from the first and last label of the zoomed window rather than from
+   * the selected period, because "All" arrives as -1 and a shorter period can
+   * still be longer than the history — only the labels know what is on screen.
    */
   function getBucketKind(labels) {
     if (!labels || labels.length < 2) {
@@ -600,9 +605,8 @@
   /*
    * Tear down whatever chart already owns this canvas.
    *
-   * htmx replaces `#period-scope` wholesale on a period change, so the canvas
-   * the old chart was drawn on is gone from the document while Chart.js still
-   * holds it. Re-creating without this leaks the old instance and its resize
+   * A period change re-creates all four charts on the canvases they are already
+   * drawn on. Re-creating without this leaks the old instance and its resize
    * listener; `Chart.getChart` is the supported way to find it.
    */
   function destroyOn(canvas) {
@@ -616,18 +620,17 @@
   /*
    * Destroy every chart whose canvas has left the document.
    *
-   * `destroyOn` cannot catch these. htmx swaps `#period-scope` with
-   * `outerHTML`, so the incoming fragment brings *new* canvas elements —
-   * `Chart.getChart(newCanvas)` finds nothing, and the charts bound to the
-   * discarded ones stay registered with their resize observers attached. One
-   * period change leaked four of them, and `applyTheme` then spent its time
-   * updating charts drawing into detached canvases.
+   * `destroyOn` cannot catch these. An `outerHTML` swap brings *new* canvas
+   * elements — `Chart.getChart(newCanvas)` finds nothing, and the charts bound
+   * to the discarded ones stay registered with their resize observers attached,
+   * after which `applyTheme` spends its time updating charts drawing into
+   * detached canvases.
    *
    * Called only from `htmx:afterSwap`, and that timing is the whole trick:
-   * htmx inserts the new fragment (running its inline `initRepoCharts()`)
-   * *before* it removes the old one, so at the moment the charts are rebuilt
-   * the outgoing canvases are still connected and nothing here would match.
-   * By `afterSwap` they are gone.
+   * htmx inserts the new fragment (running any inline init it carries) *before*
+   * it removes the old one, so at the moment charts are rebuilt the outgoing
+   * canvases are still connected and nothing here would match. By `afterSwap`
+   * they are gone.
    */
   function pruneDetached() {
     live.forEach(function (chart) {
@@ -723,6 +726,38 @@
    */
   var chartSource = null;
 
+  /* The whole-history payload the charts zoom over, and the period showing. */
+  var chartPayload = null;
+
+  var ALL_DAYS = -1;
+
+  /*
+   * The period allowlist. Mirrors `PERIODS` in src/routes/html/repo.rs, which
+   * is what renders the options and what validates a `?days=` on the way in —
+   * this copy only guards against a value arriving from somewhere else.
+   */
+  var PERIODS = [7, 30, 90, 365, ALL_DAYS];
+
+  function normalisePeriod(value) {
+    var days = Number(value);
+    return PERIODS.indexOf(days) === -1 ? ALL_DAYS : days;
+  }
+
+  /*
+   * The trailing `days` of a dense array, or all of it for "All" (and for a
+   * window longer than the history, which `slice` already handles).
+   *
+   * Slicing the tail of a carried-forward series is safe: the values were
+   * materialized server-side, so a window opening mid-carry opens on the level
+   * that was carried into it rather than on a null.
+   */
+  function tail(values, days) {
+    if (!Array.isArray(values)) {
+      return [];
+    }
+    return days > 0 ? values.slice(-days) : values.slice();
+  }
+
   function initRepoCharts() {
     if (typeof Chart === "undefined") {
       return;
@@ -732,9 +767,44 @@
     if (!payload || !Array.isArray(payload.labels) || !payload.labels.length) {
       return;
     }
+    chartPayload = payload;
+    chartSource = el;
+    renderCharts(payload, normalisePeriod(payload.days));
+  }
 
-    var labels = payload.labels;
-    var series = payload.series || {};
+  /*
+   * Zoom to `value` days: re-render from the payload already in the page and
+   * put the choice in the address bar, so a reload or a shared link opens on
+   * the same period. `replaceState` rather than `pushState` — a zoom is not a
+   * navigation, and the back button should leave the page rather than step
+   * through every period the reader tried.
+   */
+  function setPeriod(value) {
+    if (!chartPayload) {
+      return;
+    }
+    var days = normalisePeriod(value);
+    renderCharts(chartPayload, days);
+    syncPeriodUrl(days);
+  }
+
+  function syncPeriodUrl(days) {
+    if (!window.history || !history.replaceState || typeof URL !== "function") {
+      return;
+    }
+    try {
+      var url = new URL(window.location.href);
+      url.searchParams.set("days", String(days));
+      history.replaceState(history.state, "", url.toString());
+    } catch (err) {
+      // A location the URL parser refuses is not worth failing a zoom over.
+    }
+  }
+
+  /* Build the four repo charts from the trailing `days` of `payload`. */
+  function renderCharts(payload, days) {
+    var labels = tail(payload.labels, days);
+    var source = payload.series || {};
     var kind = getBucketKind(labels);
     var buckets = bucketize(labels, kind);
     var keys = buckets.map(function (b) {
@@ -754,7 +824,7 @@
     });
 
     function rollup(name, mode) {
-      var values = series[name] || [];
+      var values = tail(source[name], days);
       return buckets.map(function (bucket) {
         return agg(values, bucket.dayIdxs, mode);
       });
@@ -850,7 +920,6 @@
       chart.draw();
     });
 
-    chartSource = el;
     applyFilter();
   }
 
@@ -1017,6 +1086,7 @@
 
   window.watchpost = {
     initRepoCharts: initRepoCharts,
+    setPeriod: setPeriod,
     refreshMarkers: refreshMarkers,
     toggleKind: toggleKind,
     initSparklines: initSparklines,

@@ -1,14 +1,17 @@
-//! Markup for the repo page: the period-scoped charts and popular tables, plus
-//! the editable event timeline.
+//! Markup for the repo page: the charts and popular tables, plus the editable
+//! event timeline.
 //!
-//! The page has four swap targets, and each one is a wrapper this module
-//! renders: `#period-scope` (everything that depends on the selected period),
-//! `#refs-table` and `#paths-table` (one sortable table each), and
+//! The page has three swap targets, and each one is a wrapper this module
+//! renders: `#refs-table` and `#paths-table` (one sortable table each), and
 //! `#events-section` (the whole timeline, which every event mutation replaces).
 //! A handler that answers an htmx request re-renders exactly one of them, so
 //! every function here is callable on its own rather than only as part of the
 //! whole page — the two `<tr>` renderers below are swapped in on their own too,
 //! by the per-row edit and cancel buttons.
+//!
+//! Changing the period is *not* one of them: the payload carries the repo's
+//! whole history, so the selector is a client-side zoom over data the page
+//! already has (see `setPeriod` in assets/app.js) rather than a round trip.
 
 use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
@@ -17,8 +20,9 @@ use crate::routes::html::{json_script, kind_class, render_markdown};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
 
-/// The `days` value meaning "all history". Not a length — the handler turns it
-/// into a real window from the repo's first observed day.
+/// The `days` value meaning "all history", and the default period. Not a
+/// length — the handler turns it into a real window from the repo's first
+/// observed day.
 pub const ALL_DAYS: i64 = -1;
 
 /// The period selector's options, and by construction the `days` allowlist:
@@ -39,6 +43,11 @@ pub const PERIODS: [(i64, &str); 5] = [
 /// The `#chart-data` island. Dense by construction: `labels` has one entry per
 /// UTC day in the window and every series is the same length, so the client
 /// plots against a category axis and can map an event date to a column index.
+///
+/// `labels` and `series` always cover the repo's whole history ("All"),
+/// whatever period is selected — the client zooms by slicing their tail, so a
+/// period change costs no request. `days` is the *selected* period (one of
+/// [`PERIODS`]), i.e. how much of that tail to show on first render.
 #[derive(Debug, Serialize)]
 pub struct ChartPayload {
     pub days: i64,
@@ -199,15 +208,20 @@ impl Sort {
     }
 }
 
-/// Everything the popular tables need to rebuild their own links: the repo, the
-/// selected period, and both tables' current sorts (a link carries the other
-/// table's state too, so `hx-replace-url` never drops it from the address bar).
+/// Everything the popular tables need to rebuild their own links: the repo and
+/// both tables' current sorts (a link carries the other table's state too, so
+/// `hx-replace-url` never drops it from the address bar).
+///
+/// `days` is pure URL state: the tables themselves are all-time and ignore it,
+/// but `hx-replace-url` rewrites the whole address bar, so a sort link that
+/// dropped it would make a reload after sorting forget the charts' zoom.
 #[derive(Debug, Clone, Copy)]
 pub struct PopularParams {
     pub repo_id: i64,
-    pub days: i64,
     pub refs_sort: Sort,
     pub paths_sort: Sort,
+    /// The currently selected chart period, [`ALL_DAYS`] when default.
+    pub days: i64,
 }
 
 impl PopularParams {
@@ -232,15 +246,20 @@ impl PopularParams {
             PopularKind::Referrers => (next, self.paths_sort),
             PopularKind::Paths => (self.refs_sort, next),
         };
-        format!(
-            "/repos/{}?days={}&rsort={}&rdir={}&psort={}&pdir={}",
+        let mut url = format!(
+            "/repos/{}?rsort={}&rdir={}&psort={}&pdir={}",
             self.repo_id,
-            self.days,
             refs.key.param(PopularKind::Referrers),
             refs.dir.param(),
             paths.key.param(PopularKind::Paths),
             paths.dir.param(),
-        )
+        );
+        // The default period stays out of the URL, so the address only names a
+        // period the user actually picked.
+        if self.days != ALL_DAYS {
+            url.push_str(&format!("&days={}", self.days));
+        }
+        url
     }
 }
 
@@ -290,7 +309,8 @@ pub fn repo_body(view: &RepoView) -> Markup {
                 }
             }
         }
-        (period_scope(view))
+        (charts_section(view))
+        (popular_section(view))
         (events_section(&EventsView {
             repo_id: view.popular.repo_id,
             events: view.events,
@@ -300,36 +320,21 @@ pub fn repo_body(view: &RepoView) -> Markup {
     }
 }
 
-/// Everything that depends on the selected period, in one swap target.
+/// The charts, their period selector, and the `#chart-data` island.
 ///
-/// The charts and the popular tables share a window, so they share a wrapper:
-/// changing the period is a single `outerHTML` swap rather than two coordinated
-/// ones that could land out of step.
-pub fn period_scope(view: &RepoView) -> Markup {
-    html! {
-        div id="period-scope" {
-            (charts_section(view))
-            (popular_section(view))
-        }
-    }
-}
-
+/// The selector carries no htmx: the island holds the repo's whole history, so
+/// `setPeriod` re-renders the four charts from data already in the page and
+/// rewrites the address bar itself. The `name="days"` stays because the option
+/// values *are* the `days` allowlist and a shared `?days=` URL still opens at
+/// that period — it just never gets submitted anywhere.
 fn charts_section(view: &RepoView) -> Markup {
-    let repo_id = view.popular.repo_id;
-    let selected = view.popular.days;
+    let selected = view.payload.days;
     html! {
         section {
             div class="wp-row" {
                 label for="wp-period" { "Period" }
-                // htmx serializes the triggering element's own value, so the
-                // select needs no hx-include: the change fires
-                // GET /repos/{id}?days={value}.
                 select #wp-period name="days"
-                    hx-get=(format!("/repos/{repo_id}"))
-                    hx-target="#period-scope"
-                    hx-swap="outerHTML"
-                    hx-push-url="true"
-                    hx-trigger="change" {
+                    onchange="watchpost.setPeriod(this.value)" {
                     @for (value, label) in PERIODS {
                         option value=(value) selected[value == selected] { (label) }
                     }
@@ -342,9 +347,9 @@ fn charts_section(view: &RepoView) -> Markup {
                 (chart_card("Downloads", "chart_downloads"))
             }
             (json_script("chart-data", view.payload))
-            // app.js is deferred, so on a full page load this runs before the
-            // stubs exist; on an htmx swap it runs with them in place. The
-            // guard covers the first case, `DOMContentLoaded` the second.
+            // app.js is deferred, so this runs before the stubs exist. The
+            // guard covers that; `DOMContentLoaded` is what actually builds the
+            // charts. Kept for the case where the island arrives in a swap.
             script { (PreEscaped("window.watchpost && watchpost.initRepoCharts();")) }
         }
     }
@@ -359,6 +364,9 @@ fn chart_card(title: &str, canvas_id: &str) -> Markup {
     }
 }
 
+/// The two popular tables. All-time, independently of the chart period: the
+/// lists are short and GitHub's own referrer data is already a rolling
+/// fortnight, so slicing them again by the charts' zoom mostly emptied them.
 fn popular_section(view: &RepoView) -> Markup {
     html! {
         section {
@@ -384,14 +392,18 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
             thead {
                 tr {
                     (sort_th(kind, SortKey::Name, name_label, sort, params, None))
-                    (sort_th(kind, SortKey::Count, "Views", sort, params, None))
+                    // "Views" alone would read as an exact all-time total,
+                    // which the accumulated-increases aggregation is not —
+                    // the tooltip says what the number really is.
+                    (sort_th(kind, SortKey::Count, "Views", sort, params,
+                        Some("Accumulated views — sum of observed daily increases; undercounts before install or during downtime")))
                     (sort_th(kind, SortKey::Uniques, "Uniques", sort, params,
                         Some("Peak daily unique — uniques are never summed")))
                 }
             }
             tbody {
                 @if rows.is_empty() {
-                    tr { td colspan="3" class="wp-muted" { "Nothing recorded for this period." } }
+                    tr { td colspan="3" class="wp-muted" { "Nothing recorded yet." } }
                 }
                 @for row in rows {
                     tr {
@@ -755,9 +767,9 @@ mod tests {
     fn params() -> PopularParams {
         PopularParams {
             repo_id: 1,
-            days: 90,
             refs_sort: Sort::parse(PopularKind::Referrers, None, None),
             paths_sort: Sort::parse(PopularKind::Paths, None, None),
+            days: ALL_DAYS,
         }
     }
 
@@ -815,11 +827,25 @@ mod tests {
         let url = params.sort_url(PopularKind::Referrers, SortKey::Count);
         assert!(url.contains("rsort=count&rdir=asc"), "url was {url}");
         assert!(url.contains("psort=count&pdir=desc"), "url was {url}");
-        assert!(url.starts_with("/repos/1?days=90"), "url was {url}");
+        // The default period stays out of the URL.
+        assert!(url.starts_with("/repos/1?rsort="), "url was {url}");
+        assert!(!url.contains("days="), "url was {url}");
 
         // A different column starts at its own default instead of flipping.
         let url = params.sort_url(PopularKind::Referrers, SortKey::Name);
         assert!(url.contains("rsort=referrer&rdir=asc"), "url was {url}");
+    }
+
+    #[test]
+    fn sort_links_preserve_a_selected_period() {
+        // hx-replace-url rewrites the whole address bar, so a sort link must
+        // re-state the chart zoom or a reload after sorting reopens at All.
+        let params = PopularParams {
+            days: 90,
+            ..params()
+        };
+        let url = params.sort_url(PopularKind::Paths, SortKey::Uniques);
+        assert!(url.contains("&days=90"), "url was {url}");
     }
 
     #[test]
@@ -829,8 +855,14 @@ mod tests {
             out.contains(r#"data-tooltip="Peak daily unique — uniques are never summed""#),
             "out was {out}"
         );
-        // Only the uniques column claims it.
-        assert_eq!(out.matches("data-tooltip").count(), 1, "out was {out}");
+        // The count column says what its number is too — accumulated observed
+        // increases, not an exact all-time total.
+        assert!(
+            out.contains(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#),
+            "out was {out}"
+        );
+        // The two numeric columns and nothing else.
+        assert_eq!(out.matches("data-tooltip").count(), 2, "out was {out}");
         // An empty table still renders its swap target.
         assert!(
             out.starts_with(r#"<table id="refs-table">"#),
@@ -859,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn init_call_is_guarded_and_not_html_escaped() {
+    fn init_call_is_guarded_and_the_selector_is_client_side() {
         let payload = ChartPayload {
             days: 7,
             labels: Vec::new(),
@@ -886,15 +918,22 @@ mod tests {
             kinds: &[],
             popular: params(),
         };
-        let out = period_scope(&view).into_string();
+        let out = charts_section(&view).into_string();
         // `&&` must survive as JavaScript — an escaped `&amp;&amp;` is a
         // syntax error, not a guard.
         assert!(
             out.contains("<script>window.watchpost && watchpost.initRepoCharts();</script>"),
             "out was {out}"
         );
+        // The period selector zooms in the browser: no htmx, and the option the
+        // payload names is the selected one.
         assert!(
-            out.starts_with(r#"<div id="period-scope">"#),
+            out.contains(r#"onchange="watchpost.setPeriod(this.value)""#),
+            "out was {out}"
+        );
+        assert!(!out.contains("hx-"), "out was {out}");
+        assert!(
+            out.contains(r#"<option value="7" selected>"#),
             "out was {out}"
         );
     }
