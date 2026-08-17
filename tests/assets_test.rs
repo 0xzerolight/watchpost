@@ -213,7 +213,13 @@ async fn index_renders_the_base_layout() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
-    assert!(body.contains("<title>Home · watchpost</title>"), "{body}");
+    assert!(body.contains("<title>Repos · watchpost</title>"), "{body}");
+    // Both themes are honoured by pico; without this the browser paints the
+    // form controls and scrollbars light even in a dark UA theme.
+    assert!(
+        body.contains(r#"<meta name="color-scheme" content="light dark">"#),
+        "{body}"
+    );
 
     // The token the page embeds must be the one the cookie just set, or the
     // session's first POST 403s.
@@ -253,7 +259,44 @@ async fn index_renders_the_base_layout() {
     assert!(body.contains("/assets/app.js?v="), "{body}");
 
     assert!(body.contains(r#"href="/settings""#), "{body}");
-    assert!(body.contains("<main class=\"container\">"), "{body}");
+    assert!(
+        body.contains(r#"<main id="main" class="container" tabindex="-1">"#),
+        "{body}"
+    );
+
+    // The skip link only works as the first focusable element on the page, so
+    // its position is part of the contract, not just its presence.
+    let skip = body
+        .find(r##"<a href="#main" class="wp-skip">"##)
+        .unwrap_or_else(|| panic!("skip link missing: {body}"));
+    assert!(skip < body.find("<nav").unwrap(), "{body}");
+
+    // Exactly one nav entry may claim the current page: two would leave a
+    // screenreader user with no idea where they are.
+    assert_eq!(body.matches(r#"aria-current="page""#).count(), 1, "{body}");
+    assert!(
+        body.contains(r#"<a href="/" aria-current="page">Repos</a>"#),
+        "{body}"
+    );
+
+    // Shared regions the client scripts target by id.
+    assert!(body.contains(r#"id="wp-toast""#), "{body}");
+    assert!(body.contains(r#"id="wp-confirm""#), "{body}");
+}
+
+#[tokio::test]
+async fn settings_marks_only_its_own_nav_entry() {
+    let body = body_string(get("/settings").await).await;
+
+    assert!(
+        body.contains("<title>Settings · watchpost</title>"),
+        "{body}"
+    );
+    assert_eq!(body.matches(r#"aria-current="page""#).count(), 1, "{body}");
+    assert!(
+        body.contains(r#"<a href="/settings" aria-current="page">Settings</a>"#),
+        "{body}"
+    );
 }
 
 #[tokio::test]

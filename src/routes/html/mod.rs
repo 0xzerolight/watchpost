@@ -32,7 +32,12 @@ const RESPONSE_HANDLING_JS: &str = r#"htmx.config.responseHandling = [{code:"204
 ///   contained a quote could not escape the attribute.
 /// * htmx is loaded synchronously so the inline config below runs against a
 ///   real `htmx` object, before any element on the page can trigger a swap.
-pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
+///
+/// There is deliberately no `hx-boost` here. Boosted navigation would swap the
+/// body without re-running the page's chart setup, and `historyCacheSize = 0`
+/// already forces a fresh request on back-nav — so boosting would buy nothing
+/// but a class of dead-canvas bugs.
+pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Markup {
     let hx_headers = serde_json::json!({ CSRF_HEADER: csrf.0 }).to_string();
 
     html! {
@@ -41,6 +46,9 @@ pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                // Pico ships both themes; without this the browser still
+                // paints UA-owned chrome (form controls, scrollbars) light.
+                meta name="color-scheme" content="light dark";
                 title { (title) " · watchpost" }
                 link rel="icon" type="image/svg+xml" href=(assets::favicon_data_uri());
                 link rel="stylesheet" href=(format!("/assets/{}", assets::PICO_CSS));
@@ -65,14 +73,69 @@ pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
                 script { (PreEscaped(RESPONSE_HANDLING_JS)) }
             }
             body hx-headers=(hx_headers) {
+                // First element in the body, or a keyboard user tabs the nav
+                // on every page before reaching the content.
+                a href="#main" class="wp-skip" { "Skip to content" }
                 nav class="container" {
                     ul { li { a href="/" { strong { "watchpost" } } } }
                     ul {
-                        li { a href="/" { "Home" } }
-                        li { a href="/settings" { "Settings" } }
+                        li {
+                            a href="/" aria-current=[matches!(nav, NavItem::Home).then_some("page")] {
+                                "Repos"
+                            }
+                        }
+                        li {
+                            a href="/settings"
+                                aria-current=[matches!(nav, NavItem::Settings).then_some("page")] {
+                                "Settings"
+                            }
+                        }
                     }
                 }
-                main class="container" { (inner) }
+                // `tabindex="-1"` makes the skip link's target focusable:
+                // without it the jump moves the viewport but not focus, and
+                // the next Tab lands back at the top of the page.
+                main id="main" class="container" tabindex="-1" { (inner) }
+                (toast_region())
+                (confirm_dialog())
+            }
+        }
+    }
+}
+
+/// The single toast slot every page shares.
+///
+/// `role="alert"` with `aria-live="assertive"` because a toast reports the
+/// outcome of something the user just did — announcing it politely means it is
+/// queued behind whatever else is speaking and arrives after the toast has
+/// already faded. The element ships `hidden`; the client unhides it, so a page
+/// with no message renders nothing.
+fn toast_region() -> Markup {
+    html! {
+        div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden {
+            span class="wp-toast-text" {}
+            button class="wp-toast-close" aria-label="Dismiss" { "×" }
+        }
+    }
+}
+
+/// The single confirm dialog every destructive action reuses.
+///
+/// A native `<dialog>` rather than `window.confirm` so the prompt can name what
+/// is about to be destroyed, and so the modal traps focus the way the platform
+/// expects. Title and text are filled in by the client; the two buttons are
+/// keyed by data attribute rather than by position, so restyling the footer
+/// cannot silently swap Cancel for Confirm.
+fn confirm_dialog() -> Markup {
+    html! {
+        dialog id="wp-confirm" {
+            article {
+                h2 id="wp-confirm-title" {}
+                p id="wp-confirm-text" {}
+                footer class="wp-actions wp-actions-end" {
+                    button class="secondary" data-confirm-cancel { "Cancel" }
+                    button data-confirm-ok { "Confirm" }
+                }
             }
         }
     }
@@ -321,6 +384,39 @@ mod tests {
             let slot: u32 = class.strip_prefix("wp-kind-").unwrap().parse().unwrap();
             assert!(slot < 8, "{kind:?} → {class}");
         }
+    }
+
+    // The two shared regions are a contract with the client scripts, which
+    // find their parts by id, class and data attribute. Pinning the markup
+    // whole means a rename here fails a test rather than silently turning a
+    // toast into an element nothing ever shows.
+    #[test]
+    fn toast_region_markup_is_the_one_the_client_targets() {
+        assert_eq!(
+            toast_region().into_string(),
+            concat!(
+                r#"<div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden>"#,
+                r#"<span class="wp-toast-text"></span>"#,
+                r#"<button class="wp-toast-close" aria-label="Dismiss">×</button>"#,
+                "</div>"
+            )
+        );
+    }
+
+    #[test]
+    fn confirm_dialog_markup_is_the_one_the_client_targets() {
+        assert_eq!(
+            confirm_dialog().into_string(),
+            concat!(
+                r#"<dialog id="wp-confirm"><article>"#,
+                r#"<h2 id="wp-confirm-title"></h2>"#,
+                r#"<p id="wp-confirm-text"></p>"#,
+                r#"<footer class="wp-actions wp-actions-end">"#,
+                r#"<button class="secondary" data-confirm-cancel>Cancel</button>"#,
+                r#"<button data-confirm-ok>Confirm</button>"#,
+                "</footer></article></dialog>"
+            )
+        );
     }
 
     #[test]

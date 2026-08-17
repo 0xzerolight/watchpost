@@ -21,7 +21,7 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::AppError;
 use crate::routes::html::settings::{repos_picker, sync_status_fragment};
-use crate::routes::html::{base, get_hx_target};
+use crate::routes::html::{NavItem, base, get_hx_target};
 use crate::state::{AppState, SyncStatus, lock_recover};
 
 /// GET /settings — full page, or just the picker when htmx asks for it.
@@ -38,6 +38,7 @@ pub async fn settings_page(
     let status = current_status(&state);
     Ok(base(
         "Settings",
+        NavItem::Settings,
         &csrf,
         html! {
             h1 { "Settings" }

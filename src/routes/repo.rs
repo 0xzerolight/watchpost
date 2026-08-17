@@ -28,7 +28,7 @@ use crate::routes::html::repo::{
     ALL_DAYS, ChartPayload, ChartSeries, PERIODS, PopularParams, RepoView, Sort, popular_table,
     repo_body,
 };
-use crate::routes::html::{base, get_hx_target};
+use crate::routes::html::{NavItem, base, get_hx_target};
 use crate::state::AppState;
 use crate::types::{Event, Metric, PopularItem, PopularKind, RepoOverview};
 
@@ -116,7 +116,7 @@ pub async fn repo_page(
 
     Ok(match fragment(&headers) {
         Fragment::Table(kind) => popular_table(kind, view.rows(kind), &view.popular),
-        Fragment::Full => base(&page.repo.name, &csrf, repo_body(&view)),
+        Fragment::Full => base(&page.repo.name, NavItem::None, &csrf, repo_body(&view)),
     })
 }
 
