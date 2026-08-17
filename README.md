@@ -80,8 +80,9 @@ because a total does not stop existing when nobody is watching.
 
 **Stars are backfilled once.** On first sync of a repo, watchpost walks the stargazers API to
 reconstruct the star history from before it was installed. GitHub stops paginating that endpoint at
-40,000 stars, so for larger repos the backfilled curve starts at the 40k mark and daily sampling
-takes over from there.
+40,000 stars, so for larger repos only the first 40,000 stargazers — the oldest ones — can be
+reconstructed. The history between there and today is missing: the curve covers the early growth,
+then jumps to the current total, and daily sampling takes over from the first sync onwards.
 
 **Schedules are UTC.** `WATCHPOST_CRON` and every date in the database are UTC, including the day
 an event is filed under. A collection also runs at startup, so restarting is a way to force a
