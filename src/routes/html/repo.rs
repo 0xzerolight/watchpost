@@ -17,7 +17,8 @@ use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    empty_row, empty_state, json_script, kind_class, page_header, render_markdown, table_wrap,
+    empty_row, empty_state, field, field_compact, json_script, kind_class, page_header,
+    render_markdown, table_wrap,
 };
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
@@ -634,6 +635,7 @@ fn kind_chip(kind: Option<&str>, label: &str, pressed: bool) -> Markup {
 fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
     let blank = EventDraft::default();
     let values = draft.unwrap_or(&blank);
+    let errors = &values.errors;
     let date = match draft {
         Some(draft) => draft.date.clone(),
         None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
@@ -644,36 +646,37 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
             form hx-post=(format!("/repos/{repo_id}/events"))
                 hx-target="#events-section"
                 hx-swap="outerHTML" {
-                (field("Date", values.errors.date.as_deref(), html! {
-                    input type="date" name="date" value=(date) required;
+                (field("event-date", "Date", errors.date.as_deref(), html! {
+                    input type="date" id="event-date" name="date" value=(date) required
+                        aria-invalid=[errors.date.is_some().then_some("true")]
+                        aria-describedby=[errors.date.is_some().then_some("event-date-error")];
                 }))
-                (field("Title", values.errors.title.as_deref(), html! {
-                    input type="text" name="title" value=(values.title) required;
+                (field("event-title", "Title", errors.title.as_deref(), html! {
+                    input type="text" id="event-title" name="title" value=(values.title) required
+                        aria-invalid=[errors.title.is_some().then_some("true")]
+                        aria-describedby=[errors.title.is_some().then_some("event-title-error")];
                 }))
-                (field("Kind", values.errors.kind.as_deref(), html! {
-                    input type="text" name="kind" value=(values.kind)
-                        list="kind-list" placeholder="release, hn, blog…";
+                (field("event-kind", "Kind", errors.kind.as_deref(), html! {
+                    input type="text" id="event-kind" name="kind" value=(values.kind)
+                        list="kind-list" placeholder="release, hn, blog…"
+                        aria-invalid=[errors.kind.is_some().then_some("true")]
+                        aria-describedby=[errors.kind.is_some().then_some("event-kind-error")];
                 }))
                 // `type=url` is a browser-side nicety only; the scheme
                 // allowlist that actually matters runs on the server.
-                (field("Link", values.errors.url.as_deref(), html! {
-                    input type="url" name="url" value=(values.url) placeholder="https://…";
+                (field("event-url", "Link", errors.url.as_deref(), html! {
+                    input type="url" id="event-url" name="url" value=(values.url)
+                        placeholder="https://…"
+                        aria-invalid=[errors.url.is_some().then_some("true")]
+                        aria-describedby=[errors.url.is_some().then_some("event-url-error")];
                 }))
-                (field("Notes", None, html! {
-                    textarea name="notes" rows="3" placeholder="Markdown" { (values.notes) }
+                // Notes cannot be rejected: anything is valid markdown.
+                (field("event-notes", "Notes", None, html! {
+                    textarea id="event-notes" name="notes" rows="3"
+                        placeholder="Markdown" { (values.notes) }
                 }))
                 button type="submit" { "Add event" }
             }
-        }
-    }
-}
-
-/// A labelled input with its rejection message, when it has one.
-fn field(label: &str, error: Option<&str>, input: Markup) -> Markup {
-    html! {
-        label { (label) (input) }
-        @if let Some(message) = error {
-            small class="wp-danger wp-small" role="alert" { (message) }
         }
     }
 }
@@ -754,45 +757,58 @@ pub fn event_row(repo_id: i64, event: &Event) -> Markup {
 pub fn event_form_row(repo_id: i64, event_id: i64, values: &EventDraft) -> Markup {
     let base = format!("/repos/{repo_id}/events/{event_id}");
     let errors = &values.errors;
+    // The column headers are not labels — they name the column, not the control
+    // — so each input carries its own, hidden on screen because the header
+    // above it already says the same word.
+    let id = |name: &str| format!("ev-{event_id}-{name}");
+    let (date, kind, title, url, notes) =
+        (id("date"), id("kind"), id("title"), id("url"), id("notes"));
     html! {
-        tr id=(format!("event-row-{event_id}"))
+        tr id=(format!("event-row-{event_id}")) class="wp-edit-row"
             data-kind=[(!values.kind.is_empty()).then_some(values.kind.as_str())] {
             td {
-                input type="date" name="date" value=(values.date) required;
-                (row_error(errors.date.as_deref()))
+                (field_compact(&date, "Date", errors.date.as_deref(), html! {
+                    input type="date" id=(date) name="date" value=(values.date) required
+                        aria-invalid=[errors.date.is_some().then_some("true")]
+                        aria-describedby=[errors.date.is_some().then(|| format!("{date}-error"))];
+                }))
             }
             td {
-                input type="text" name="kind" list="kind-list" value=(values.kind);
-                (row_error(errors.kind.as_deref()))
+                (field_compact(&kind, "Kind", errors.kind.as_deref(), html! {
+                    input type="text" id=(kind) name="kind" list="kind-list" value=(values.kind)
+                        aria-invalid=[errors.kind.is_some().then_some("true")]
+                        aria-describedby=[errors.kind.is_some().then(|| format!("{kind}-error"))];
+                }))
             }
             td {
-                input type="text" name="title" value=(values.title) required;
-                (row_error(errors.title.as_deref()))
-                input type="url" name="url" placeholder="https://…" value=(values.url);
-                (row_error(errors.url.as_deref()))
+                (field_compact(&title, "Title", errors.title.as_deref(), html! {
+                    input type="text" id=(title) name="title" value=(values.title) required
+                        aria-invalid=[errors.title.is_some().then_some("true")]
+                        aria-describedby=[errors.title.is_some().then(|| format!("{title}-error"))];
+                }))
+                (field_compact(&url, "Link", errors.url.as_deref(), html! {
+                    input type="url" id=(url) name="url" placeholder="https://…" value=(values.url)
+                        aria-invalid=[errors.url.is_some().then_some("true")]
+                        aria-describedby=[errors.url.is_some().then(|| format!("{url}-error"))];
+                }))
             }
-            td { textarea name="notes" rows="3" { (values.notes) } }
             td {
-                button type="button" class="wp-action"
+                (field_compact(&notes, "Notes", None, html! {
+                    textarea id=(notes) name="notes" rows="3" { (values.notes) }
+                }))
+            }
+            td {
+                button type="button" class="wp-action" id=(format!("event-save-{event_id}"))
+                    data-save
                     hx-put=(base)
                     hx-include="closest tr"
                     hx-target="#events-section"
                     hx-swap="outerHTML" { "Save" }
-                button type="button" class="wp-action"
+                button type="button" class="wp-action" id=(format!("event-cancel-{event_id}"))
                     hx-get=(base)
                     hx-target="closest tr"
                     hx-swap="outerHTML" { "Cancel" }
             }
-        }
-    }
-}
-
-/// A field's rejection message inside an edit row, where there is no `<label>`
-/// to hang [`field`]'s layout on.
-fn row_error(error: Option<&str>) -> Markup {
-    html! {
-        @if let Some(message) = error {
-            small class="wp-danger wp-small" role="alert" { (message) }
         }
     }
 }
@@ -1093,12 +1109,35 @@ mod tests {
         assert!(out.contains("kept notes"), "out was {out}");
         // One message per failed field, and none for the fields that passed.
         assert_eq!(
-            out.matches(r#"class="wp-danger wp-small" role="alert""#)
+            out.matches(r#"class="wp-field-error" role="alert""#)
                 .count(),
             2,
             "out was {out}"
         );
         assert!(out.contains("bad date"), "out was {out}");
+        // A real label pointing at a real control, and the control pointing
+        // back at its message: a `<small>` no input is described by is styling,
+        // not an error a screenreader ever reads out.
+        assert!(
+            out.contains(r#"<label for="event-date">Date</label>"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(
+                r#"id="event-date" name="date" value="nope" required aria-invalid="true" aria-describedby="event-date-error""#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<small id="event-date-error" class="wp-field-error""#),
+            "out was {out}"
+        );
+        // A field that passed is not dressed as invalid.
+        assert!(
+            out.contains(r#"<label for="event-title">Title</label>"#),
+            "out was {out}"
+        );
+        assert_eq!(out.matches("aria-invalid").count(), 2, "out was {out}");
     }
 
     #[test]
@@ -1152,7 +1191,7 @@ mod tests {
         // sees the same contract mid-edit.
         let form = event_form_row(1, event.id, &EventDraft::from(&event)).into_string();
         assert!(
-            form.starts_with(r#"<tr id="event-row-7" data-kind="release""#),
+            form.starts_with(r#"<tr id="event-row-7" class="wp-edit-row" data-kind="release""#),
             "form was {form}"
         );
         assert!(
@@ -1161,6 +1200,21 @@ mod tests {
         );
         // A clean edit row carries no leftover messages.
         assert!(!form.contains(r#"role="alert""#), "form was {form}");
+        assert!(!form.contains("aria-invalid"), "form was {form}");
+        // Every control is named, out of the way rather than out of the DOM:
+        // the column header is not a label, so without these the row is five
+        // unnamed boxes.
+        assert!(
+            form.contains(r#"<label for="ev-7-notes" class="wp-visually-hidden">Notes</label>"#),
+            "form was {form}"
+        );
+        assert!(form.contains(r#"id="ev-7-title""#), "form was {form}");
+        // The action buttons are addressable, so a busy state can name them.
+        assert!(
+            form.contains(r#"id="event-save-7" data-save hx-put="#),
+            "form was {form}"
+        );
+        assert!(form.contains(r#"id="event-cancel-7""#), "form was {form}");
     }
 
     #[test]
@@ -1188,12 +1242,24 @@ mod tests {
         assert!(out.contains(r#"value="javascript:alert(1)""#), "{out}");
         assert!(!out.contains("href="), "out was {out}");
         assert_eq!(
-            out.matches(r#"class="wp-danger wp-small" role="alert""#)
+            out.matches(r#"class="wp-field-error" role="alert""#)
                 .count(),
             2,
             "out was {out}"
         );
         assert!(out.contains("bad date"), "out was {out}");
         assert!(out.contains("bad url"), "out was {out}");
+        // Same wiring as the add form, at the row's own ids.
+        assert!(
+            out.contains(
+                r#"id="ev-7-url" name="url" placeholder="https://…" value="javascript:alert(1)" aria-invalid="true" aria-describedby="ev-7-url-error""#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<small id="ev-7-url-error" class="wp-field-error""#),
+            "out was {out}"
+        );
+        assert_eq!(out.matches("aria-invalid").count(), 2, "out was {out}");
     }
 }

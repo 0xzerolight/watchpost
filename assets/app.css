@@ -261,6 +261,40 @@
 }
 
 /*
+ * The inline edit row. Pico sizes form controls and their bottom margin for a
+ * page-width form, which in a table cell makes the row being edited roughly
+ * twice the height of its neighbours — the rows below jump out from under the
+ * pointer the moment Edit is pressed. Overriding Pico's own variables on the
+ * row keeps every control type in step instead of re-padding input, select and
+ * textarea one at a time.
+ */
+tr.wp-edit-row {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-2);
+  --pico-spacing: var(--wp-space-2);
+}
+
+/* Cells hold two controls in one column (title + link) and a taller textarea
+ * than its neighbours; centred, they would float against unrelated rows. */
+tr.wp-edit-row td {
+  vertical-align: top;
+}
+
+tr.wp-edit-row textarea {
+  min-height: 4.5rem;
+}
+
+/* A date and a short kind are fixed-width values; left to fill the cell they
+ * push the title column — the one worth the space — down to nothing. */
+tr.wp-edit-row [name="date"] {
+  width: 9.5rem;
+}
+
+tr.wp-edit-row [name="kind"] {
+  width: 8rem;
+}
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab

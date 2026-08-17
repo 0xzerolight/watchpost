@@ -53,11 +53,15 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup 
                         @for repo in repos {
                             tr {
                                 td {
-                                    input type="checkbox" name="tracked" value=(repo.id)
-                                        checked[repo.tracked]
-                                        aria-label=(format!("Track {}", repo.name));
+                                    input type="checkbox" id=(format!("track-{}", repo.id))
+                                        name="tracked" value=(repo.id)
+                                        checked[repo.tracked];
                                 }
-                                td { (repo.name) }
+                                // The name cell is the box's label rather than
+                                // text beside it: the visible name becomes the
+                                // accessible one, and the click target grows
+                                // from the box to the whole repo name.
+                                td { label for=(format!("track-{}", repo.id)) { (repo.name) } }
                                 td class="wp-muted wp-small" {
                                     (timestamp(repo.last_synced_at.as_deref()))
                                 }
@@ -170,6 +174,21 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains(">2026-08-17T09:05:00Z<"), "{out}");
+    }
+
+    #[test]
+    fn picker_makes_the_repo_name_the_checkbox_label() {
+        let out = repos_picker(&[repo("octo/x", None, None)], None).into_string();
+
+        // The name cell *is* the label, so the whole name is a click target
+        // rather than a 16px box beside it — and the visible text is the
+        // accessible name instead of a second, invisible one.
+        assert!(out.contains(r#"id="track-7""#), "{out}");
+        assert!(
+            out.contains(r#"<label for="track-7">octo/x</label>"#),
+            "{out}"
+        );
+        assert!(!out.contains("aria-label=\"Track"), "{out}");
     }
 
     #[test]
