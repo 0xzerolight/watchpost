@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::routes::html::{
     empty_row, empty_state, field, field_compact, json_script, kind_class, page_header,
-    render_markdown, table_wrap,
+    render_markdown, spinner, table_wrap,
 };
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
@@ -471,6 +471,11 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
 /// A sortable header cell. The link is a real `href` as well as an `hx-get`, so
 /// the column still sorts with htmx unavailable, and `aria-sort` tells a
 /// screenreader which column the table is ordered by.
+///
+/// The indicator is the table rather than the link: `table.htmx-request tbody`
+/// fades exactly the rows the swap is about to replace, so a slow sort looks
+/// like work instead of like a click that did nothing. Nothing is disabled — a
+/// link cannot be, and re-sorting mid-request only re-sorts.
 fn sort_th(
     kind: PopularKind,
     key: SortKey,
@@ -492,6 +497,7 @@ fn sort_th(
                 hx-target=(target)
                 hx-swap="outerHTML"
                 hx-replace-url="true"
+                hx-indicator="closest table"
                 data-tooltip=[tooltip] { (label) }
         }
     }
@@ -632,6 +638,11 @@ fn kind_chip(kind: Option<&str>, label: &str, pressed: bool) -> Markup {
 /// The htmx attributes sit on the `<form>`, not on the button: htmx serializes
 /// a form's named fields on submit, so pressing Enter in a field works and no
 /// `hx-include` has to enumerate them.
+///
+/// Only the submit button is disabled for the life of the request, not the
+/// form: a second press before the swap arrives creates a second event, and
+/// this is the one control on the page where that means a duplicate row rather
+/// than a repeated read.
 fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
     let blank = EventDraft::default();
     let values = draft.unwrap_or(&blank);
@@ -645,7 +656,9 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
             summary { "Add event" }
             form hx-post=(format!("/repos/{repo_id}/events"))
                 hx-target="#events-section"
-                hx-swap="outerHTML" {
+                hx-swap="outerHTML"
+                hx-disabled-elt="find button[type=submit]"
+                hx-indicator="#event-add-spinner" {
                 (field("event-date", "Date", errors.date.as_deref(), html! {
                     input type="date" id="event-date" name="date" value=(date) required
                         aria-invalid=[errors.date.is_some().then_some("true")]
@@ -675,7 +688,10 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
                     textarea id="event-notes" name="notes" rows="3"
                         placeholder="Markdown" { (values.notes) }
                 }))
-                button type="submit" { "Add event" }
+                div class="wp-actions" {
+                    button type="submit" { "Add event" }
+                    (spinner("event-add-spinner"))
+                }
             }
         }
     }
@@ -728,15 +744,24 @@ pub fn event_row(repo_id: i64, event: &Event) -> Markup {
                 }
             }
             td {
+                // Each button disables itself for the life of its request: the
+                // swap that replaces it has not arrived yet, so a second press
+                // is a second request against a row that is already leaving.
+                // Delete points its indicator at the row, which `tr.htmx-request`
+                // fades — the section swap it triggers is too coarse to show
+                // which row is going.
                 button type="button" class="wp-action"
                     hx-get=(format!("{base}/edit"))
                     hx-target="closest tr"
-                    hx-swap="outerHTML" { "Edit" }
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this" { "Edit" }
                 button type="button" class="wp-action"
                     hx-delete=(base)
                     hx-confirm="Delete event?"
                     hx-target="#events-section"
-                    hx-swap="outerHTML" { "Delete" }
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-indicator="closest tr" { "Delete" }
             }
         }
     }
@@ -798,16 +823,22 @@ pub fn event_form_row(repo_id: i64, event_id: i64, values: &EventDraft) -> Marku
                 }))
             }
             td {
+                // Each button disables only itself. `hx-disabled-elt="closest tr"`
+                // would look tidier and would post an empty event: htmx drops
+                // disabled inputs, and this row *is* what `hx-include` collects.
                 button type="button" class="wp-action" id=(format!("event-save-{event_id}"))
                     data-save
                     hx-put=(base)
                     hx-include="closest tr"
                     hx-target="#events-section"
-                    hx-swap="outerHTML" { "Save" }
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-indicator="closest tr" { "Save" }
                 button type="button" class="wp-action" id=(format!("event-cancel-{event_id}"))
                     hx-get=(base)
                     hx-target="closest tr"
-                    hx-swap="outerHTML" { "Cancel" }
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this" { "Cancel" }
             }
         }
     }
@@ -1138,6 +1169,93 @@ mod tests {
             "out was {out}"
         );
         assert_eq!(out.matches("aria-invalid").count(), 2, "out was {out}");
+    }
+
+    #[test]
+    fn the_add_form_disables_its_own_submit_and_names_a_spinner() {
+        // Double-clicking Add is the one way to create a duplicate event, and
+        // the button is the only thing that may be disabled: disabling the form
+        // would take its inputs out of the submission with it.
+        let out = events_section(&events_view(&[], &[])).into_string();
+        assert!(
+            out.contains(r#"hx-disabled-elt="find button[type=submit]""#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r##"hx-indicator="#event-add-spinner""##),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<span id="event-add-spinner" class="htmx-indicator wp-spinner""#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn sort_links_dim_their_table_without_disabling_themselves() {
+        // `table.htmx-request tbody` is what the indicator lights up, so the
+        // rows being replaced fade while the request runs. A real link cannot
+        // carry `disabled`, so nothing here tries to.
+        let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
+        assert_eq!(
+            out.matches(r#"hx-indicator="closest table""#).count(),
+            3,
+            "out was {out}"
+        );
+        assert!(!out.contains("hx-disabled-elt"), "out was {out}");
+    }
+
+    #[test]
+    fn row_actions_disable_themselves_and_delete_dims_its_row() {
+        let event = Event {
+            id: 7,
+            repo_id: 1,
+            date: "2026-08-10".into(),
+            title: "Launch".into(),
+            notes: String::new(),
+            url: None,
+            kind: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let out = event_row(1, &event).into_string();
+        // Both actions: a second click during the first is a second request.
+        assert_eq!(
+            out.matches(r#"hx-disabled-elt="this""#).count(),
+            2,
+            "out was {out}"
+        );
+        // Delete replaces the whole section, so the row it removes is what
+        // should look busy — `tr.htmx-request` dims it.
+        assert_eq!(
+            out.matches(r#"hx-indicator="closest tr""#).count(),
+            1,
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r##"hx-confirm="Delete event?" hx-target="#events-section""##),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn edit_row_actions_disable_only_themselves() {
+        let out = event_form_row(1, 7, &EventDraft::default()).into_string();
+        assert_eq!(
+            out.matches(r#"hx-disabled-elt="this""#).count(),
+            2,
+            "out was {out}"
+        );
+        // Save serializes the row with `hx-include`, and htmx drops disabled
+        // inputs — disabling the row would post an empty event.
+        assert!(
+            !out.contains(r#"hx-disabled-elt="closest tr""#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"hx-indicator="closest tr""#),
+            "out was {out}"
+        );
     }
 
     #[test]

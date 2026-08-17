@@ -24,16 +24,25 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup 
             @if let Some((kind, text)) = msg {
                 (notice(kind, html! { (text) }))
             }
+            // Each button disables itself and lights its own spinner. Both
+            // replace the picker they live in, so a second press mid-flight
+            // races a swap that is about to take the button away; and one
+            // shared spinner would light up beside whichever button was not
+            // pressed, since htmx only marks the indicator the request names.
             div class="wp-actions" {
                 button type="button" id="repos-save"
                     hx-post="/settings/repos"
                     hx-target="#repos-picker"
-                    hx-swap="outerHTML" { "Save" }
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="this"
+                    hx-indicator="#repos-spinner" { "Save" }
+                (spinner("repos-spinner"))
                 button type="button" id="repos-refresh" class="secondary"
                     hx-post="/settings/discover"
                     hx-include="closest form"
                     hx-target="#repos-picker"
                     hx-swap="outerHTML"
+                    hx-disabled-elt="this"
                     hx-indicator="#discover-spinner" { "Refresh from GitHub" }
                 (spinner("discover-spinner"))
             }
@@ -131,8 +140,12 @@ pub fn sync_status_fragment(status: &SyncStatus) -> Markup {
 fn sync_button(running: bool) -> Markup {
     html! {
         div class="wp-actions" {
+            // `disabled[running]` covers the state the last poll reported;
+            // `hx-disabled-elt` covers the gap between a press and the swap
+            // that would have reported it.
             button type="button" id="sync-now" hx-post="/sync" hx-target="#sync-status"
                 hx-swap="outerHTML" hx-indicator="#sync-spinner"
+                hx-disabled-elt="this"
                 disabled[running] { "Sync now" }
             (spinner("sync-spinner"))
         }
@@ -224,6 +237,22 @@ mod tests {
     }
 
     #[test]
+    fn picker_actions_disable_themselves_while_they_run() {
+        let out = repos_picker(&[], None).into_string();
+
+        // Both buttons re-render the picker they live in; a second press mid
+        // flight races the swap that is about to replace them.
+        assert_eq!(out.matches(r#"hx-disabled-elt="this""#).count(), 2, "{out}");
+        // Save gets its own spinner: the two buttons run different requests and
+        // sharing one would light up under whichever was not pressed.
+        assert!(out.contains(r##"hx-indicator="#repos-spinner""##), "{out}");
+        assert!(
+            out.contains(r#"<span id="repos-spinner" class="htmx-indicator wp-spinner""#),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn picker_empty_uses_the_shared_empty_state() {
         let out = repos_picker(&[], None).into_string();
         assert!(
@@ -248,7 +277,9 @@ mod tests {
         assert!(out.contains(r#"<progress class="wp-progress">"#), "{out}");
         assert!(out.contains("Syncing…"), "{out}");
         assert!(out.contains(r#"id="sync-now" "#), "{out}");
-        assert!(out.contains("disabled"), "{out}");
+        // The bare attribute, not `hx-disabled-elt`: the button a running cycle
+        // renders is already dead on arrival.
+        assert!(out.contains(r#"hx-disabled-elt="this" disabled>"#), "{out}");
     }
 
     #[test]
@@ -263,9 +294,10 @@ mod tests {
         assert!(out.contains("wp-notice-success"), "{out}");
         assert!(out.contains("Synced 3 repos · "), "{out}");
         assert!(out.contains("<time datetime="), "{out}");
-        // A finished cycle must not keep polling.
+        // A finished cycle must not keep polling, and its button is pressable
+        // again — only htmx's in-flight disabling remains.
         assert!(!out.contains("hx-trigger"), "{out}");
-        assert!(!out.contains("disabled"), "{out}");
+        assert!(!out.contains("disabled>"), "{out}");
     }
 
     #[test]
@@ -303,5 +335,7 @@ mod tests {
             out.contains(r#"<span id="sync-spinner" class="htmx-indicator wp-spinner""#),
             "{out}"
         );
+        // A second press before the first cycle registers starts another one.
+        assert!(out.contains(r#"hx-disabled-elt="this""#), "{out}");
     }
 }
