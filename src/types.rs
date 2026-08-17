@@ -28,8 +28,9 @@ pub enum TrafficKind {
 
 /// One day of GitHub traffic (views or clones). `timestamp` is the raw
 /// GitHub API value (`2026-08-01T00:00:00Z`); `upsert_traffic_days`
-/// truncates it to the date.
-#[derive(Debug, Clone)]
+/// truncates it to the date. Derives `Deserialize` for reuse by Task 5's
+/// http client (`TrafficSeries`), whose JSON payload nests these directly.
+#[derive(Debug, Clone, Deserialize)]
 pub struct TrafficDay {
     pub timestamp: String,
     pub count: i64,

@@ -1,6 +1,7 @@
 mod config;
 mod db;
 mod errors;
+mod gh_client;
 mod ratelimit;
 mod types;
 
