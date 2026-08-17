@@ -10,6 +10,7 @@ use crate::csrf::{CSRF_HEADER, CsrfToken};
 use crate::routes::assets;
 
 pub mod index;
+pub mod repo;
 pub mod settings;
 
 /// The document shell every page renders into.

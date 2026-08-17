@@ -170,6 +170,9 @@ pub enum PopularKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopularItem {
     pub name: String,
+    /// Page title, paths only — referrers have no title column, so it is always
+    /// `None` for [`PopularKind::Referrers`].
+    pub title: Option<String>,
     pub count: i64,
     pub uniques: i64,
 }

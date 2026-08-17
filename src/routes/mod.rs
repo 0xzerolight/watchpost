@@ -12,6 +12,7 @@ use crate::state::AppState;
 pub mod assets;
 pub mod html;
 pub mod index;
+pub mod repo;
 pub mod settings;
 
 /// The application router.
@@ -24,6 +25,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = Router::new()
         .route("/", get(index::index_page))
         .route("/health", get(async || "OK"))
+        .route("/repos/{id}", get(repo::repo_page))
         .route("/settings", get(settings::settings_page))
         .route("/settings/discover", get(settings::settings_discover))
         .route("/settings/repos", post(settings::settings_save))

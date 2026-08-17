@@ -527,6 +527,111 @@ pub fn dense_series(
     Ok(out)
 }
 
+/// One release asset's identity across days: `(release_tag, asset_name)`.
+type AssetKey = (String, String);
+
+/// Per-day total release downloads, dense over the trailing `days` window
+/// ending today — the `downloads_total` chart series.
+///
+/// `download_count` is a cumulative per-asset counter, so summing the rows that
+/// happen to exist on a day is meaningless: an asset with no row that day has
+/// not lost its downloads, it simply was not re-read. Every
+/// `(release_tag, asset_name)` pair is therefore carried forward independently,
+/// seeded from its newest row strictly before the window — the same rule
+/// [`dense_series`] applies to snapshot metrics — and the day's value is the sum
+/// over every pair observed at or before it.
+///
+/// A day where no asset has ever been observed is `None`, not zero: a repo with
+/// no releases yet must not plot a flat zero line. A pair first seen mid-window
+/// starts contributing on that day, which is a genuine step in the total rather
+/// than an artefact.
+///
+/// `days == 0` is an empty range, matching [`dense_series`].
+pub fn dense_downloads_total(
+    conn: &Connection,
+    repo_id: i64,
+    days: u32,
+) -> Result<Vec<(String, Option<i64>)>, DbError> {
+    use std::collections::HashMap;
+
+    if days == 0 {
+        return Ok(Vec::new());
+    }
+    let today = chrono::Utc::now().date_naive();
+    let start = today - chrono::Duration::days(i64::from(days) - 1);
+    let (start_str, end_str) = (start.to_string(), today.to_string());
+
+    // The pre-window seed: each pair's newest reading before the window opens.
+    // `ROW_NUMBER()` per pair rather than `MAX(date)` + join — the same
+    // latest-row-per-group shape `repo_overview` uses, and for the same reason
+    // (SQLite's bare-column extension only special-cases one aggregate).
+    let mut carried: HashMap<AssetKey, i64> = conn
+        .prepare(
+            "SELECT release_tag, asset_name, download_count FROM (
+                 SELECT release_tag, asset_name, download_count,
+                        ROW_NUMBER() OVER (PARTITION BY release_tag, asset_name
+                                           ORDER BY date DESC) AS rn
+                 FROM release_assets
+                 WHERE repo_id = ?1 AND date < ?2
+             ) WHERE rn = 1",
+        )?
+        .query_map(params![repo_id, start_str], |r| {
+            Ok((
+                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+                r.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    // In-window rows bucketed by date, so the calendar walk below is one pass
+    // with O(1) lookups rather than a query per day.
+    let mut stmt = conn.prepare(
+        "SELECT date, release_tag, asset_name, download_count FROM release_assets
+         WHERE repo_id = ?1 AND date >= ?2 AND date <= ?3",
+    )?;
+    let mut observed: HashMap<String, Vec<(AssetKey, i64)>> = HashMap::new();
+    let rows = stmt.query_map(params![repo_id, start_str, end_str], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (date, key, count) = row?;
+        observed.entry(date).or_default().push((key, count));
+    }
+
+    let mut out = Vec::with_capacity(days as usize);
+    for offset in 0..i64::from(days) {
+        let date = (start + chrono::Duration::days(offset)).to_string();
+        if let Some(rows) = observed.get(&date) {
+            for (key, count) in rows {
+                carried.insert(key.clone(), *count);
+            }
+        }
+        let total = (!carried.is_empty()).then(|| carried.values().sum());
+        out.push((date, total));
+    }
+    Ok(out)
+}
+
+/// The earliest day watchpost has any chartable observation for, or `None` for
+/// a repo that has never been synced. Backs the "All" period, which spans from
+/// here to today.
+pub fn first_observed_date(conn: &Connection, repo_id: i64) -> Result<Option<String>, DbError> {
+    let date = conn.query_row(
+        "SELECT MIN(d) FROM (
+             SELECT MIN(date) AS d FROM repo_stats WHERE repo_id = ?1
+             UNION ALL
+             SELECT MIN(date) FROM release_assets WHERE repo_id = ?1
+         )",
+        params![repo_id],
+        |r| r.get::<_, Option<String>>(0),
+    )?;
+    Ok(date)
+}
+
 pub fn asset_series(
     conn: &Connection,
     repo_id: i64,
@@ -559,9 +664,11 @@ pub fn popular_items(
     kind: PopularKind,
     days: u32,
 ) -> Result<Vec<PopularItem>, DbError> {
-    let (table, key) = match kind {
-        PopularKind::Referrers => ("repo_referrers", "referrer"),
-        PopularKind::Paths => ("repo_popular_paths", "path"),
+    // Referrers have no title column, so that table selects a literal NULL —
+    // the two kinds keep one row type and one mapping function.
+    let (table, key, title) = match kind {
+        PopularKind::Referrers => ("repo_referrers", "referrer", "NULL"),
+        PopularKind::Paths => ("repo_popular_paths", "path", "MAX(title)"),
     };
     let window_clause = if days == 0 {
         String::new()
@@ -570,6 +677,7 @@ pub fn popular_items(
     };
     let sql = format!(
         "SELECT {key} AS name,
+                {title} AS title,
                 SUM(count_delta) AS count,
                 MAX(uniques) AS uniques
          FROM {table}
@@ -581,8 +689,9 @@ pub fn popular_items(
     let map_row = |r: &rusqlite::Row| -> rusqlite::Result<PopularItem> {
         Ok(PopularItem {
             name: r.get(0)?,
-            count: r.get(1)?,
-            uniques: r.get(2)?,
+            title: r.get(1)?,
+            count: r.get(2)?,
+            uniques: r.get(3)?,
         })
     };
     let rows = if days == 0 {
@@ -1391,6 +1500,68 @@ mod tests {
         upsert_stats(&c, 2, &days_ago(3), &snap!(stars: Some(99))).unwrap();
         let rows = dense_series(&c, 1, Metric::Stars, 5).unwrap();
         assert!(rows.iter().all(|(_, v)| v.is_none()), "{rows:?}");
+    }
+
+    // ---- dense_downloads_total / first_observed_date -----------------------
+
+    fn seed_asset(conn: &Connection, repo_id: i64, date: &str, asset: &str, count: i64) {
+        upsert_release_assets(
+            conn,
+            repo_id,
+            date,
+            &[AssetSnapshot {
+                release_tag: "v1".into(),
+                asset_name: asset.into(),
+                download_count: count,
+            }],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn downloads_total_carries_each_asset_and_sums_per_day() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_asset(&c, 1, &days_ago(3), "a.bin", 10);
+        seed_asset(&c, 1, &days_ago(1), "b.bin", 5);
+        seed_asset(&c, 1, &days_ago(1), "a.bin", 12);
+        let rows = dense_downloads_total(&c, 1, 5).unwrap();
+        // -4d: nothing observed anywhere yet; -2d: a.bin's 10 still stands even
+        // with no row that day; -1d onwards: both assets.
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(10), Some(10), Some(17), Some(17)]
+        );
+    }
+
+    #[test]
+    fn downloads_total_ignores_other_repos_and_zero_windows() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_repo(&c, 2);
+        seed_asset(&c, 2, &days_ago(1), "a.bin", 99);
+        let rows = dense_downloads_total(&c, 1, 3).unwrap();
+        assert!(rows.iter().all(|(_, v)| v.is_none()), "{rows:?}");
+        assert!(dense_downloads_total(&c, 1, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn first_observed_date_spans_stats_and_assets() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        assert_eq!(first_observed_date(&c, 1).unwrap(), None);
+        upsert_stats(&c, 1, "2026-08-05", &snap!(stars: Some(1))).unwrap();
+        assert_eq!(
+            first_observed_date(&c, 1).unwrap(),
+            Some("2026-08-05".into())
+        );
+        // An older release row moves the start back: "all" must reach the
+        // earliest observation of any kind, not just of stats.
+        seed_asset(&c, 1, "2026-07-01", "a.bin", 3);
+        assert_eq!(
+            first_observed_date(&c, 1).unwrap(),
+            Some("2026-07-01".into())
+        );
     }
 
     #[test]
