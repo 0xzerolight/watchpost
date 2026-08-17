@@ -17,7 +17,10 @@
 //! them.
 //!
 //! Every mutation answers with the whole `#events-section` — see
-//! [`events_section`] for why a single row would not do.
+//! [`events_section`] for why a single row would not do — except a rejected
+//! update, which answers with its edit row re-rendered in place (see
+//! [`reject_update`]) so the correction is resubmitted as a PUT rather than
+//! landing in the add form and creating a duplicate.
 
 use std::sync::Arc;
 
@@ -103,19 +106,20 @@ pub async fn event_update(
             if !owned(conn, repo_id, event_id)? {
                 return Ok(None);
             }
-            let draft = match validate(repo_id, form) {
+            Ok(Some(match validate(repo_id, form) {
                 Ok(new) => {
                     queries::update_event(conn, event_id, &new)?;
-                    None
+                    Ok(section_data(conn, repo_id)?)
                 }
-                Err(draft) => Some(draft),
-            };
-            Ok(Some((draft, section_data(conn, repo_id)?)))
+                Err(draft) => Err(draft),
+            }))
         })
         .await?;
 
-    let (draft, data) = outcome.ok_or(AppError::NotFound)?;
-    Ok(respond(repo_id, &data, draft))
+    match outcome.ok_or(AppError::NotFound)? {
+        Ok(data) => Ok(respond(repo_id, &data, None)),
+        Err(draft) => Ok(reject_update(repo_id, event_id, &draft)),
+    }
 }
 
 /// DELETE /repos/{id}/events/{eid}
@@ -152,10 +156,8 @@ pub async fn event_edit_form(
     State(state): State<Arc<AppState>>,
     Path((repo_id, event_id)): Path<(i64, i64)>,
 ) -> Result<Markup, AppError> {
-    Ok(event_form_row(
-        repo_id,
-        &fetch(&state, repo_id, event_id).await?,
-    ))
+    let event = fetch(&state, repo_id, event_id).await?;
+    Ok(event_form_row(repo_id, event_id, &EventDraft::from(&event)))
 }
 
 // ---------------------------------------------------------------------------
@@ -190,11 +192,14 @@ async fn fetch(state: &AppState, repo_id: i64, event_id: i64) -> Result<Event, A
         .ok_or(AppError::NotFound)
 }
 
-/// A mutation's response.
+/// A mutation's response: the section, with the add form reopened when a
+/// create was rejected.
 ///
-/// 422 rather than 200 on a rejected submission: htmx swaps a 422 body in the
-/// normal way, so the reopened form with its messages lands where the section
-/// was, while the status still says the request did not take effect.
+/// 422 rather than 200 on a rejected submission. htmx's *default* config
+/// discards a 4xx body, so this contract only works because the shell overrides
+/// `htmx.config.responseHandling` to swap 422s — see `base` in `routes::html`.
+/// With that in place the reopened form with its messages lands where the
+/// section was, while the status still says the request did not take effect.
 fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>) -> Response {
     let markup = events_section(&EventsView {
         repo_id,
@@ -206,6 +211,30 @@ fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>) -> 
         Some(_) => (StatusCode::UNPROCESSABLE_ENTITY, markup).into_response(),
         None => markup.into_response(),
     }
+}
+
+/// A rejected update: the edit row re-rendered in place, holding what was
+/// typed plus a message under each refused field.
+///
+/// Routing this through the section instead (the create path) would put the
+/// edit's values into the *add* form — whose submit is an `hx-post` create —
+/// so a user who corrected the value and resubmitted would duplicate the event
+/// rather than update it.
+///
+/// The Save button's request-side target is `#events-section` (the success
+/// case reorders the table), so this response retargets itself: htmx applies
+/// `HX-Retarget`/`HX-Reswap` from any response it swaps, and the shell's
+/// `responseHandling` override is what makes it swap a 422 at all.
+fn reject_update(repo_id: i64, event_id: i64, draft: &EventDraft) -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        [
+            ("HX-Retarget", format!("#event-row-{event_id}")),
+            ("HX-Reswap", "outerHTML".to_owned()),
+        ],
+        event_form_row(repo_id, event_id, draft),
+    )
+        .into_response()
 }
 
 /// Turn a submission into a row to write, or into the draft that re-renders the

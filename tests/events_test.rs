@@ -5,11 +5,14 @@
 //! path is the only thing standing between a `javascript:` submission and a
 //! stored XSS — `javascript_url_rejected` is the test that says so.
 //!
-//! Everything else here is the CRUD contract htmx depends on: every mutation
-//! answers with the whole `#events-section` (so a date edit can reorder the
-//! table), a rejected submission comes back as 422 with the add form reopened
-//! and still holding what was typed, and an event can only ever be reached
-//! through the repo that owns it.
+//! Everything else here is the CRUD contract htmx depends on: every successful
+//! mutation answers with the whole `#events-section` (so a date edit can
+//! reorder the table), a rejected create comes back as 422 with the add form
+//! reopened and still holding what was typed, a rejected update comes back as
+//! 422 with its *edit row* re-rendered in place (retargeted via response
+//! headers, so a corrected resubmission stays a PUT instead of duplicating
+//! through the add form), and an event can only ever be reached through the
+//! repo that owns it.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -615,6 +618,93 @@ async fn update_with_bad_url_keeps_the_stored_one() {
         Some("https://example.com/ok"),
         "a rejected update must not overwrite: {events:?}"
     );
+}
+
+#[tokio::test]
+async fn rejected_update_bounces_the_edit_row_then_a_correction_updates_in_place() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    let id = h
+        .create(ID_A, &[("date", "2026-08-10"), ("title", "Original")])
+        .await;
+
+    let resp = h
+        .send(
+            "PUT",
+            &format!("/repos/1/events/{id}"),
+            &[
+                ("date", "2026-08-10"),
+                ("title", "Corrected title"),
+                ("notes", "kept notes"),
+                ("url", "not a url"),
+                ("kind", "release"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The Save button's request-side target is #events-section, so the
+    // rejection must retarget itself back onto the row it came from —
+    // otherwise the edit's values land in the ADD form, whose submit is an
+    // hx-post create, and the corrected resubmission duplicates the event.
+    assert_eq!(
+        resp.headers()
+            .get("hx-retarget")
+            .map(|v| v.to_str().unwrap()),
+        Some(format!("#event-row-{id}").as_str()),
+        "422 must retarget the edit row"
+    );
+    assert_eq!(
+        resp.headers().get("hx-reswap").map(|v| v.to_str().unwrap()),
+        Some("outerHTML"),
+        "422 must replace the row, not its innards"
+    );
+
+    let body = body_string(resp).await;
+    // An edit ROW, not the section — and certainly not the add form.
+    assert!(
+        body.starts_with(&format!(r#"<tr id="event-row-{id}""#)),
+        "422 body must be the edit row: {body}"
+    );
+    assert!(!body.contains("<section"), "body was {body}");
+    assert!(
+        !body.contains("hx-post"),
+        "no create path on a bounce: {body}"
+    );
+    // Everything typed survives the bounce, with the message alongside.
+    assert!(body.contains(r#"value="Corrected title""#), "{body}");
+    assert!(body.contains(r#"value="not a url""#), "body was {body}");
+    assert!(body.contains("kept notes"), "notes lost: {body}");
+    assert!(body.contains(r#"value="release""#), "kind lost: {body}");
+    assert!(body.contains(r#"role="alert""#), "no error message: {body}");
+    // Save in the bounced row still PUTs at this event.
+    assert!(
+        body.contains(&format!(r#"hx-put="/repos/1/events/{id}""#)),
+        "body was {body}"
+    );
+
+    // The user fixes the one bad field and presses Save again.
+    let resp = h
+        .send(
+            "PUT",
+            &format!("/repos/1/events/{id}"),
+            &[
+                ("date", "2026-08-10"),
+                ("title", "Corrected title"),
+                ("notes", "kept notes"),
+                ("url", "https://example.com/fixed"),
+                ("kind", "release"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // One event, updated — not an original plus a duplicate.
+    let events = h.events(ID_A).await;
+    assert_eq!(events.len(), 1, "duplicate created: {events:?}");
+    assert_eq!(events[0].id, id);
+    assert_eq!(events[0].title, "Corrected title");
+    assert_eq!(events[0].url.as_deref(), Some("https://example.com/fixed"));
 }
 
 #[tokio::test]

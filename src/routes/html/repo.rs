@@ -475,6 +475,21 @@ impl EventErrors {
     }
 }
 
+/// A stored event as edit-form values: what the GET edit route hands to
+/// [`event_form_row`], with nothing wrong yet.
+impl From<&Event> for EventDraft {
+    fn from(event: &Event) -> Self {
+        EventDraft {
+            date: event.date.clone(),
+            title: event.title.clone(),
+            notes: event.notes.clone(),
+            url: event.url.clone().unwrap_or_default(),
+            kind: event.kind.clone().unwrap_or_default(),
+            errors: EventErrors::default(),
+        }
+    }
+}
+
 /// Everything one render of `#events-section` needs.
 pub struct EventsView<'a> {
     pub repo_id: i64,
@@ -485,7 +500,9 @@ pub struct EventsView<'a> {
     pub draft: Option<&'a EventDraft>,
 }
 
-/// The whole timeline, and the only fragment a mutation ever answers with.
+/// The whole timeline: what every successful mutation (and a rejected create)
+/// answers with. The one exception is a rejected update, which re-renders its
+/// edit row in place instead — see `reject_update` in `routes::events`.
 ///
 /// Every mutation re-renders all of it rather than the row it touched, because
 /// a row is not independent of the rest: an edited date reorders the table, a
@@ -670,21 +687,33 @@ pub fn event_row(repo_id: i64, event: &Event) -> Markup {
 /// serialization the way the add form does — `hx-include="closest tr"` collects
 /// the named inputs in this row instead. Save swaps the whole section (an
 /// edited date reorders the table); Cancel swaps just this row back.
-pub fn event_form_row(repo_id: i64, event: &Event) -> Markup {
-    let base = format!("/repos/{repo_id}/events/{}", event.id);
+///
+/// The values come in as an [`EventDraft`] rather than an [`Event`] because
+/// this row is also the body of a rejected update: the handler re-renders it
+/// with the submitted values and their messages (see `reject_update` in
+/// `routes::events`), and a rejected submission has no `Event` to point at —
+/// its whole problem is that it never became one.
+pub fn event_form_row(repo_id: i64, event_id: i64, values: &EventDraft) -> Markup {
+    let base = format!("/repos/{repo_id}/events/{event_id}");
+    let errors = &values.errors;
     html! {
-        tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()] {
-            td { input type="date" name="date" value=(event.date) required; }
+        tr id=(format!("event-row-{event_id}"))
+            data-kind=[(!values.kind.is_empty()).then_some(values.kind.as_str())] {
             td {
-                input type="text" name="kind" list="kind-list"
-                    value=(event.kind.as_deref().unwrap_or_default());
+                input type="date" name="date" value=(values.date) required;
+                (row_error(errors.date.as_deref()))
             }
             td {
-                input type="text" name="title" value=(event.title) required;
-                input type="url" name="url" placeholder="https://…"
-                    value=(event.url.as_deref().unwrap_or_default());
+                input type="text" name="kind" list="kind-list" value=(values.kind);
+                (row_error(errors.kind.as_deref()))
             }
-            td { textarea name="notes" rows="3" { (event.notes) } }
+            td {
+                input type="text" name="title" value=(values.title) required;
+                (row_error(errors.title.as_deref()))
+                input type="url" name="url" placeholder="https://…" value=(values.url);
+                (row_error(errors.url.as_deref()))
+            }
+            td { textarea name="notes" rows="3" { (values.notes) } }
             td {
                 button type="button" class="wp-action"
                     hx-put=(base)
@@ -696,6 +725,16 @@ pub fn event_form_row(repo_id: i64, event: &Event) -> Markup {
                     hx-target="closest tr"
                     hx-swap="outerHTML" { "Cancel" }
             }
+        }
+    }
+}
+
+/// A field's rejection message inside an edit row, where there is no `<label>`
+/// to hang [`field`]'s layout on.
+fn row_error(error: Option<&str>) -> Markup {
+    html! {
+        @if let Some(message) = error {
+            small class="wp-danger wp-small" role="alert" { (message) }
         }
     }
 }
@@ -964,7 +1003,7 @@ mod tests {
 
         // The edit row keeps the id and kind attributes, so the marker code
         // sees the same contract mid-edit.
-        let form = event_form_row(1, &event).into_string();
+        let form = event_form_row(1, event.id, &EventDraft::from(&event)).into_string();
         assert!(
             form.starts_with(r#"<tr id="event-row-7" data-kind="release""#),
             "form was {form}"
@@ -973,5 +1012,41 @@ mod tests {
             form.contains(r#"hx-include="closest tr""#),
             "form was {form}"
         );
+        // A clean edit row carries no leftover messages.
+        assert!(!form.contains(r#"role="alert""#), "form was {form}");
+    }
+
+    #[test]
+    fn a_rejected_edit_row_shows_messages_and_keeps_what_was_typed() {
+        let draft = EventDraft {
+            date: "nope".into(),
+            title: "Kept title".into(),
+            notes: "kept notes".into(),
+            url: "javascript:alert(1)".into(),
+            kind: "release".into(),
+            errors: EventErrors {
+                date: Some("bad date".into()),
+                url: Some("bad url".into()),
+                ..EventErrors::default()
+            },
+        };
+        let out = event_form_row(1, 7, &draft).into_string();
+
+        // Still the same addressable row, so the swap replaces it in place.
+        assert!(out.starts_with(r#"<tr id="event-row-7""#), "out was {out}");
+        assert!(out.contains(r#"value="Kept title""#), "out was {out}");
+        assert!(out.contains("kept notes"), "out was {out}");
+        // The bad values come back as typed — inert attribute text, never an
+        // href — with one message per failed field and none for the rest.
+        assert!(out.contains(r#"value="javascript:alert(1)""#), "{out}");
+        assert!(!out.contains("href="), "out was {out}");
+        assert_eq!(
+            out.matches(r#"class="wp-danger wp-small" role="alert""#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        assert!(out.contains("bad date"), "out was {out}");
+        assert!(out.contains("bad url"), "out was {out}");
     }
 }

@@ -221,6 +221,20 @@ async fn index_renders_the_base_layout() {
 
     assert!(body.contains("htmx.config.historyCacheSize = 0"), "{body}");
 
+    // Pinned byte-for-byte: htmx's default responseHandling never swaps a 4xx,
+    // so without this override every 422 validation response is silently
+    // discarded — the user presses Save and nothing happens. Only a browser
+    // would notice it missing, hence a test that reads the shell. The 422 rule
+    // must precede the `[45]..` catch-all: htmx takes the first match.
+    assert!(
+        body.contains(concat!(
+            r#"htmx.config.responseHandling = [{code:"204",swap:false},"#,
+            r#"{code:"[23]..",swap:true},{code:"422",swap:true,error:true},"#,
+            r#"{code:"[45]..",swap:false,error:true}];"#
+        )),
+        "422 swap config missing from the shell: {body}"
+    );
+
     for href in [
         "/assets/pico-2.0.6.min.css",
         "/assets/htmx-2.0.4.min.js",

@@ -13,6 +13,12 @@ pub mod index;
 pub mod repo;
 pub mod settings;
 
+/// The `htmx.config.responseHandling` override the shell inlines. Kept as a
+/// named constant so a test can pin the exact string: nothing but a browser
+/// would otherwise notice this config going missing, and without it every 422
+/// validation response is silently dropped instead of swapped.
+const RESPONSE_HANDLING_JS: &str = r#"htmx.config.responseHandling = [{code:"204",swap:false},{code:"[23]..",swap:true},{code:"422",swap:true,error:true},{code:"[45]..",swap:false,error:true}];"#;
+
 /// The document shell every page renders into.
 ///
 /// Two details are load-bearing:
@@ -47,6 +53,13 @@ pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
                 // instance behind them — dead charts on every back button.
                 // Disabling the cache costs a re-request and keeps pages live.
                 script { "htmx.config.historyCacheSize = 0;" }
+                // htmx 2's default responseHandling never swaps a 4xx, so the
+                // 422 bodies the event forms answer with would be discarded —
+                // the user would press Save and watch nothing happen. This
+                // override keeps the defaults and adds one rule that swaps 422
+                // (still flagged as an error). Rules match first-wins, so the
+                // 422 entry MUST sit before the `[45]..` catch-all.
+                script { (PreEscaped(RESPONSE_HANDLING_JS)) }
             }
             body hx-headers=(hx_headers) {
                 nav class="container" {
