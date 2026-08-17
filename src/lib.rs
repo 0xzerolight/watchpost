@@ -7,6 +7,7 @@ pub mod collector;
 pub mod config;
 pub mod csrf;
 pub mod db;
+pub mod doctor;
 pub mod errors;
 pub mod gh_client;
 pub mod ratelimit;

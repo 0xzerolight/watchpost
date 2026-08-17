@@ -1,0 +1,12 @@
+# Keep the build context small: the image builds from source inside the
+# builder stage and needs nothing else.
+target/
+data/
+.git/
+.github/
+.claude/
+.superpowers/
+docs/
+tests/
+.env
+*.md

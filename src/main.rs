@@ -1,3 +1,4 @@
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use tokio_cron_scheduler::{Job, JobScheduler};
@@ -7,13 +8,14 @@ use tracing_subscriber::util::SubscriberInitExt;
 use watchpost::collector::try_run_cycle;
 use watchpost::config::{Config, DEFAULT_CRON};
 use watchpost::db::Db;
+use watchpost::doctor::run_doctor;
 use watchpost::gh_client::GhClient;
 use watchpost::ratelimit::RateGate;
 use watchpost::routes::router;
 use watchpost::state::{AppState, SyncStatus};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     dotenvy::dotenv().ok();
 
     let log_level = std::env::var("WATCHPOST_LOG").unwrap_or_else(|_| "info".to_string());
@@ -30,6 +32,13 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // One flag, checked before anything is opened or bound: `--doctor` is a
+    // diagnostic run that must work on an install whose server path is the
+    // thing that is broken. A single flag does not earn a clap dependency.
+    if std::env::args().skip(1).any(|a| a == "--doctor") {
+        return run_doctor(&config).await;
+    }
+
     tracing::info!(config = %config.redacted_summary(), "starting watchpost");
 
     let db = match Db::open(&config.db_path) {
@@ -90,6 +99,8 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal(scheduler))
         .await
         .expect("server error");
+
+    ExitCode::SUCCESS
 }
 
 /// Build the cron scheduler and register the collection job.

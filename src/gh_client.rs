@@ -80,6 +80,28 @@ pub struct GhStar {
 #[derive(Debug, Deserialize)]
 struct PullStub {}
 
+/// One bucket of `GET /rate_limit`. `reset` is a unix timestamp in seconds.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitInfo {
+    pub limit: i64,
+    pub remaining: i64,
+    pub reset: i64,
+}
+
+/// `GET /rate_limit` returns every bucket under `resources`; the REST calls
+/// this app makes all draw on `core`. (The top-level `rate` key mirrors
+/// `resources.core` and is kept only for backwards compatibility, so it is
+/// not read here.)
+#[derive(Debug, Deserialize)]
+struct RateLimitResponse {
+    resources: RateLimitResources,
+}
+
+#[derive(Debug, Deserialize)]
+struct RateLimitResources {
+    core: RateLimitInfo,
+}
+
 pub struct GhClient {
     client: Client,
     base_url: Url,
@@ -111,6 +133,15 @@ impl GhClient {
             .map_err(GhError::Network)?;
 
         Ok(Self { client, base_url })
+    }
+
+    /// Token reachability + budget check for `--doctor`. Not part of the
+    /// collector flow: `/rate_limit` itself does not consume quota, and the
+    /// collector already learns the budget from response headers.
+    pub async fn rate_limit(&self) -> Result<RateLimitInfo, GhError> {
+        let url = self.join("rate_limit")?;
+        let resp: RateLimitResponse = self.get_json(&url, None).await?;
+        Ok(resp.resources.core)
     }
 
     pub async fn user_repos(&self) -> Result<Vec<GhRepo>, GhError> {
