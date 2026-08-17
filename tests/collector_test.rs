@@ -13,7 +13,7 @@ use url::Url;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use watchpost::collector::{backfill_stars_with_budget, run_cycle};
+use watchpost::collector::{CycleReport, backfill_stars_with_budget, run_cycle, try_run_cycle};
 use watchpost::config::Config;
 use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
@@ -738,4 +738,44 @@ async fn backfill_422_cap_marks_synced() {
     // Second pass must not re-attempt it at all.
     backfill_stars_with_budget(&state, 100).await.unwrap();
     assert_eq!(repo_field::<i64>(&state, ID_A, "stars_synced").await, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Overlap guard
+// ---------------------------------------------------------------------------
+
+/// A tick that lands while a cycle is running must be dropped, not queued:
+/// `try_run_cycle` returns `None` immediately and never touches the API.
+#[tokio::test]
+async fn overlapping_cycles_skip() {
+    let server = MockServer::start().await;
+    // Every endpoint is a hard failure if reached — the skipped call must not
+    // issue a single request.
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let state = state_for(&server);
+    let held = state.sync_guard.clone().lock_owned().await;
+
+    let skipped = try_run_cycle(state.clone()).await;
+    assert!(skipped.is_none(), "a tick during a cycle must be skipped");
+
+    drop(held);
+    server.verify().await;
+}
+
+/// With the guard free the same entry point actually runs and reports.
+#[tokio::test]
+async fn try_run_cycle_runs_when_guard_free() {
+    let server = MockServer::start().await;
+    let state = state_for(&server);
+
+    let report = try_run_cycle(state.clone()).await;
+
+    assert_eq!(report, Some(CycleReport::default()));
+    // The guard is released again, so the next tick is not skipped.
+    assert!(state.sync_guard.try_lock().is_ok());
 }

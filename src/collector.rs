@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::db::queries;
 use crate::errors::{AppError, GhError};
@@ -40,12 +40,26 @@ pub struct CycleReport {
     pub aborted: Option<String>,
 }
 
+/// Run a cycle unless one is already in flight, in which case this returns
+/// `None` at once. Every caller — the startup run, the cron tick, the manual
+/// trigger — goes through here, so two cycles never overlap *and* a tick that
+/// lands mid-cycle is dropped rather than queued behind it (queueing would
+/// just re-run the same collection minutes late).
+pub async fn try_run_cycle(state: Arc<AppState>) -> Option<CycleReport> {
+    let Ok(_cycle) = state.sync_guard.try_lock() else {
+        debug!("a cycle is already running; skipping this one");
+        return None;
+    };
+    Some(run_cycle(Arc::clone(&state)).await)
+}
+
 /// Run one full collection cycle. Never returns `Err`: every failure is
 /// either recorded against a repo or reported in [`CycleReport::aborted`],
 /// so a scheduler tick can't be killed by one bad response.
+///
+/// Unguarded — [`try_run_cycle`] owns [`AppState::sync_guard`]. Call this
+/// directly only where cycles are already known to be serialized (tests).
 pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
-    // Serializes a manual trigger against the cron tick.
-    let _cycle = state.sync_guard.lock().await;
     set_status(
         &state,
         SyncStatus::Running {

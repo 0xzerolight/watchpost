@@ -5,7 +5,8 @@ use url::Url;
 
 use crate::errors::ConfigError;
 
-const DEFAULT_CRON: &str = "0 5 * * * *";
+/// Hourly at :05. Six fields — `tokio-cron-scheduler` requires seconds.
+pub const DEFAULT_CRON: &str = "0 5 * * * *";
 const DEFAULT_DB_PATH: &str = "./data/watchpost.db";
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8080;
