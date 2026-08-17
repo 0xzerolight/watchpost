@@ -1,0 +1,43 @@
+# Data and local state
+data/*.db*
+data/backups/
+*.bak
+
+# Environment variables (may contain API keys)
+.env
+.env.*
+!.env.example
+
+# Rust
+/target/
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude / AI tooling
+.claude/
+.claude-runner/
+
+# Build / lint caches
+.llvm-cov/
+*.profraw
+
+# extra
+personal-docs/
+.gstack/
+
+# Private development docs (public docs live in repo root)
+docs/
+.superpowers
+
+# Cargo.lock is deliberately NOT ignored: this is a binary crate, so the lock is
+# committed for reproducible builds (same reason topic_watch commits its pinned
+# requirements*.txt).
