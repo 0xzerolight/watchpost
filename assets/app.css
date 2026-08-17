@@ -535,6 +535,23 @@ tr.wp-edit-row [name="kind"] {
   flex: 1 1 auto;
 }
 
+/*
+ * The optional action ("Reload"). Same Pico problem as the dismiss button, plus
+ * its own `[hidden]` rule: Pico's `width: 100%` makes an author rule out of a
+ * plain <button>, and an author rule outranks the UA's `[hidden]` no matter how
+ * specific it is — without this the slot would show on every toast, empty.
+ */
+.wp-toast-action {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: var(--wp-space-1) var(--wp-space-3);
+}
+
+.wp-toast-action[hidden] {
+  display: none;
+}
+
 /* Pico would render the dismiss button as a full-width bar under the message. */
 .wp-toast-close {
   width: auto;

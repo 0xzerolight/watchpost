@@ -117,6 +117,11 @@ async fn app_js_defines_the_watchpost_namespace() {
         // The period selector carries no inline handler, so this delegated
         // listener is the only thing that makes it do anything.
         "data-period-select",
+        // htmx never swaps a 4xx/5xx body, so these two listeners are the
+        // only thing standing between a failed request and a dead-looking
+        // button.
+        "htmx:responseError",
+        "htmx:sendError",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

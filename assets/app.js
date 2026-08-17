@@ -1,6 +1,6 @@
 /*
  * Client behaviour for watchpost: chart rendering, event-marker overlays, kind
- * filters, sparklines and theme following.
+ * filters, sparklines, theme following and the shared error toast.
  *
  * There is no build step. This file is served as written, so it stays plain
  * ES2017+ with no imports — Chart.js is already on the page as a global by the
@@ -1038,6 +1038,180 @@ htmx.config.includeIndicatorStyles = false;
   }
 
   // -------------------------------------------------------------------------
+  // Toast
+  // -------------------------------------------------------------------------
+
+  /*
+   * The shell ships one hidden toast (`#wp-toast`) that this section fills in.
+   * It is the only report a failed request gets: the shell's
+   * `responseHandling` never swaps a 4xx/5xx, so the server's error page is
+   * parsed and thrown away, and without this a 403 from an expired CSRF cookie
+   * is indistinguishable from a dead button.
+   *
+   * Text is written with `textContent`, never `innerHTML` — same rule as the
+   * chart tooltip. The strings here are literals, and keeping the rule absolute
+   * means a later caller cannot turn a server-supplied message into markup.
+   */
+  var TOAST_MS = 8000;
+
+  /*
+   * One timer handle for the whole page: a new toast replaces the message, so
+   * it has to replace the countdown too or the second message inherits what was
+   * left of the first one's.
+   */
+  var toastTimer = null;
+
+  /*
+   * What the action button runs, cleared on hide so the button can never fire a
+   * closure belonging to a message that is no longer on screen.
+   */
+  var toastAction = null;
+
+  var RELOAD = {
+    label: "Reload",
+    fn: function () {
+      window.location.reload();
+    },
+  };
+
+  function showToast(text, opts) {
+    var toast = document.getElementById("wp-toast");
+    if (!toast) {
+      return;
+    }
+    var options = opts || {};
+    var textEl = toast.querySelector(".wp-toast-text");
+    var actionEl = toast.querySelector(".wp-toast-action");
+    if (textEl) {
+      textEl.textContent = text;
+    }
+    toastAction = options.action ? options.action.fn : null;
+    if (actionEl) {
+      actionEl.textContent = options.action ? options.action.label : "";
+      actionEl.hidden = !options.action;
+    }
+    toast.hidden = false;
+    if (toastTimer !== null) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    // A sticky message reports something the page cannot recover from on its
+    // own, so it waits for the reader instead of timing out unread.
+    if (!options.sticky) {
+      toastTimer = setTimeout(hideToast, TOAST_MS);
+    }
+  }
+
+  function hideToast() {
+    if (toastTimer !== null) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    toastAction = null;
+    var toast = document.getElementById("wp-toast");
+    if (toast) {
+      toast.hidden = true;
+    }
+  }
+
+  /*
+   * What the status means to the person who pressed the button, not what it
+   * means to HTTP. A 403 is the CSRF cookie having expired: no retry fixes it
+   * and a reload does, so that message sticks and carries the reload. A 404 is
+   * a row that is gone from the database but still on screen, which is the same
+   * cure without the urgency.
+   */
+  function messageForStatus(status) {
+    if (status === 403) {
+      return {
+        text: "Your session expired. Reload the page and try again.",
+        sticky: true,
+        action: RELOAD,
+      };
+    }
+    if (status === 404) {
+      return { text: "That item no longer exists.", action: RELOAD };
+    }
+    if (status >= 500) {
+      return { text: "Server error — your change was not saved." };
+    }
+    return { text: "Request failed (" + status + ")." };
+  }
+
+  document.addEventListener("htmx:responseError", function (evt) {
+    var xhr = evt.detail ? evt.detail.xhr : null;
+    var status = xhr ? xhr.status : 0;
+    // 422 is the one error status the shell swaps: the response body is the
+    // form with its field errors, which says more than a corner toast could.
+    if (status === 422) {
+      return;
+    }
+    var message = messageForStatus(status);
+    showToast(message.text, message);
+  });
+
+  // No response at all — offline, DNS, a server that is not up yet. Sticky
+  // because there is no follow-up event to correct it once connectivity is
+  // back; the next request that succeeds clears it.
+  document.addEventListener("htmx:sendError", function () {
+    showToast("Network error — the server could not be reached.", {
+      sticky: true,
+    });
+  });
+
+  document.addEventListener("htmx:timeout", function () {
+    showToast("The request timed out. Try again.");
+  });
+
+  /*
+   * A request that worked answers whatever the last one failed at, and a stale
+   * error next to fresh content is worse than no error. htmx fires this after
+   * `htmx:responseError` and only sets `successful` on a non-error response, so
+   * a failure cannot clear the toast it just raised.
+   */
+  document.addEventListener("htmx:afterRequest", function (evt) {
+    if (evt.detail && evt.detail.successful) {
+      hideToast();
+    }
+  });
+
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    if (target.closest(".wp-toast-close")) {
+      hideToast();
+      return;
+    }
+    if (target.closest(".wp-toast-action")) {
+      // Read the handler before hiding: `hideToast` clears it.
+      var run = toastAction;
+      hideToast();
+      if (run) {
+        run();
+      }
+    }
+  });
+
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Escape") {
+      return;
+    }
+    var toast = document.getElementById("wp-toast");
+    if (!toast || toast.hidden) {
+      return;
+    }
+    // An open modal owns Escape. Dismissing the toast behind it would swallow
+    // the keypress the user meant for the dialog.
+    var dialog = document.getElementById("wp-confirm");
+    if (dialog && dialog.open) {
+      return;
+    }
+    hideToast();
+  });
+
+  // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
 
@@ -1116,5 +1290,7 @@ htmx.config.includeIndicatorStyles = false;
     toggleKind: toggleKind,
     initSparklines: initSparklines,
     applyTheme: applyTheme,
+    showToast: showToast,
+    hideToast: hideToast,
   };
 })();

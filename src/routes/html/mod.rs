@@ -110,10 +110,15 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
 /// queued behind whatever else is speaking and arrives after the toast has
 /// already faded. The element ships `hidden`; the client unhides it, so a page
 /// with no message renders nothing.
+///
+/// The empty action button is a slot: most messages have nothing to offer, but
+/// an expired session has to be able to say "Reload". Shipping it hidden in the
+/// markup keeps the client filling in text rather than building elements.
 fn toast_region() -> Markup {
     html! {
         div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden {
             span class="wp-toast-text" {}
+            button class="wp-toast-action" hidden {}
             button class="wp-toast-close" aria-label="Dismiss" { "×" }
         }
     }
@@ -397,6 +402,7 @@ mod tests {
             concat!(
                 r#"<div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden>"#,
                 r#"<span class="wp-toast-text"></span>"#,
+                r#"<button class="wp-toast-action" hidden></button>"#,
                 r#"<button class="wp-toast-close" aria-label="Dismiss">×</button>"#,
                 "</div>"
             )
