@@ -8,7 +8,7 @@
 
 use maud::{Markup, html};
 
-use crate::routes::html::{json_script_class, relative_time};
+use crate::routes::html::{empty_state, error_glyph, json_script_class, page_header, timestamp};
 use crate::types::RepoOverview;
 
 /// How many days of stars a card's sparkline shows. The array embedded per
@@ -21,16 +21,16 @@ pub type Card = (RepoOverview, Vec<Option<i64>>);
 /// The dashboard body, for wrapping in [`super::base`].
 pub fn index_body(cards: &[Card]) -> Markup {
     html! {
-        h1 { "Repos" }
+        (page_header(
+            "Repos",
+            Some(html! { "Tracked repositories and their latest metrics." }),
+            None,
+        ))
         @if cards.is_empty() {
-            article {
-                p { "No repos tracked yet." }
-                p class="wp-muted" {
-                    "Pick the repos to watch in "
-                    a href="/settings" { "settings" }
-                    " — stats start collecting on the next sync."
-                }
-            }
+            (empty_state(
+                "No repos tracked yet — stats start collecting on the next sync.",
+                Some(("/settings", "Pick repos to watch")),
+            ))
         } @else {
             div class="wp-cards" {
                 @for (repo, spark) in cards {
@@ -49,15 +49,11 @@ pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>]) -> Markup {
     html! {
         article class="wp-card" {
             header class="wp-row" {
-                strong class="wp-grow" {
+                h2 class="wp-card-title wp-grow" {
                     a href=(format!("/repos/{}", repo.repo_id)) { (repo.name) }
                 }
                 @if let Some(error) = &repo.last_error {
-                    // Pico renders `data-tooltip` on hover/focus; `tabindex`
-                    // makes the message reachable without a pointer, and the
-                    // label keeps the bare glyph meaningful to a screenreader.
-                    span class="wp-danger" data-tooltip=(error) tabindex="0"
-                        role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
+                    (error_glyph(error))
                 }
             }
             div class="wp-spark" {
@@ -71,7 +67,7 @@ pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>]) -> Markup {
             }
             footer class="wp-muted wp-small" {
                 (repo.event_count) " " (plural(repo.event_count, "event", "events"))
-                " · synced " (relative_time(repo.last_synced_at.as_deref()))
+                " · synced " (timestamp(repo.last_synced_at.as_deref()))
             }
         }
     }
@@ -119,6 +115,65 @@ mod tests {
     }
 
     #[test]
+    fn card_title_is_a_heading_not_a_bold_paragraph() {
+        // A grid of cards is a list of sections; each needs a heading for the
+        // document outline, and `.wp-grow` belongs on whatever the row lays out.
+        let repo = RepoOverview {
+            repo_id: 7,
+            name: "octo/x".into(),
+            ..RepoOverview::default()
+        };
+        let out = repo_card(&repo, &[]).into_string();
+        assert!(
+            out.contains(r#"<h2 class="wp-card-title wp-grow"><a href="/repos/7">octo/x</a></h2>"#),
+            "out was {out}"
+        );
+        assert!(!out.contains("<strong class="), "out was {out}");
+    }
+
+    #[test]
+    fn card_reuses_the_shared_error_glyph() {
+        // The glyph's tooltip/label wiring lives in one place; a card that
+        // hand-rolls it drifts out of step with the rest of the app.
+        let repo = RepoOverview {
+            last_error: Some("github 502".into()),
+            ..RepoOverview::default()
+        };
+        let out = repo_card(&repo, &[]).into_string();
+        assert!(
+            out.contains(&error_glyph("github 502").into_string()),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn card_footer_marks_up_the_sync_time() {
+        let repo = RepoOverview {
+            last_synced_at: Some("2026-08-17T09:05:00Z".into()),
+            ..RepoOverview::default()
+        };
+        let out = repo_card(&repo, &[]).into_string();
+        // Coarse text to read, exact instant still in the markup.
+        assert!(
+            out.contains(r#"<time datetime="2026-08-17T09:05:00Z""#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn dashboard_leads_with_the_shared_page_header() {
+        let out = index_body(&[]).into_string();
+        assert!(
+            out.starts_with(r#"<header class="wp-page-header"><hgroup><h1>Repos</h1>"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains("<p>Tracked repositories and their latest metrics.</p>"),
+            "out was {out}"
+        );
+    }
+
+    #[test]
     fn card_shows_a_dash_for_unobserved_counters() {
         let repo = RepoOverview {
             repo_id: 1,
@@ -148,8 +203,14 @@ mod tests {
     #[test]
     fn empty_state_points_at_settings_and_draws_nothing() {
         let out = index_body(&[]).into_string();
-        assert!(out.contains("No repos tracked yet"), "out was {out}");
-        assert!(out.contains(r#"<a href="/settings">"#), "out was {out}");
+        assert!(
+            out.contains("<p>No repos tracked yet — stats start collecting on the next sync.</p>"),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+            "out was {out}"
+        );
         assert!(!out.contains("canvas"), "out was {out}");
     }
 }

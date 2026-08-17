@@ -98,6 +98,18 @@
 }
 
 /*
+ * A card's title is an `h2` for the document outline, not for Pico's heading
+ * scale — left at its default the repo name would be set larger than the page's
+ * own `h1` block and dwarf the stats it labels. The row owns the spacing, so the
+ * heading keeps none of its own.
+ */
+.wp-card-title {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+/*
  * The sparkline canvas needs a height from its parent for the same reason
  * `.chart-box` does — Chart.js measures the container, not the canvas.
  */
