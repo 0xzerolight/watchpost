@@ -41,3 +41,7 @@ docs/
 # Cargo.lock is deliberately NOT ignored: this is a binary crate, so the lock is
 # committed for reproducible builds (same reason topic_watch commits its pinned
 # requirements*.txt).
+
+# Local compose overrides (machine-specific ports etc.)
+docker-compose.override.yml
+compose.override.yml
