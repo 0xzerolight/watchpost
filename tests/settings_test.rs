@@ -300,7 +300,7 @@ async fn settings_page_returns_only_the_fragment_for_an_htmx_target() {
 }
 
 // ---------------------------------------------------------------------------
-// GET /settings/discover
+// POST /settings/discover
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -314,8 +314,9 @@ async fn discover_upserts_from_github() {
         )
         .mount(&h.server)
         .await;
+    let token = h.csrf_token().await;
 
-    let resp = h.get_hx("/settings/discover", "repos-picker").await;
+    let resp = h.post_form("/settings/discover", "", &token).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
@@ -336,14 +337,114 @@ async fn discover_error_shows_notice_not_500() {
         .respond_with(ResponseTemplate::new(500))
         .mount(&h.server)
         .await;
+    let token = h.csrf_token().await;
 
-    let resp = h.get_hx("/settings/discover", "repos-picker").await;
+    let resp = h
+        .post_form("/settings/discover", &format!("tracked={ID_A}"), &token)
+        .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
     assert!(body.contains("Could not load repos from GitHub"), "{body}");
     // The known list still renders, so the picker is not wiped by a failure.
     assert!(body.contains(REPO_A), "body was {body}");
+}
+
+/// Discovery mutates the db and spends a GitHub request, so it has to be a
+/// POST that the CSRF middleware actually guards. Without the header the
+/// request must die in middleware — before any GitHub call.
+#[tokio::test]
+async fn discover_without_csrf_is_403_and_never_calls_github() {
+    let h = harness().await;
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([repo_json(ID_A, REPO_A)])))
+        .mount(&h.server)
+        .await;
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/settings/discover")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(""))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(h.hits("/user/repos").await, 0);
+    assert!(h.known_names().await.is_empty());
+}
+
+/// A closed rate gate means every request would fail anyway; the button must
+/// say so instead of burning the one call that proves it.
+#[tokio::test]
+async fn discover_with_a_closed_gate_does_not_call_github() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([repo_json(ID_B, REPO_B)])))
+        .mount(&h.server)
+        .await;
+    h.state
+        .gate
+        .block_until(chrono::Utc::now() + chrono::Duration::hours(1));
+    let token = h.csrf_token().await;
+
+    let resp = h
+        .post_form("/settings/discover", &format!("tracked={ID_A}"), &token)
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+
+    assert!(body.contains("Rate limited until"), "body was {body}");
+    assert!(body.contains("not contacting GitHub"), "body was {body}");
+    // The picker still renders what is known, and nothing was requested.
+    assert!(body.contains(REPO_A), "body was {body}");
+    assert_eq!(h.hits("/user/repos").await, 0);
+}
+
+/// A refresh re-renders the form, so it must mirror the boxes as submitted —
+/// otherwise ticking three repos and hitting Refresh silently discards them.
+/// It must equally not *save* them: only Save writes.
+#[tokio::test]
+async fn discover_keeps_unsaved_selections_without_saving_them() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, false).await;
+    h.seed(ID_B, REPO_B, true).await;
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([repo_json(ID_A, REPO_A), repo_json(ID_B, REPO_B)])),
+        )
+        .mount(&h.server)
+        .await;
+    let token = h.csrf_token().await;
+
+    // The form as the browser has it: A newly ticked, B newly unticked.
+    let body = body_string(
+        h.post_form("/settings/discover", &format!("tracked={ID_A}"), &token)
+            .await,
+    )
+    .await;
+
+    assert!(
+        body.contains(r#"name="tracked" value="1" checked"#),
+        "the unsaved tick must survive the refresh; body was {body}"
+    );
+    assert!(
+        !body.contains(r#"value="2" checked"#),
+        "the unsaved untick must survive the refresh; body was {body}"
+    );
+    assert!(body.contains("selections kept"), "body was {body}");
+    // Refresh is not Save: the db still holds the saved state.
+    assert_eq!(h.tracked_ids().await, HashSet::from([ID_B]));
 }
 
 // ---------------------------------------------------------------------------

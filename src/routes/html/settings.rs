@@ -5,6 +5,7 @@
 
 use maud::{Markup, html};
 
+use super::ui::{Notice, notice};
 use crate::state::SyncStatus;
 use crate::types::RepoRow;
 
@@ -12,11 +13,16 @@ use crate::types::RepoRow;
 /// a save posts `tracked=<id>&tracked=<id>…` — the unchecked ones are simply
 /// absent, which is why the handler diffs against the db rather than trusting
 /// the form to describe every repo.
-pub fn repos_picker(repos: &[RepoRow], notice: Option<&str>) -> Markup {
+///
+/// Refresh posts the same form as Save (`hx-include`), because it re-renders
+/// the picker and would otherwise throw away boxes the user has ticked but not
+/// saved. `repo.tracked` is therefore what the caller wants *rendered*, which
+/// on a refresh is the submitted form rather than the db.
+pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup {
     html! {
         form id="repos-picker" {
-            @if let Some(text) = notice {
-                p role="status" { (text) }
+            @if let Some((kind, text)) = msg {
+                (notice(kind, html! { (text) }))
             }
             div class="wp-row" {
                 button type="button"
@@ -24,7 +30,8 @@ pub fn repos_picker(repos: &[RepoRow], notice: Option<&str>) -> Markup {
                     hx-target="#repos-picker"
                     hx-swap="outerHTML" { "Save" }
                 button type="button" class="secondary"
-                    hx-get="/settings/discover"
+                    hx-post="/settings/discover"
+                    hx-include="closest form"
                     hx-target="#repos-picker"
                     hx-swap="outerHTML"
                     hx-indicator="#discover-spinner" { "Refresh from GitHub" }

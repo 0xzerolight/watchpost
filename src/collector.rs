@@ -507,7 +507,7 @@ async fn record_err(state: &AppState, repo: &RepoRow, msg: &str, backoff_until: 
 }
 
 /// The deadline a rate-limit error implies, or `None` if it isn't one.
-fn gate_deadline(e: &GhError) -> Option<DateTime<Utc>> {
+pub(crate) fn gate_deadline(e: &GhError) -> Option<DateTime<Utc>> {
     match e {
         GhError::PrimaryLimited { reset_at } => Some(*reset_at),
         GhError::SecondaryLimited { retry_after } => {
