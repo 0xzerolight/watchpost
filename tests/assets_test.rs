@@ -114,6 +114,9 @@ async fn app_js_defines_the_watchpost_namespace() {
         "toggleKind",
         "initSparklines",
         "applyTheme",
+        // The period selector carries no inline handler, so this delegated
+        // listener is the only thing that makes it do anything.
+        "data-period-select",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

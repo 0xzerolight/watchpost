@@ -434,6 +434,8 @@ async fn days_defaults_to_all() {
 async fn invalid_days_falls_back_to_all() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
+    // One observation, so the page charts rather than renders its empty state.
+    h.seed_stars(ID_A, days_ago(10), 3).await;
 
     // Unparseable, off-allowlist, and out-of-range all take the default —
     // the parameter is an allowlist, not a clamp.
@@ -451,8 +453,9 @@ async fn the_payload_spans_all_history_whatever_period_is_asked_for() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
 
-    // Nothing observed: the window still has a floor, so the page is never a
-    // single empty column.
+    // A repo observed for the first time today spans one day; the window has a
+    // floor, so the page is never a single empty column.
+    h.seed_stars(ID_A, days_ago(0), 1).await;
     let payload = island(
         &body_string(h.get("/repos/1?days=-1").await).await,
         "chart-data",
@@ -479,22 +482,44 @@ async fn the_payload_spans_all_history_whatever_period_is_asked_for() {
 async fn period_select_zooms_client_side() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(10), 3).await;
 
     let body = body_string(h.get("/repos/1?days=30").await).await;
-    // No htmx on the select: switching period re-renders from the payload
-    // already on the page and never asks the server for anything.
+    // No htmx and no inline handler on the select: the data attribute is what
+    // app.js's delegated `change` listener matches, and switching period
+    // re-renders from the payload already on the page.
     assert!(
-        body.contains(
-            r#"<select id="wp-period" name="days" onchange="watchpost.setPeriod(this.value)">"#
-        ),
+        body.contains(r#"<select id="wp-period" name="days" data-period-select>"#),
         "body was {body}"
     );
+    assert!(!body.contains("onchange"), "body was {body}");
     // A shared `?days=` URL still opens on that period.
     assert!(
         body.contains(r#"<option value="30" selected>"#),
         "body was {body}"
     );
     assert_eq!(body.matches(" selected>").count(), 1, "body was {body}");
+}
+
+#[tokio::test]
+async fn a_repo_with_nothing_observed_shows_an_empty_state_instead_of_charts() {
+    // Every series is null end to end, so four empty panes and a zoom control
+    // over nothing would all be furniture. The section keeps its heading.
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(
+        body.contains("No metrics yet — charts appear after the first sync."),
+        "body was {body}"
+    );
+    assert!(!body.contains(r#"id="chart-data""#), "body was {body}");
+    assert!(!body.contains(r#"id="wp-period""#), "body was {body}");
+    assert!(!body.contains("initRepoCharts"), "body was {body}");
+    assert!(!body.contains("chart_stars"), "body was {body}");
+    assert!(body.contains("<h2>Metrics</h2>"), "body was {body}");
+    // The rest of the page is still there.
+    assert!(body.contains(r#"id="events-section""#), "body was {body}");
 }
 
 #[tokio::test]
@@ -522,6 +547,7 @@ async fn homepage_with_non_http_scheme_is_not_rendered() {
 async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(10), 3).await;
 
     let body = body_string(h.get("/repos/1").await).await;
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
@@ -574,10 +600,22 @@ async fn table_targets_return_only_that_table() {
     h.seed_path(ID_A, days_ago(1), "/docs", "Docs page", 9)
         .await;
 
+    // The full page wraps each table in a scroll container; the fragment must
+    // be the bare table, or every sort click nests another wrapper inside the
+    // one already on the page.
+    let full = body_string(h.get("/repos/1").await).await;
+    assert_eq!(
+        full.matches(r#"<div class="overflow-auto wp-table-wrap"><table id="#)
+            .count(),
+        2,
+        "full was {full}"
+    );
+
     let refs = body_string(h.get_targeting("/repos/1", "#refs-table").await).await;
     assert!(refs.starts_with(r#"<table id="refs-table""#), "{refs}");
     assert!(refs.contains("google"), "refs was {refs}");
     assert!(!refs.contains("chart-data"), "refs was {refs}");
+    assert!(!refs.contains("wp-table-wrap"), "refs was {refs}");
     assert!(!refs.contains(r#"id="paths-table""#), "refs was {refs}");
 
     let paths = body_string(h.get_targeting("/repos/1", "paths-table").await).await;

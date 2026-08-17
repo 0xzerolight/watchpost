@@ -98,15 +98,27 @@
 }
 
 /*
- * A card's title is an `h2` for the document outline, not for Pico's heading
- * scale — left at its default the repo name would be set larger than the page's
- * own `h1` block and dwarf the stats it labels. The row owns the spacing, so the
- * heading keeps none of its own.
+ * A card's title is a heading for the document outline, not for Pico's heading
+ * scale — left at its default the repo name (or a chart's) would be set larger
+ * than the page's own `h1` block and dwarf what it labels. The row owns the
+ * spacing, so the heading keeps none of its own.
  */
 .wp-card-title {
   margin: 0;
   font-size: 1rem;
   line-height: 1.4;
+}
+
+/*
+ * The annotation beside a chart card's title — its latest value, filled in
+ * client-side. Rendered empty on every card, so it must be invisible until it
+ * has text: an inline element with no content takes no space.
+ */
+.wp-card-note {
+  margin-left: var(--wp-space-2);
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+  font-weight: normal;
 }
 
 /*
@@ -326,6 +338,42 @@
 .wp-actions > button,
 .wp-actions > [type="submit"],
 .wp-actions > [type="button"] {
+  width: auto;
+  margin-bottom: 0;
+}
+
+/*
+ * A section's heading row: the heading on the left, the control that scopes the
+ * section on the right. The heading drops its own bottom margin — inside a flex
+ * row it would push the row's box down instead of separating it from the
+ * content, which the row's own margin does.
+ */
+.wp-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wp-space-4);
+  flex-wrap: wrap;
+  margin-block-end: var(--wp-space-4);
+}
+
+.wp-section-head > h2 {
+  margin-bottom: 0;
+}
+
+/*
+ * A label and its control on one line. Pico stretches a `<select>` to its
+ * container's width and gives it a form-layout bottom margin, both of which
+ * turn a one-control row into a full-width bar with a gap hanging under it.
+ */
+.wp-field-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--wp-space-2);
+}
+
+.wp-field-inline > label,
+.wp-field-inline > select {
   width: auto;
   margin-bottom: 0;
 }

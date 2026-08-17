@@ -1051,6 +1051,22 @@ htmx.config.includeIndicatorStyles = false;
     applyFilter();
   }
 
+  /*
+   * The chart period selector. Delegated on `document` rather than bound to the
+   * element, because the charts section is rendered by the server (and can
+   * arrive in a swap): a listener bound at boot would either miss it or hold on
+   * to a select that has since been replaced.
+   *
+   * The raw value goes to `setPeriod`, which allowlists it — the same thing the
+   * inline `onchange` this replaced used to do.
+   */
+  document.addEventListener("change", function (evt) {
+    var target = evt.target;
+    if (target && target.matches && target.matches("[data-period-select]")) {
+      setPeriod(target.value);
+    }
+  });
+
   document.addEventListener("htmx:afterSwap", function (evt) {
     var target = evt.target;
     if (!target || !target.querySelectorAll) {

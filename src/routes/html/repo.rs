@@ -16,7 +16,9 @@
 use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
-use crate::routes::html::{json_script, kind_class, render_markdown};
+use crate::routes::html::{
+    empty_row, empty_state, json_script, kind_class, page_header, render_markdown, table_wrap,
+};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
 
@@ -68,6 +70,26 @@ pub struct ChartSeries {
     pub clones_count: Vec<Option<i64>>,
     pub clones_uniques: Vec<Option<i64>>,
     pub downloads_total: Vec<Option<i64>>,
+}
+
+impl ChartSeries {
+    /// Whether any day of any series was actually observed.
+    ///
+    /// `labels` cannot answer this: the window is floored at a month, so a repo
+    /// that has never been synced still gets thirty labelled days of nothing.
+    /// Only a `Some` anywhere means there is something to plot.
+    fn any_observed(&self) -> bool {
+        [
+            &self.stars,
+            &self.views_count,
+            &self.views_uniques,
+            &self.clones_count,
+            &self.clones_uniques,
+            &self.downloads_total,
+        ]
+        .iter()
+        .any(|series| series.iter().any(Option::is_some))
+    }
 }
 
 /// One entry of the `#events-data` island — what the chart's marker plugin
@@ -293,22 +315,22 @@ impl RepoView<'_> {
 /// The full page body, for wrapping in [`super::base`].
 pub fn repo_body(view: &RepoView) -> Markup {
     let repo = view.repo;
+    // `homepage` is set by the upstream repo owner on GitHub, so it is
+    // untrusted: a `javascript:` value would survive maud's escaping as a
+    // working href. Reuse the event-URL validator (http/https allowlist);
+    // anything else — including empty — renders no link at all.
+    let homepage = repo
+        .homepage
+        .as_ref()
+        .filter(|homepage| validate_event_url(homepage).is_ok());
     html! {
-        header {
-            h1 { (repo.name) }
-            @if let Some(description) = &repo.description {
-                p class="wp-muted" { (description) }
-            }
-            // `homepage` is set by the upstream repo owner on GitHub, so it is
-            // untrusted: a `javascript:` value would survive maud's escaping as
-            // a working href. Reuse the event-URL validator (http/https
-            // allowlist); anything else — including empty — renders nothing.
-            @if let Some(homepage) = &repo.homepage {
-                @if validate_event_url(homepage).is_ok() {
-                    p { a href=(homepage) rel="noopener noreferrer" { (homepage) } }
-                }
-            }
-        }
+        (page_header(
+            &repo.name,
+            repo.description.as_ref().map(|description| html! { (description) }),
+            homepage.map(|homepage| html! {
+                a href=(homepage) rel="noopener noreferrer" { (homepage) }
+            }),
+        ))
         (charts_section(view))
         (popular_section(view))
         (events_section(&EventsView {
@@ -322,43 +344,62 @@ pub fn repo_body(view: &RepoView) -> Markup {
 
 /// The charts, their period selector, and the `#chart-data` island.
 ///
-/// The selector carries no htmx: the island holds the repo's whole history, so
-/// `setPeriod` re-renders the four charts from data already in the page and
-/// rewrites the address bar itself. The `name="days"` stays because the option
-/// values *are* the `days` allowlist and a shared `?days=` URL still opens at
-/// that period — it just never gets submitted anywhere.
+/// The selector carries no htmx and no inline handler: `assets/app.js` binds
+/// one delegated `change` listener to `[data-period-select]`, and the island
+/// holds the repo's whole history, so `setPeriod` re-renders the four charts
+/// from data already in the page and rewrites the address bar itself. The
+/// `name="days"` stays because the option values *are* the `days` allowlist and
+/// a shared `?days=` URL still opens at that period — it just never gets
+/// submitted anywhere.
+///
+/// With nothing observed there is no payload to zoom over, so the cards, the
+/// island, the init call and the selector all go: `setPeriod` would bail on
+/// every change, and four empty panes say less than one sentence does.
 fn charts_section(view: &RepoView) -> Markup {
     let selected = view.payload.days;
+    let observed = view.payload.series.any_observed();
     html! {
         section {
-            div class="wp-row" {
-                label for="wp-period" { "Period" }
-                select #wp-period name="days"
-                    onchange="watchpost.setPeriod(this.value)" {
-                    @for (value, label) in PERIODS {
-                        option value=(value) selected[value == selected] { (label) }
+            div class="wp-section-head" {
+                h2 { "Metrics" }
+                @if observed {
+                    div class="wp-field-inline" {
+                        label for="wp-period" { "Period" }
+                        select #wp-period name="days" data-period-select {
+                            @for (value, label) in PERIODS {
+                                option value=(value) selected[value == selected] { (label) }
+                            }
+                        }
                     }
                 }
             }
-            div class="wp-cards" {
-                (chart_card("Stars", "chart_stars"))
-                (chart_card("Views", "chart_views"))
-                (chart_card("Clones", "chart_clones"))
-                (chart_card("Downloads", "chart_downloads"))
+            @if observed {
+                div class="wp-cards" {
+                    (chart_card("Stars", "chart_stars"))
+                    (chart_card("Views", "chart_views"))
+                    (chart_card("Clones", "chart_clones"))
+                    (chart_card("Downloads", "chart_downloads"))
+                }
+                (json_script("chart-data", view.payload))
+                // app.js is deferred, so this runs before the stubs exist. The
+                // guard covers that; `DOMContentLoaded` is what actually builds
+                // the charts. Kept for the case where the island arrives in a
+                // swap.
+                script { (PreEscaped("window.watchpost && watchpost.initRepoCharts();")) }
+            } @else {
+                (empty_state("No metrics yet — charts appear after the first sync.", None))
             }
-            (json_script("chart-data", view.payload))
-            // app.js is deferred, so this runs before the stubs exist. The
-            // guard covers that; `DOMContentLoaded` is what actually builds the
-            // charts. Kept for the case where the island arrives in a swap.
-            script { (PreEscaped("window.watchpost && watchpost.initRepoCharts();")) }
         }
     }
 }
 
+/// One chart panel. The empty `.wp-card-note` is the slot the client fills with
+/// the series' latest value; it renders either way, so the title never reflows
+/// when the number arrives.
 fn chart_card(title: &str, canvas_id: &str) -> Markup {
     html! {
         article class="wp-card" {
-            h6 { (title) }
+            h3 class="wp-card-title" { (title) span class="wp-card-note" {} }
             div class="chart-box" { canvas id=(canvas_id) {} }
         }
     }
@@ -371,8 +412,11 @@ fn popular_section(view: &RepoView) -> Markup {
     html! {
         section {
             h2 { "Popular" }
-            (popular_table(PopularKind::Referrers, view.referrers, &view.popular))
-            (popular_table(PopularKind::Paths, view.paths, &view.popular))
+            // The wrapper is the section's, not the table's: a sort swaps the
+            // table's own `outerHTML` inside it, so a fragment that carried one
+            // would nest a fresh scroll container per click.
+            (table_wrap(popular_table(PopularKind::Referrers, view.referrers, &view.popular)))
+            (table_wrap(popular_table(PopularKind::Paths, view.paths, &view.popular)))
         }
     }
 }
@@ -403,7 +447,7 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
             }
             tbody {
                 @if rows.is_empty() {
-                    tr { td colspan="3" class="wp-muted" { "Nothing recorded yet." } }
+                    (empty_row(3, "Nothing recorded yet."))
                 }
                 @for row in rows {
                     tr {
@@ -532,9 +576,11 @@ pub fn events_section(view: &EventsView) -> Markup {
             // their kind inputs at this same list.
             datalist id="kind-list" { @for kind in view.kinds { option value=(kind); } }
             @if view.events.is_empty() {
-                p class="wp-muted" { "No events yet." }
+                (empty_state("No events yet — add the first one above.", None))
             } @else {
-                (events_table(view.repo_id, view.events))
+                // The wrapper goes inside the section, around the table only:
+                // `#events-section` is itself the swap target.
+                (table_wrap(events_table(view.repo_id, view.events)))
             }
             (json_script("events-data", &markers))
             // Guarded for the same reason the chart init is: app.js is
@@ -863,11 +909,19 @@ mod tests {
         );
         // The two numeric columns and nothing else.
         assert_eq!(out.matches("data-tooltip").count(), 2, "out was {out}");
-        // An empty table still renders its swap target.
+        // An empty table still renders its swap target, and says why it is
+        // empty across the full width of the columns it has.
         assert!(
             out.starts_with(r#"<table id="refs-table">"#),
             "out was {out}"
         );
+        assert!(
+            out.contains(r#"<tr class="wp-empty-row"><td colspan="3">"#),
+            "out was {out}"
+        );
+        assert!(out.contains("Nothing recorded yet."), "out was {out}");
+        // The scroll wrapper belongs to the section, not to the fragment.
+        assert!(!out.contains("wp-table-wrap"), "out was {out}");
     }
 
     #[test]
@@ -890,52 +944,101 @@ mod tests {
         assert!(out.contains("Docs page"), "out was {out}");
     }
 
-    #[test]
-    fn init_call_is_guarded_and_the_selector_is_client_side() {
-        let payload = ChartPayload {
-            days: 7,
-            labels: Vec::new(),
+    /// A payload whose stars series is `observed`, everything else a gap.
+    fn payload(days: i64, observed: Option<i64>) -> ChartPayload {
+        ChartPayload {
+            days,
+            labels: vec!["2026-08-17".to_owned()],
             series: ChartSeries {
-                stars: Vec::new(),
-                views_count: Vec::new(),
-                views_uniques: Vec::new(),
-                clones_count: Vec::new(),
-                clones_uniques: Vec::new(),
-                downloads_total: Vec::new(),
+                stars: vec![observed],
+                views_count: vec![None],
+                views_uniques: vec![None],
+                clones_count: vec![None],
+                clones_uniques: vec![None],
+                downloads_total: vec![None],
             },
-        };
-        let repo = RepoOverview {
-            repo_id: 1,
-            name: "octo/x".into(),
-            ..RepoOverview::default()
-        };
-        let view = RepoView {
-            repo: &repo,
-            payload: &payload,
+        }
+    }
+
+    fn chart_view<'a>(payload: &'a ChartPayload, repo: &'a RepoOverview) -> RepoView<'a> {
+        RepoView {
+            repo,
+            payload,
             referrers: &[],
             paths: &[],
             events: &[],
             kinds: &[],
             popular: params(),
-        };
-        let out = charts_section(&view).into_string();
+        }
+    }
+
+    fn repo() -> RepoOverview {
+        RepoOverview {
+            repo_id: 1,
+            name: "octo/x".into(),
+            ..RepoOverview::default()
+        }
+    }
+
+    #[test]
+    fn init_call_is_guarded_and_the_selector_is_client_side() {
+        let payload = payload(7, Some(3));
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &repo)).into_string();
         // `&&` must survive as JavaScript — an escaped `&amp;&amp;` is a
         // syntax error, not a guard.
         assert!(
             out.contains("<script>window.watchpost && watchpost.initRepoCharts();</script>"),
             "out was {out}"
         );
-        // The period selector zooms in the browser: no htmx, and the option the
-        // payload names is the selected one.
+        // The period selector zooms in the browser: no htmx, no inline handler
+        // — app.js binds one delegated listener to the data attribute — and the
+        // option the payload names is the selected one.
         assert!(
-            out.contains(r#"onchange="watchpost.setPeriod(this.value)""#),
+            out.contains(r#"<select id="wp-period" name="days" data-period-select>"#),
             "out was {out}"
         );
+        assert!(!out.contains("onchange"), "out was {out}");
         assert!(!out.contains("hx-"), "out was {out}");
         assert!(
             out.contains(r#"<option value="7" selected>"#),
             "out was {out}"
         );
+    }
+
+    #[test]
+    fn a_chart_card_titles_itself_with_a_slot_for_its_latest_value() {
+        let payload = payload(-1, Some(3));
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        assert!(
+            out.contains(
+                r#"<h3 class="wp-card-title">Stars<span class="wp-card-note"></span></h3>"#
+            ),
+            "out was {out}"
+        );
+        // One note slot per card, rendered whether or not it has content yet.
+        assert_eq!(out.matches("wp-card-note").count(), 4, "out was {out}");
+    }
+
+    #[test]
+    fn nothing_observed_replaces_the_charts_with_an_empty_state() {
+        // Every series null end to end: four blank panes and a zoom control
+        // over nothing are furniture, and `setPeriod` bails without a payload.
+        let payload = payload(-1, None);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+
+        assert!(
+            out.contains("No metrics yet — charts appear after the first sync."),
+            "out was {out}"
+        );
+        assert!(!out.contains("chart-data"), "out was {out}");
+        assert!(!out.contains("wp-period"), "out was {out}");
+        assert!(!out.contains("initRepoCharts"), "out was {out}");
+        assert!(!out.contains("<canvas"), "out was {out}");
+        // The section still says what it would have shown.
+        assert!(out.contains("<h2>Metrics</h2>"), "out was {out}");
     }
 
     fn events_view<'a>(events: &'a [Event], kinds: &'a [String]) -> EventsView<'a> {
@@ -951,7 +1054,12 @@ mod tests {
     fn events_section_emits_markers_even_when_empty() {
         let out = events_section(&events_view(&[], &[])).into_string();
         assert!(out.contains(r#"id="events-data">[]<"#), "out was {out}");
-        assert!(out.contains("No events yet"), "out was {out}");
+        assert!(
+            out.contains(
+                r#"<div class="wp-empty"><p>No events yet — add the first one above.</p></div>"#
+            ),
+            "out was {out}"
+        );
         // The add form is reachable on a repo with no events at all.
         assert!(
             out.contains("<summary>Add event</summary>"),
