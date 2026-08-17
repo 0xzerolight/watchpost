@@ -31,8 +31,6 @@ const DELTA_WINDOW_DAYS: u32 = 21;
 const STAR_PAGE_BUDGET: u32 = 1000;
 /// GitHub stops paginating stargazers past 40k stars (400 pages of 100).
 const STAR_PAGE_CAP: u32 = 400;
-/// Endpoints [`sync_one_repo`] calls per repo; all failing means no data.
-const ENDPOINTS_PER_REPO: usize = 7;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CycleReport {
@@ -206,11 +204,13 @@ async fn sync_one_repo(
 ) -> Result<Option<String>, AppError> {
     let name = repo.name.as_str();
     let mut errs: Vec<(&'static str, GhError)> = Vec::new();
+    let mut attempted = 0usize;
 
     // A rate limit is global, so it bubbles out at once instead of being
     // collected as one more per-endpoint failure.
     macro_rules! fetch {
-        ($label:literal, $call:expr) => {
+        ($label:literal, $call:expr) => {{
+            attempted += 1;
             match $call.await {
                 Ok(v) => Some(v),
                 Err(e) if gate_deadline(&e).is_some() => return Err(AppError::Gh(e)),
@@ -219,7 +219,7 @@ async fn sync_one_repo(
                     None
                 }
             }
-        };
+        }};
     }
 
     // Always per-repo: the discovery listing omits `subscribers_count`, so
@@ -232,7 +232,8 @@ async fn sync_one_repo(
     let paths = fetch!("paths", state.gh.traffic_paths(name));
     let releases = fetch!("releases", state.gh.releases(name));
 
-    if errs.len() == ENDPOINTS_PER_REPO {
+    // Nothing at all came back — the repo is gone, renamed, or unreadable.
+    if errs.len() == attempted {
         return Err(AppError::Gh(errs.remove(0).1));
     }
 
