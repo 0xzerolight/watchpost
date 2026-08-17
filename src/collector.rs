@@ -22,7 +22,7 @@ use crate::db::queries;
 use crate::errors::{AppError, GhError};
 use crate::gh_client::GhStar;
 use crate::ratelimit::repo_backoff;
-use crate::state::{AppState, SyncStatus};
+use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::{AssetSnapshot, PopularDay, RepoRow, StatSnapshot, TrafficKind};
 
 /// Trailing window recomputed for referrer/path deltas each cycle.
@@ -507,7 +507,7 @@ fn in_backoff(repo: &RepoRow) -> bool {
 }
 
 fn set_status(state: &AppState, status: SyncStatus) {
-    *state.sync.lock().expect("sync status mutex poisoned") = status;
+    *lock_recover(&state.sync) = status;
 }
 
 fn finish(state: &AppState, report: &CycleReport, failed: Vec<(String, String)>) {

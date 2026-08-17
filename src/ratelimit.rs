@@ -3,6 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 
+use crate::state::lock_recover;
+
 /// Classification of GitHub API failures.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
@@ -127,7 +129,7 @@ impl RateGate {
     /// As a side effect, clears the block if the deadline has passed.
     #[allow(dead_code)]
     pub fn blocked_until(&self) -> Option<DateTime<Utc>> {
-        let mut guard = self.blocked_until.lock().unwrap();
+        let mut guard = lock_recover(&self.blocked_until);
         if let Some(deadline) = *guard {
             if deadline <= Utc::now() {
                 *guard = None;
@@ -143,14 +145,14 @@ impl RateGate {
     /// Block until the given deadline.
     #[allow(dead_code)]
     pub fn block_until(&self, deadline: DateTime<Utc>) {
-        let mut guard = self.blocked_until.lock().unwrap();
+        let mut guard = lock_recover(&self.blocked_until);
         *guard = Some(deadline);
     }
 
     /// Clear the block immediately.
     #[allow(dead_code)]
     pub fn clear(&self) {
-        let mut guard = self.blocked_until.lock().unwrap();
+        let mut guard = lock_recover(&self.blocked_until);
         *guard = None;
     }
 }

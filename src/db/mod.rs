@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 
 use crate::errors::DbError;
+use crate::state::lock_recover;
 
 // open_in_memory and call are unused outside tests until Task 3 wires in
 // queries on top of Db::call.
@@ -59,7 +60,7 @@ impl Db {
     {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().expect("db mutex poisoned");
+            let mut guard = lock_recover(&conn);
             f(&mut guard)
         })
         .await?

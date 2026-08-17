@@ -22,7 +22,7 @@ use crate::db::queries;
 use crate::errors::AppError;
 use crate::routes::html::settings::{repos_picker, sync_status_fragment};
 use crate::routes::html::{base, get_hx_target};
-use crate::state::{AppState, SyncStatus};
+use crate::state::{AppState, SyncStatus, lock_recover};
 
 /// GET /settings — full page, or just the picker when htmx asks for it.
 pub async fn settings_page(
@@ -154,7 +154,7 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Markup {
 /// Mark a cycle as starting, unless one already is. `Some(started)` means the
 /// caller owns the spawn; the timestamp identifies this exact claim.
 fn claim_cycle(state: &AppState) -> Option<DateTime<Utc>> {
-    let mut status = state.sync.lock().expect("sync status mutex poisoned");
+    let mut status = lock_recover(&state.sync);
     if matches!(*status, SyncStatus::Running { .. }) {
         return None;
     }
@@ -167,18 +167,14 @@ fn claim_cycle(state: &AppState) -> Option<DateTime<Utc>> {
 /// still carrying this claim's timestamp is reset, so a cycle that started in
 /// the meantime keeps its own status.
 fn release_claim(state: &AppState, claim: DateTime<Utc>) {
-    let mut status = state.sync.lock().expect("sync status mutex poisoned");
+    let mut status = lock_recover(&state.sync);
     if matches!(*status, SyncStatus::Running { started } if started == claim) {
         *status = SyncStatus::Idle;
     }
 }
 
 fn current_status(state: &AppState) -> SyncStatus {
-    state
-        .sync
-        .lock()
-        .expect("sync status mutex poisoned")
-        .clone()
+    lock_recover(&state.sync).clone()
 }
 
 /// Whether htmx is asking for `id`. htmx sends the bare element id in
