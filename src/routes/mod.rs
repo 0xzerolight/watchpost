@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use maud::{Markup, html};
 use tower_http::trace::TraceLayer;
 
@@ -12,6 +12,7 @@ use crate::state::AppState;
 
 pub mod assets;
 pub mod html;
+pub mod settings;
 
 /// The application router.
 ///
@@ -23,6 +24,11 @@ pub fn router(state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = Router::new()
         .route("/", get(index))
         .route("/health", get(async || "OK"))
+        .route("/settings", get(settings::settings_page))
+        .route("/settings/discover", get(settings::settings_discover))
+        .route("/settings/repos", post(settings::settings_save))
+        .route("/sync", post(settings::sync_start))
+        .route("/sync/status", get(settings::sync_status))
         .route("/assets/{file}", get(assets::serve_asset))
         .layer(axum::middleware::from_fn(csrf_middleware))
         .layer(TraceLayer::new_for_http());

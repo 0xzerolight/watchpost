@@ -270,6 +270,19 @@ pub fn tracked_repos(conn: &Connection) -> Result<Vec<RepoRow>, DbError> {
     Ok(rows)
 }
 
+/// Every repo discovery has ever seen and not hidden, tracked or not — what
+/// the settings picker offers. `tracked_repos` is the collector's view; this
+/// one is the user's.
+pub fn known_repos(conn: &Connection) -> Result<Vec<RepoRow>, DbError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {REPO_COLS} FROM repos WHERE hidden = 0 ORDER BY name"
+    ))?;
+    let rows = stmt
+        .query_map([], map_repo_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn set_tracked(conn: &Connection, repo_id: i64, tracked: bool) -> Result<(), DbError> {
     conn.execute(
         "UPDATE repos SET tracked = ?2 WHERE id = ?1",

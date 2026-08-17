@@ -146,6 +146,7 @@
 .wp-grow { flex: 1 1 auto; }
 .wp-right { margin-left: auto; }
 .wp-muted { color: var(--pico-muted-color, #6b7280); }
+.wp-danger { color: var(--pico-del-color, #b3261e); }
 .wp-small { font-size: 0.85rem; }
 
 @media (prefers-reduced-motion: reduce) {

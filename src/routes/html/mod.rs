@@ -9,6 +9,8 @@ use serde::Serialize;
 use crate::csrf::{CSRF_HEADER, CsrfToken};
 use crate::routes::assets;
 
+pub mod settings;
+
 /// The document shell every page renders into.
 ///
 /// Two details are load-bearing:
