@@ -15,6 +15,7 @@ pub mod events;
 pub mod html;
 pub mod index;
 pub mod repo;
+pub mod security;
 pub mod settings;
 
 /// The application router.
@@ -23,6 +24,9 @@ pub mod settings;
 /// over every route so a page render always finds a token in the request
 /// extensions — including the first visit of a session, where the cookie does
 /// not exist yet.
+///
+/// Security headers sit just outside CSRF, so a request rejected there is
+/// decorated with the policy rather than answered bare.
 ///
 /// Panic containment is outermost, so a panic in a handler or in either
 /// middleware becomes a 500 rather than a dropped connection.
@@ -58,6 +62,7 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/sync/status", get(settings::sync_status))
         .route("/assets/{file}", get(assets::serve_asset))
         .layer(axum::middleware::from_fn(csrf_middleware))
+        .layer(axum::middleware::from_fn(security::security_headers))
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new());
     router.with_state(state)

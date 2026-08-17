@@ -244,3 +244,13 @@
 @media (prefers-reduced-motion: reduce) {
   .wp-flash { animation: none; }
 }
+
+/*
+ * htmx request indicators. These are htmx's own injected rules, moved here
+ * because the CSP's `style-src 'self'` blocks the inline <style> it would add;
+ * app.js switches that injection off. Both selectors are needed: the indicator
+ * can be inside the element that made the request, or be it.
+ */
+.htmx-indicator { opacity: 0; }
+.htmx-request .htmx-indicator { opacity: 1; transition: opacity 200ms ease-in; }
+.htmx-request.htmx-indicator { opacity: 1; transition: opacity 200ms ease-in; }
