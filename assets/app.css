@@ -120,6 +120,13 @@
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  /*
+   * Pico stretches every <button> to the full width of its container, which
+   * turns the kind filter row into three full-width bars. Chips size to their
+   * label instead — the rule has to name both, because the same class dresses
+   * a <span> badge in a table cell and a <button> in the filter row.
+   */
+  width: auto;
   padding: 0.1rem 0.6rem;
   border: 1px solid var(--wp-kind-color, var(--pico-muted-border-color));
   border-radius: 1rem;
@@ -128,6 +135,18 @@
   line-height: 1.6;
   white-space: nowrap;
   background: transparent;
+}
+
+/*
+ * The filter row is a `role="group"`, which Pico styles as a segmented button
+ * bar: every child gets `flex: 1` and stretches to an equal share of the row.
+ * Chips are pills, so they opt out. `[role=group] > .wp-chip` outranks Pico's
+ * `[role=group] > button` on specificity, which `.wp-chip` alone does not.
+ */
+[role="group"] > .wp-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: auto;
 }
 
 /* Pressed state for the kind filter toggles (`toggleKind()`). */
