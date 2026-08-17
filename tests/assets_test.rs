@@ -130,6 +130,9 @@ async fn app_js_defines_the_watchpost_namespace() {
         // to `window.confirm`.
         "htmx:confirm",
         "[data-confirm-ok]",
+        // An event row is a table row, not a form, so Enter in one of its
+        // fields submits nothing without this listener.
+        "tr.wp-edit-row",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

@@ -1335,6 +1335,41 @@ htmx.config.includeIndicatorStyles = false;
   });
 
   // -------------------------------------------------------------------------
+  // Edit-row Enter
+  // -------------------------------------------------------------------------
+
+  /*
+   * Enter saves the event row being edited.
+   *
+   * An edit row is a `<tr>` of inputs, not a form — its Save button collects the
+   * row with `hx-include` — so the browser has no implicit submission to offer
+   * and Enter would otherwise be swallowed. Delegated on `document` because the
+   * rows arrive in swaps.
+   */
+  document.addEventListener("keydown", function (evt) {
+    // Shift+Enter is the newline in the notes field, and an Enter that is
+    // closing an IME candidate is not a keypress the reader aimed at the row.
+    if (evt.key !== "Enter" || evt.shiftKey || evt.isComposing) {
+      return;
+    }
+    var target = evt.target;
+    // Text fields only: this stands in for the submission a form would do, and
+    // a focused button already has its own answer to Enter — hijacking that
+    // would run Save when the reader meant Cancel. `<textarea>` is not an
+    // `<input>`, so Enter in the notes stays a newline.
+    if (!target || target.tagName !== "INPUT" || !target.closest) {
+      return;
+    }
+    var row = target.closest("tr.wp-edit-row");
+    var save = row && row.querySelector("[data-save]");
+    if (!save) {
+      return;
+    }
+    evt.preventDefault();
+    save.click();
+  });
+
+  // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
 

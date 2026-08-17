@@ -308,6 +308,25 @@ async fn settings_page_returns_only_the_fragment_for_an_htmx_target() {
     assert!(body.contains(REPO_A), "body was {body}");
 }
 
+#[tokio::test]
+async fn picker_form_carries_the_save_request() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    // Enter in a field submits the form, so the save has to be the *form's*
+    // request. With it on the Save button, the keypress reached nothing.
+    assert!(
+        body.contains(r#"<form id="repos-picker" hx-post="/settings/repos""#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<button type="submit" id="repos-save">"#),
+        "{body}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // POST /settings/discover
 // ---------------------------------------------------------------------------

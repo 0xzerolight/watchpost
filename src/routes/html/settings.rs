@@ -20,23 +20,30 @@ use crate::types::RepoRow;
 /// on a refresh is the submitted form rather than the db.
 pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup {
     html! {
-        form id="repos-picker" {
+        // The save is the form's own request: htmx triggers a form on `submit`,
+        // which is what Enter in a field raises. The same attributes on the
+        // Save button would leave the keypress doing nothing at all.
+        form id="repos-picker"
+            hx-post="/settings/repos"
+            hx-target="this"
+            hx-swap="outerHTML"
+            hx-disabled-elt="find button[type=submit]"
+            hx-indicator="#repos-spinner" {
             @if let Some((kind, text)) = msg {
                 (notice(kind, html! { (text) }))
             }
-            // Each button disables itself and lights its own spinner. Both
-            // replace the picker they live in, so a second press mid-flight
-            // races a swap that is about to take the button away; and one
-            // shared spinner would light up beside whichever button was not
-            // pressed, since htmx only marks the indicator the request names.
+            // Each action disables the button that started it and lights its
+            // own spinner. Both replace the picker they live in, so a second
+            // press mid-flight races a swap that is about to take the button
+            // away; and one shared spinner would light up beside whichever
+            // button was not pressed, since htmx only marks the indicator the
+            // request names.
             div class="wp-actions" {
-                button type="button" id="repos-save"
-                    hx-post="/settings/repos"
-                    hx-target="#repos-picker"
-                    hx-swap="outerHTML"
-                    hx-disabled-elt="this"
-                    hx-indicator="#repos-spinner" { "Save" }
+                button type="submit" id="repos-save" { "Save" }
                 (spinner("repos-spinner"))
+                // Refresh is a second, different request, so it stays a plain
+                // button rather than a submitter — and its own attributes win
+                // over the ones it would otherwise inherit from the form.
                 button type="button" id="repos-refresh" class="secondary"
                     hx-post="/settings/discover"
                     hx-include="closest form"
@@ -240,16 +247,49 @@ mod tests {
     fn picker_actions_disable_themselves_while_they_run() {
         let out = repos_picker(&[], None).into_string();
 
-        // Both buttons re-render the picker they live in; a second press mid
-        // flight races the swap that is about to replace them.
-        assert_eq!(out.matches(r#"hx-disabled-elt="this""#).count(), 2, "{out}");
-        // Save gets its own spinner: the two buttons run different requests and
-        // sharing one would light up under whichever was not pressed.
+        // Both actions re-render the picker they live in; a second press mid
+        // flight races the swap that is about to replace them. The save request
+        // belongs to the form, so the form disables its submitter; Refresh runs
+        // from the button and disables itself.
+        assert!(
+            out.contains(r#"hx-disabled-elt="find button[type=submit]""#),
+            "{out}"
+        );
+        assert_eq!(out.matches(r#"hx-disabled-elt="this""#).count(), 1, "{out}");
+        // Save gets its own spinner: the two requests are different and sharing
+        // one would light up under whichever action was not taken.
         assert!(out.contains(r##"hx-indicator="#repos-spinner""##), "{out}");
         assert!(
             out.contains(r#"<span id="repos-spinner" class="htmx-indicator wp-spinner""#),
             "{out}"
         );
+    }
+
+    #[test]
+    fn picker_form_posts_itself_so_enter_saves() {
+        let out = repos_picker(&[repo("octo/x", None, None)], None).into_string();
+
+        // The save is the form's request, not the button's: htmx triggers a
+        // form on `submit`, which is what Enter in a field raises. Hang the
+        // same attributes off the button instead and the keypress does nothing.
+        assert!(
+            out.starts_with(concat!(
+                r#"<form id="repos-picker" hx-post="/settings/repos" hx-target="this""#,
+                r#" hx-swap="outerHTML""#
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<button type="submit" id="repos-save">Save</button>"#),
+            "{out}"
+        );
+        // Refresh is a second, different request: it must not submit the form,
+        // and its own attributes beat the ones it would inherit.
+        assert!(
+            out.contains(r#"<button type="button" id="repos-refresh""#),
+            "{out}"
+        );
+        assert!(out.contains(r#"hx-post="/settings/discover""#), "{out}");
     }
 
     #[test]
