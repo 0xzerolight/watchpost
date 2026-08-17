@@ -618,9 +618,12 @@ async fn referrer_sort_params_round_trip_and_flip_the_order() {
     let junk = body_string(h.get("/repos/1?rsort=drop%20table&rdir=sideways").await).await;
     assert!(at(&junk, "reddit") < at(&junk, "google"), "junk was {junk}");
 
-    // The tables are all-time, so their sort links carry no period at all.
+    // Sort links re-state the selected period: hx-replace-url rewrites the
+    // whole address bar, so a link without it would make a reload after
+    // sorting reopen at All. The tables themselves stay all-time regardless.
     let sorted_fragment = body_string(h.get_targeting("/repos/1?days=7", "refs-table").await).await;
-    assert!(!sorted_fragment.contains("days="), "{sorted_fragment}");
+    // maud escapes the separator, so the marker is `&amp;days=7` in markup.
+    assert!(sorted_fragment.contains("days=7"), "{sorted_fragment}");
     assert!(
         sorted_fragment.contains("rsort=uniques"),
         "{sorted_fragment}"
@@ -629,6 +632,10 @@ async fn referrer_sort_params_round_trip_and_flip_the_order() {
         sorted_fragment.contains(r#"hx-replace-url="true""#),
         "{sorted_fragment}"
     );
+
+    // At the default period the links carry no days at all: the address only
+    // ever names a period the user actually picked.
+    assert!(!junk.contains("days="), "junk was {junk}");
 }
 
 #[tokio::test]
@@ -683,6 +690,13 @@ async fn uniques_columns_explain_that_they_are_never_summed() {
             .count(),
         2,
         "both uniques columns need the tooltip: {body}"
+    );
+    // The count columns are honest about being accumulated, not exact totals.
+    assert_eq!(
+        body.matches(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#)
+            .count(),
+        2,
+        "both count columns need the tooltip: {body}"
     );
 }
 

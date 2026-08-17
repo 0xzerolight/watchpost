@@ -110,6 +110,7 @@ pub async fn repo_page(
             repo_id,
             refs_sort,
             paths_sort,
+            days: selected,
         },
     };
 

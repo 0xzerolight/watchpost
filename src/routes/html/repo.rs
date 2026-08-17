@@ -212,13 +212,16 @@ impl Sort {
 /// both tables' current sorts (a link carries the other table's state too, so
 /// `hx-replace-url` never drops it from the address bar).
 ///
-/// No period: these tables are all-time. The charts' selector zooms the charts
-/// only, so a sort link has no period to preserve.
+/// `days` is pure URL state: the tables themselves are all-time and ignore it,
+/// but `hx-replace-url` rewrites the whole address bar, so a sort link that
+/// dropped it would make a reload after sorting forget the charts' zoom.
 #[derive(Debug, Clone, Copy)]
 pub struct PopularParams {
     pub repo_id: i64,
     pub refs_sort: Sort,
     pub paths_sort: Sort,
+    /// The currently selected chart period, [`ALL_DAYS`] when default.
+    pub days: i64,
 }
 
 impl PopularParams {
@@ -243,14 +246,20 @@ impl PopularParams {
             PopularKind::Referrers => (next, self.paths_sort),
             PopularKind::Paths => (self.refs_sort, next),
         };
-        format!(
+        let mut url = format!(
             "/repos/{}?rsort={}&rdir={}&psort={}&pdir={}",
             self.repo_id,
             refs.key.param(PopularKind::Referrers),
             refs.dir.param(),
             paths.key.param(PopularKind::Paths),
             paths.dir.param(),
-        )
+        );
+        // The default period stays out of the URL, so the address only names a
+        // period the user actually picked.
+        if self.days != ALL_DAYS {
+            url.push_str(&format!("&days={}", self.days));
+        }
+        url
     }
 }
 
@@ -383,7 +392,11 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
             thead {
                 tr {
                     (sort_th(kind, SortKey::Name, name_label, sort, params, None))
-                    (sort_th(kind, SortKey::Count, "Views", sort, params, None))
+                    // "Views" alone would read as an exact all-time total,
+                    // which the accumulated-increases aggregation is not —
+                    // the tooltip says what the number really is.
+                    (sort_th(kind, SortKey::Count, "Views", sort, params,
+                        Some("Accumulated views — sum of observed daily increases; undercounts before install or during downtime")))
                     (sort_th(kind, SortKey::Uniques, "Uniques", sort, params,
                         Some("Peak daily unique — uniques are never summed")))
                 }
@@ -756,6 +769,7 @@ mod tests {
             repo_id: 1,
             refs_sort: Sort::parse(PopularKind::Referrers, None, None),
             paths_sort: Sort::parse(PopularKind::Paths, None, None),
+            days: ALL_DAYS,
         }
     }
 
@@ -813,7 +827,7 @@ mod tests {
         let url = params.sort_url(PopularKind::Referrers, SortKey::Count);
         assert!(url.contains("rsort=count&rdir=asc"), "url was {url}");
         assert!(url.contains("psort=count&pdir=desc"), "url was {url}");
-        // No period rides along: these tables are all-time.
+        // The default period stays out of the URL.
         assert!(url.starts_with("/repos/1?rsort="), "url was {url}");
         assert!(!url.contains("days="), "url was {url}");
 
@@ -823,14 +837,32 @@ mod tests {
     }
 
     #[test]
+    fn sort_links_preserve_a_selected_period() {
+        // hx-replace-url rewrites the whole address bar, so a sort link must
+        // re-state the chart zoom or a reload after sorting reopens at All.
+        let params = PopularParams {
+            days: 90,
+            ..params()
+        };
+        let url = params.sort_url(PopularKind::Paths, SortKey::Uniques);
+        assert!(url.contains("&days=90"), "url was {url}");
+    }
+
+    #[test]
     fn uniques_header_explains_the_aggregation() {
         let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
         assert!(
             out.contains(r#"data-tooltip="Peak daily unique — uniques are never summed""#),
             "out was {out}"
         );
-        // Only the uniques column claims it.
-        assert_eq!(out.matches("data-tooltip").count(), 1, "out was {out}");
+        // The count column says what its number is too — accumulated observed
+        // increases, not an exact all-time total.
+        assert!(
+            out.contains(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#),
+            "out was {out}"
+        );
+        // The two numeric columns and nothing else.
+        assert_eq!(out.matches("data-tooltip").count(), 2, "out was {out}");
         // An empty table still renders its swap target.
         assert!(
             out.starts_with(r#"<table id="refs-table">"#),

@@ -659,11 +659,25 @@ pub fn asset_series(
     Ok(rows)
 }
 
-/// Top referrers/paths over the trailing `days` (0 = all time). Pinned
-/// aggregation (do NOT copy ghstats' `get_popular_items`, which does
-/// `SUM(uniques_delta)` — exactly the summed-uniques mistake substrate rule
-/// 2 forbids): `count = SUM(count_delta)`, `uniques = MAX(uniques)` — peak
-/// daily snapshot, never a sum.
+/// How many rows [`popular_items`] returns at most. All-time aggregation
+/// never forgets a key, so without a cap the tables would list every
+/// referrer/path ever seen and only grow.
+const POPULAR_LIMIT: u32 = 20;
+
+/// Top referrers/paths over the trailing `days` (0 = all time), capped at
+/// [`POPULAR_LIMIT`] rows. Pinned aggregation:
+///
+/// * `count = SUM(MAX(count_delta, 0))` — accumulated observed increases,
+///   never a plain `SUM(count_delta)`. Deltas are baseline + diffs of a
+///   rolling 14-day count, so a plain sum telescopes to the *last* snapshot:
+///   a referrer that went quiet months ago would sit pinned at its stale
+///   14-day count forever and outrank live ones. Clamping negatives makes
+///   the number monotone while traffic is observed — an estimator of
+///   cumulative traffic that undercounts before install and during downtime,
+///   but never inflates.
+/// * `uniques = MAX(uniques)` — peak daily snapshot, never a sum (do NOT
+///   copy ghstats' `get_popular_items`, which does `SUM(uniques_delta)` —
+///   exactly the summed-uniques mistake substrate rule 2 forbids).
 pub fn popular_items(
     conn: &Connection,
     repo_id: i64,
@@ -684,12 +698,13 @@ pub fn popular_items(
     let sql = format!(
         "SELECT {key} AS name,
                 {title} AS title,
-                SUM(count_delta) AS count,
+                SUM(MAX(count_delta, 0)) AS count,
                 MAX(uniques) AS uniques
          FROM {table}
          WHERE repo_id = ?1{window_clause}
          GROUP BY {key}
-         ORDER BY count DESC"
+         ORDER BY count DESC
+         LIMIT {POPULAR_LIMIT}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let map_row = |r: &rusqlite::Row| -> rusqlite::Result<PopularItem> {
@@ -1142,7 +1157,86 @@ mod tests {
         let items = popular_items(&c, 1, PopularKind::Referrers, 0).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].uniques, 5); // MAX, never 8 (sum) nor delta-sum
-        assert_eq!(items[0].count, 8); // SUM(count_delta) = 5 + 3
+        assert_eq!(items[0].count, 8); // SUM(MAX(count_delta, 0)) = 5 + 3
+    }
+
+    #[test]
+    fn popular_count_accumulates_increases_not_last_snapshot() {
+        // Rolling 14-day counts 10, 500, 120, 5 over four days. Deltas as
+        // update_deltas_recent computes them: 10 (baseline), 490, -380, -115.
+        // A plain SUM telescopes to 5 — the *last* snapshot; the clamped sum
+        // is 10 + 490 = 500, the traffic actually observed arriving.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        for (n, count) in [(4, 10), (3, 500), (2, 120), (1, 5)] {
+            upsert_referrers(
+                &c,
+                1,
+                &days_ago(n),
+                &[PopularDay {
+                    name: "hn".into(),
+                    title: None,
+                    count,
+                    uniques: 1,
+                }],
+            )
+            .unwrap();
+        }
+        update_deltas_recent(&c, 21).unwrap();
+        let items = popular_items(&c, 1, PopularKind::Referrers, 0).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].count, 500);
+    }
+
+    #[test]
+    fn popular_dead_key_keeps_its_first_count_and_stops_there() {
+        // A referrer seen once, 200 days ago: its single delta is its full
+        // rolling count (baseline-from-zero). All-time it stays listed at
+        // exactly that value, so a live key that accumulates past it outranks
+        // it — a dead key is never artificially dominant.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        c.execute(
+            "INSERT INTO repo_referrers (repo_id, date, referrer, count, uniques, count_delta, uniques_delta)
+             VALUES (1, ?1, 'dead.example', 40, 4, 40, 4)",
+            [&days_ago(200)],
+        )
+        .unwrap();
+        for n in [2, 1] {
+            c.execute(
+                "INSERT INTO repo_referrers (repo_id, date, referrer, count, uniques, count_delta, uniques_delta)
+                 VALUES (1, ?1, 'live.example', 30, 3, 30, 3)",
+                [&days_ago(n)],
+            )
+            .unwrap();
+        }
+        let items = popular_items(&c, 1, PopularKind::Referrers, 0).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, "live.example");
+        assert_eq!(items[0].count, 60); // 30 + 30 accumulated
+        assert_eq!(items[1].name, "dead.example");
+        assert_eq!(items[1].count, 40); // its only delta, forever
+    }
+
+    #[test]
+    fn popular_items_caps_the_row_count() {
+        // 25 referrers seeded with counts 1..=25 -> 20 rows back, and they
+        // are the 20 busiest (counts 6..=25), not an arbitrary twenty.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let date = days_ago(1);
+        for i in 1..=25 {
+            c.execute(
+                "INSERT INTO repo_referrers (repo_id, date, referrer, count, uniques, count_delta, uniques_delta)
+                 VALUES (1, ?1, ?2, ?3, 1, ?3, 1)",
+                params![date, format!("ref{i}.example"), i],
+            )
+            .unwrap();
+        }
+        let items = popular_items(&c, 1, PopularKind::Referrers, 0).unwrap();
+        assert_eq!(items.len(), 20);
+        assert_eq!(items[0].count, 25);
+        assert!(items.iter().all(|item| item.count >= 6));
     }
 
     // ---- coverage for the rest of the public surface -----------------------
