@@ -537,11 +537,15 @@ fn kind_chips(kinds: &[String]) -> Markup {
 ///
 /// The "all" chip passes `null` rather than a sentinel string, so a repo with
 /// an event kind literally called "all" cannot collide with it.
+///
+/// The chip deliberately carries no `data-kind`: that attribute marks the table
+/// rows a kind filter hides, and a chip wearing it would hide itself the first
+/// time it was pressed. The kind travels in the handler argument instead.
 fn kind_chip(kind: Option<&str>, label: &str, pressed: bool) -> Markup {
     let arg = serde_json::to_string(&kind).unwrap_or_else(|_| "null".to_owned());
     let class = format!("wp-chip {}", kind_class(&kind.map(str::to_owned)));
     html! {
-        button type="button" class=(class) data-kind=[kind]
+        button type="button" class=(class)
             aria-pressed=(pressed)
             onclick=(format!("watchpost.toggleKind({arg}, this)")) { (label) }
     }
