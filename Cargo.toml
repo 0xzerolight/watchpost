@@ -1,0 +1,33 @@
+[package]
+name = "watchpost"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8"
+maud = { version = "0.27", features = ["axum"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+tokio-cron-scheduler = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-logfmt = "0.3"
+thiserror = "2"
+url = "2"
+dotenvy = "0.15"
+pulldown-cmark = "0.13"
+getrandom = "0.3"
+subtle = "2"
+
+[dev-dependencies]
+wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
+temp-env = "0.3"
+
+[profile.release]
+strip = true
