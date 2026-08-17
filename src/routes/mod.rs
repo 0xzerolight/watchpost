@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
-use maud::{Markup, html};
 use tower_http::trace::TraceLayer;
 
-use crate::csrf::{CsrfToken, csrf_middleware};
+use crate::csrf::csrf_middleware;
 use crate::state::AppState;
 
 pub mod assets;
 pub mod html;
+pub mod index;
 pub mod settings;
 
 /// The application router.
@@ -22,7 +22,7 @@ pub mod settings;
 /// not exist yet.
 pub fn router(state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = Router::new()
-        .route("/", get(index))
+        .route("/", get(index::index_page))
         .route("/health", get(async || "OK"))
         .route("/settings", get(settings::settings_page))
         .route("/settings/discover", get(settings::settings_discover))
@@ -33,10 +33,4 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn(csrf_middleware))
         .layer(TraceLayer::new_for_http());
     router.with_state(state)
-}
-
-/// Placeholder dashboard — replaced by the real one in a later task. It exists
-/// now so the layout and the CSRF wiring are exercised end to end.
-async fn index(csrf: CsrfToken) -> Markup {
-    html::base("Home", &csrf, html! { p { "watchpost" } })
 }

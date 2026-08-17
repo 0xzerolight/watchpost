@@ -3,7 +3,7 @@
 //! handlers.
 #![allow(dead_code)]
 
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::errors::DbError;
 use crate::types::{
@@ -445,6 +445,88 @@ pub fn series(
     Ok(rows)
 }
 
+/// One slot per UTC day across the trailing `days` window ending today,
+/// whether or not that day was observed. The single source of truth for chart
+/// series shape — every page that plots `repo_stats` goes through here, so a
+/// gap means the same thing everywhere.
+///
+/// [`series`] returns observed rows only, which is the right shape for a table
+/// but the wrong one for a chart: a collector that ran on Monday and Thursday
+/// would draw those two points as adjacent, silently compressing the week.
+///
+/// How an unobserved day is filled depends on the metric
+/// ([`Metric::carries_forward`]):
+///
+/// * **Snapshot metrics** (stars, forks, watchers, issues, PRs) carry forward
+///   the last value observed at or before that day. "No observation" is not
+///   "value changed", so a gap between two syncs is a flat line, not a hole
+///   and never a drop to zero. The carry is *seeded* from the latest observed
+///   row strictly before the window, so a window that opens mid-history starts
+///   at the right level rather than with a run of nulls. `None` therefore
+///   appears only for days preceding the first observation ever.
+/// * **Rate metrics** (the four traffic columns) stay `None`. A day with no
+///   traffic row is unknown activity; repeating the previous day's count would
+///   fabricate visits.
+///
+/// `days == 0` is an empty range, not "all time" — unlike [`series`], there is
+/// no unbounded dense window.
+pub fn dense_series(
+    conn: &Connection,
+    repo_id: i64,
+    metric: Metric,
+    days: u32,
+) -> Result<Vec<(String, Option<i64>)>, DbError> {
+    if days == 0 {
+        return Ok(Vec::new());
+    }
+    let col = metric.column();
+    let today = chrono::Utc::now().date_naive();
+    let start = today - chrono::Duration::days(i64::from(days) - 1);
+    let (start_str, end_str) = (start.to_string(), today.to_string());
+
+    // Observed rows inside the window, keyed by date for O(1) lookup while
+    // walking the calendar below. No ORDER BY: the calendar walk supplies the
+    // ordering, this is only a lookup table.
+    let mut stmt = conn.prepare(&format!(
+        "SELECT date, {col} FROM repo_stats
+         WHERE repo_id = ?1 AND {col} IS NOT NULL AND date >= ?2 AND date <= ?3"
+    ))?;
+    let observed: std::collections::HashMap<String, i64> = stmt
+        .query_map(params![repo_id, start_str, end_str], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    // The pre-window seed. Only snapshot metrics need it — for a rate metric
+    // an earlier day says nothing about a later one.
+    let mut carried = if metric.carries_forward() {
+        conn.query_row(
+            &format!(
+                "SELECT {col} FROM repo_stats
+                 WHERE repo_id = ?1 AND {col} IS NOT NULL AND date < ?2
+                 ORDER BY date DESC LIMIT 1"
+            ),
+            params![repo_id, start_str],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    } else {
+        None
+    };
+
+    let carries = metric.carries_forward();
+    let mut out = Vec::with_capacity(days as usize);
+    for offset in 0..i64::from(days) {
+        let date = (start + chrono::Duration::days(offset)).to_string();
+        let observed_today = observed.get(&date).copied();
+        if observed_today.is_some() {
+            carried = observed_today;
+        }
+        out.push((date, if carries { carried } else { observed_today }));
+    }
+    Ok(out)
+}
+
 pub fn asset_series(
     conn: &Connection,
     repo_id: i64,
@@ -593,7 +675,6 @@ pub fn event_kinds(conn: &Connection, repo_id: i64) -> Result<Vec<String>, DbErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::OptionalExtension;
 
     // ---- substrate-proof test helpers -------------------------------------
 
@@ -1192,5 +1273,133 @@ mod tests {
         let recent = series(&c, 1, Metric::Stars, 7).unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].1, Some(2));
+    }
+
+    // ---- dense_series ------------------------------------------------------
+
+    fn values(rows: &[(String, Option<i64>)]) -> Vec<Option<i64>> {
+        rows.iter().map(|(_, v)| *v).collect()
+    }
+
+    #[test]
+    fn dense_series_spans_the_whole_window_ending_today() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let rows = dense_series(&c, 1, Metric::Stars, 7).unwrap();
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[0].0, days_ago(6));
+        assert_eq!(rows[6].0, days_ago(0));
+        // Strictly increasing, one slot per calendar day, no duplicates.
+        let dates: Vec<&str> = rows.iter().map(|(d, _)| d.as_str()).collect();
+        let mut sorted = dates.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(dates, sorted);
+    }
+
+    #[test]
+    fn dense_series_carries_snapshot_metric_over_gaps() {
+        // Observed on two days only; the unobserved days between them are the
+        // last known value, never a hole and never zero.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(6), &snap!(stars: Some(10))).unwrap();
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(14))).unwrap();
+        let rows = dense_series(&c, 1, Metric::Stars, 7).unwrap();
+        assert_eq!(
+            values(&rows),
+            vec![
+                Some(10),
+                Some(10),
+                Some(10),
+                Some(10),
+                Some(14),
+                Some(14),
+                Some(14)
+            ]
+        );
+        assert!(!values(&rows).iter().any(|v| v.is_none()));
+    }
+
+    #[test]
+    fn dense_series_keeps_rate_metric_gaps_as_none() {
+        // A day with no traffic row means "not observed", not "zero views" —
+        // the four traffic metrics must render as gaps, never carry forward.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let (d4, d1) = (days_ago(4), days_ago(1));
+        upsert_traffic_days(
+            &c,
+            1,
+            TrafficKind::Views,
+            &traffic_days(&[(&d4, 5, 3), (&d1, 8, 4)]),
+        )
+        .unwrap();
+        let rows = dense_series(&c, 1, Metric::ViewsCount, 5).unwrap();
+        assert_eq!(values(&rows), vec![Some(5), None, None, Some(8), None]);
+    }
+
+    #[test]
+    fn dense_series_seeds_from_the_latest_row_before_the_window() {
+        // The only observation predates the window entirely: every slot still
+        // carries it, so a mid-window start is not rendered as "no data".
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(40), &snap!(stars: Some(7))).unwrap();
+        upsert_stats(&c, 1, &days_ago(60), &snap!(stars: Some(3))).unwrap();
+        let rows = dense_series(&c, 1, Metric::Stars, 5).unwrap();
+        // Seeded from the *latest* pre-window row (7), not the earliest (3).
+        assert_eq!(values(&rows), vec![Some(7); 5]);
+    }
+
+    #[test]
+    fn dense_series_seed_is_superseded_by_an_in_window_row() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(40), &snap!(stars: Some(7))).unwrap();
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(9))).unwrap();
+        let rows = dense_series(&c, 1, Metric::Stars, 5).unwrap();
+        assert_eq!(
+            values(&rows),
+            vec![Some(7), Some(7), Some(9), Some(9), Some(9)]
+        );
+    }
+
+    #[test]
+    fn dense_series_is_none_before_the_first_observation_ever() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(9))).unwrap();
+        let rows = dense_series(&c, 1, Metric::Stars, 5).unwrap();
+        assert_eq!(values(&rows), vec![None, None, Some(9), Some(9), Some(9)]);
+    }
+
+    #[test]
+    fn dense_series_with_no_rows_is_all_none_at_full_length() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let rows = dense_series(&c, 1, Metric::Stars, 30).unwrap();
+        assert_eq!(rows.len(), 30);
+        assert!(rows.iter().all(|(_, v)| v.is_none()));
+    }
+
+    #[test]
+    fn dense_series_ignores_other_repos_rows() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_repo(&c, 2);
+        upsert_stats(&c, 2, &days_ago(3), &snap!(stars: Some(99))).unwrap();
+        let rows = dense_series(&c, 1, Metric::Stars, 5).unwrap();
+        assert!(rows.iter().all(|(_, v)| v.is_none()), "{rows:?}");
+    }
+
+    #[test]
+    fn dense_series_of_zero_days_is_empty() {
+        // No "all time" dense window exists — unlike `series`, 0 is not a
+        // sentinel here, it is simply an empty range.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(5))).unwrap();
+        assert!(dense_series(&c, 1, Metric::Stars, 0).unwrap().is_empty());
     }
 }

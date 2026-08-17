@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::csrf::{CSRF_HEADER, CsrfToken};
 use crate::routes::assets;
 
+pub mod index;
 pub mod settings;
 
 /// The document shell every page renders into.
@@ -69,11 +70,23 @@ pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
 /// inject markup. `<` is a valid JSON escape for `<`, so the payload still
 /// parses to the identical value client-side.
 pub fn json_script<T: Serialize>(id: &str, value: &T) -> Markup {
+    json_island(Some(id), None, value)
+}
+
+/// The same island keyed by class rather than id, for pages that embed one
+/// payload per repeated element — a card grid has as many sparkline payloads as
+/// it has cards, and ids would have to be uniquified only for the client to
+/// throw them away. The client reads these as `canvas.spark`'s sibling.
+pub fn json_script_class<T: Serialize>(class: &str, value: &T) -> Markup {
+    json_island(None, Some(class), value)
+}
+
+fn json_island<T: Serialize>(id: Option<&str>, class: Option<&str>, value: &T) -> Markup {
     let json = serde_json::to_string(value)
         .unwrap_or_else(|_| "null".to_owned())
         .replace('<', "\\u003c");
     html! {
-        script type="application/json" id=(id) { (PreEscaped(json)) }
+        script type="application/json" id=[id] class=[class] { (PreEscaped(json)) }
     }
 }
 
@@ -187,6 +200,27 @@ mod tests {
         assert!(out.ends_with("</script>"));
         assert!(out.contains("\\u003c/script>\\u003cscript>alert(1)"));
         assert!(!out.contains("<script>alert"));
+    }
+
+    #[test]
+    fn json_script_class_keys_by_class_and_omits_the_id() {
+        // Repeated islands must not carry an id at all — a duplicated one
+        // would be invalid markup and `getElementById` would see only the
+        // first card's payload.
+        let out = json_script_class("spark-data", &json!([1, null, 2])).into_string();
+        assert_eq!(
+            out,
+            r#"<script type="application/json" class="spark-data">[1,null,2]</script>"#
+        );
+        assert!(!out.contains("id="), "out was {out}");
+    }
+
+    #[test]
+    fn json_script_class_escapes_script_breakout_too() {
+        let payload = json!(["</script><script>alert(1)</script>"]);
+        let out = json_script_class("spark-data", &payload).into_string();
+        assert_eq!(out.matches("</script>").count(), 1);
+        assert!(!out.contains("<script>alert"), "out was {out}");
     }
 
     #[test]

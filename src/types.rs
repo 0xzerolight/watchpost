@@ -65,6 +65,26 @@ impl Metric {
             Metric::ClonesUniques => "clones_uniques",
         }
     }
+
+    /// Whether an unobserved day should inherit the last observed value
+    /// (see [`crate::db::queries::dense_series`]).
+    ///
+    /// The split is snapshot vs. rate, not cumulative vs. not. Stars, forks,
+    /// watchers, issues and PRs are *level* readings: the number exists on
+    /// every day whether or not watchpost looked, so a day with no row means
+    /// "not measured", and the last measurement is the best answer. The four
+    /// traffic columns are per-day *rates*: a missing day is unknown activity,
+    /// and repeating yesterday's view count would invent traffic that may
+    /// never have happened.
+    pub(crate) fn carries_forward(self) -> bool {
+        match self {
+            Metric::Stars | Metric::Forks | Metric::Watchers | Metric::Issues | Metric::Prs => true,
+            Metric::ViewsCount
+            | Metric::ViewsUniques
+            | Metric::ClonesCount
+            | Metric::ClonesUniques => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

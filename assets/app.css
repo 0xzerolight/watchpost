@@ -64,6 +64,47 @@
   height: 220px;
 }
 
+/*
+ * Dashboard card grid. `auto-fill` + `minmax` means the column count follows
+ * the viewport with no breakpoints to maintain — one column on a phone, as many
+ * as fit on a desktop.
+ */
+.wp-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+
+/* Pico gives articles a generous default margin, which a grid already spaces. */
+.wp-card {
+  margin: 0;
+}
+
+/*
+ * The sparkline canvas needs a height from its parent for the same reason
+ * `.chart-box` does — Chart.js measures the container, not the canvas.
+ */
+.wp-spark {
+  position: relative;
+  height: 3rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Stats row: label above value, evenly divided, no list markers. */
+.wp-stats {
+  display: flex;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wp-stats li {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
 /* Kind slots: set the colour, let `.wp-chip` and friends read it. */
 .wp-kind-0 { --wp-kind-color: var(--wp-marker-0); }
 .wp-kind-1 { --wp-kind-color: var(--wp-marker-1); }
