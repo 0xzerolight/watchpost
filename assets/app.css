@@ -168,6 +168,18 @@
   display: block;
 }
 
+/*
+ * Per-row edit/delete controls. Pico sizes buttons for forms, which makes a
+ * pair of them in a table cell as tall as the row they belong to; these stay
+ * out of the way until they are wanted.
+ */
+.wp-action {
+  width: auto;
+  margin: 0 0.25rem 0 0;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+}
+
 /* Layout utilities — enough for a row of controls, not a grid system. */
 .wp-row {
   display: flex;

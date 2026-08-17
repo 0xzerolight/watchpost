@@ -733,6 +733,33 @@ pub fn insert_event(conn: &Connection, e: &NewEvent) -> Result<i64, DbError> {
     Ok(conn.last_insert_rowid())
 }
 
+/// One event, scoped to the repo that owns it. `None` covers both "no such
+/// event" and "that event belongs to another repo", which is what a handler
+/// holding two path segments needs before it touches anything.
+pub fn event_by_id(conn: &Connection, repo_id: i64, id: i64) -> Result<Option<Event>, DbError> {
+    let mut stmt = conn.prepare("SELECT * FROM events WHERE id = ?1 AND repo_id = ?2")?;
+    let row = stmt
+        .query_map(params![id, repo_id], map_event_row)?
+        .next()
+        .transpose()?;
+    Ok(row)
+}
+
+/// Whether `repo_id` names a repo watchpost has a page for.
+///
+/// Same predicate as [`repo_overview`], so an event route 404s exactly where
+/// the repo page does — an untracked or upstream-hidden repo has neither.
+pub fn repo_is_visible(conn: &Connection, repo_id: i64) -> Result<bool, DbError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM repos WHERE id = ?1 AND tracked = 1 AND hidden = 0",
+        params![repo_id],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Not scoped by repo: a caller holding an id that came from a URL must prove
+/// ownership first with [`event_by_id`].
 pub fn update_event(conn: &Connection, id: i64, e: &NewEvent) -> Result<(), DbError> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -743,6 +770,7 @@ pub fn update_event(conn: &Connection, id: i64, e: &NewEvent) -> Result<(), DbEr
     Ok(())
 }
 
+/// Not scoped by repo — see [`update_event`].
 pub fn delete_event(conn: &Connection, id: i64) -> Result<(), DbError> {
     conn.execute("DELETE FROM events WHERE id = ?1", params![id])?;
     Ok(())

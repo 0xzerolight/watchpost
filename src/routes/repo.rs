@@ -103,6 +103,7 @@ pub async fn repo_page(
         referrers: &page.referrers,
         paths: &page.paths,
         events: &page.events,
+        kinds: &page.kinds,
         popular: PopularParams {
             repo_id,
             days: selected,
@@ -125,6 +126,7 @@ struct PageData {
     referrers: Vec<PopularItem>,
     paths: Vec<PopularItem>,
     events: Vec<Event>,
+    kinds: Vec<String>,
 }
 
 /// `None` means no such repo — the handler turns that into a 404.
@@ -146,6 +148,7 @@ fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageDat
         referrers: queries::popular_items(conn, repo_id, PopularKind::Referrers, window)?,
         paths: queries::popular_items(conn, repo_id, PopularKind::Paths, window)?,
         events: queries::events_for_repo(conn, repo_id, None)?,
+        kinds: queries::event_kinds(conn, repo_id)?,
     }))
 }
 

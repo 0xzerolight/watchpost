@@ -1,16 +1,19 @@
 //! Markup for the repo page: the period-scoped charts and popular tables, plus
-//! a read-only events list (Task 13 turns that one into the editable timeline).
+//! the editable event timeline.
 //!
-//! The page has three swap targets, and each one is a wrapper this module
+//! The page has four swap targets, and each one is a wrapper this module
 //! renders: `#period-scope` (everything that depends on the selected period),
-//! `#refs-table` and `#paths-table` (one sortable table each). A handler that
-//! answers an htmx request re-renders exactly one of them, so every function
-//! here is callable on its own rather than only as part of the whole page.
+//! `#refs-table` and `#paths-table` (one sortable table each), and
+//! `#events-section` (the whole timeline, which every event mutation replaces).
+//! A handler that answers an htmx request re-renders exactly one of them, so
+//! every function here is callable on its own rather than only as part of the
+//! whole page — the two `<tr>` renderers below are swapped in on their own too,
+//! by the per-row edit and cancel buttons.
 
 use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
-use crate::routes::html::{json_script, kind_class};
+use crate::routes::html::{json_script, kind_class, render_markdown};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
 
@@ -254,6 +257,8 @@ pub struct RepoView<'a> {
     pub referrers: &'a [PopularItem],
     pub paths: &'a [PopularItem],
     pub events: &'a [Event],
+    /// Distinct event kinds on this repo, for the filter chips and datalist.
+    pub kinds: &'a [String],
     pub popular: PopularParams,
 }
 
@@ -286,7 +291,12 @@ pub fn repo_body(view: &RepoView) -> Markup {
             }
         }
         (period_scope(view))
-        (events_section(view.events))
+        (events_section(&EventsView {
+            repo_id: view.popular.repo_id,
+            events: view.events,
+            kinds: view.kinds,
+            draft: None,
+        }))
     }
 }
 
@@ -430,45 +440,258 @@ fn sort_th(
     }
 }
 
-/// The events list.
+// ---------------------------------------------------------------------------
+// The event timeline
+// ---------------------------------------------------------------------------
+
+/// A submission the handler refused, on its way back to the browser: the values
+/// as typed, plus a message under each field that failed.
 ///
-/// Read-only for now: Task 13 replaces this with the editable timeline (add
-/// form, kind filter chips, per-row edit/delete). What has to be right already
-/// is the `#events-section` wrapper those handlers swap and the `#events-data`
-/// island the chart markers read.
-pub fn events_section(events: &[Event]) -> Markup {
-    let markers: Vec<EventMarker> = events.iter().map(EventMarker::from).collect();
+/// Its presence is also the add form's open/closed state — a form that bounced
+/// has to be visible for its messages to mean anything.
+#[derive(Debug, Default)]
+pub struct EventDraft {
+    pub date: String,
+    pub title: String,
+    pub notes: String,
+    pub url: String,
+    pub kind: String,
+    pub errors: EventErrors,
+}
+
+/// One message per field, so a single round trip reports everything wrong with
+/// a submission rather than the first thing wrong with it.
+#[derive(Debug, Default)]
+pub struct EventErrors {
+    pub date: Option<String>,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub kind: Option<String>,
+}
+
+impl EventErrors {
+    pub fn any(&self) -> bool {
+        self.date.is_some() || self.title.is_some() || self.url.is_some() || self.kind.is_some()
+    }
+}
+
+/// Everything one render of `#events-section` needs.
+pub struct EventsView<'a> {
+    pub repo_id: i64,
+    /// Already ordered date-descending by the query.
+    pub events: &'a [Event],
+    /// Distinct kinds on this repo, for the filter chips and the datalist.
+    pub kinds: &'a [String],
+    pub draft: Option<&'a EventDraft>,
+}
+
+/// The whole timeline, and the only fragment a mutation ever answers with.
+///
+/// Every mutation re-renders all of it rather than the row it touched, because
+/// a row is not independent of the rest: an edited date reorders the table, a
+/// new or removed kind adds or drops a filter chip and a datalist entry, and
+/// the `#events-data` island the chart markers read has to agree with all of
+/// them. One swap keeps them in step; several coordinated ones would not.
+pub fn events_section(view: &EventsView) -> Markup {
+    let markers: Vec<EventMarker> = view.events.iter().map(EventMarker::from).collect();
     html! {
         section id="events-section" {
             h2 { "Events" }
-            @if events.is_empty() {
+            (kind_chips(view.kinds))
+            (event_add_form(view.repo_id, view.draft))
+            // Outside the collapsed <details> on purpose: the edit rows point
+            // their kind inputs at this same list.
+            datalist id="kind-list" { @for kind in view.kinds { option value=(kind); } }
+            @if view.events.is_empty() {
                 p class="wp-muted" { "No events yet." }
             } @else {
-                table {
-                    thead { tr { th scope="col" { "Date" } th scope="col" { "Kind" } th scope="col" { "Event" } } }
-                    tbody {
-                        @for event in events {
-                            tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()] {
-                                td { (event.date) }
-                                td {
-                                    @if let Some(kind) = &event.kind {
-                                        span class=(format!("wp-chip {}", kind_class(&event.kind))) { (kind) }
-                                    }
-                                }
-                                td {
-                                    @if let Some(url) = &event.url {
-                                        a href=(url) rel="noopener noreferrer" { (event.title) }
-                                    } @else {
-                                        (event.title)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                (events_table(view.repo_id, view.events))
             }
             (json_script("events-data", &markers))
+            // Guarded for the same reason the chart init is: app.js is
+            // deferred, so on a full page load this runs before the stubs
+            // exist. Static text only — no user data is spliced in here.
             script { (PreEscaped("window.watchpost && watchpost.refreshMarkers();")) }
+        }
+    }
+}
+
+/// The kind filter row: one chip per distinct kind, plus the implicit "all".
+fn kind_chips(kinds: &[String]) -> Markup {
+    html! {
+        div class="wp-row wp-gap-1" role="group" aria-label="Filter events by kind" {
+            (kind_chip(None, "All", true))
+            @for kind in kinds { (kind_chip(Some(kind), kind, false)) }
+        }
+    }
+}
+
+/// One filter chip.
+///
+/// The kind is user-supplied and lands inside an inline event handler, so it is
+/// emitted as a JSON literal rather than spliced between quotes: `serde_json`
+/// escapes whatever would end the JS string, maud escapes the attribute around
+/// it, and the browser undoes exactly the second layer before the JS parser
+/// sees the first. Splicing `'{kind}'` instead would let a kind containing an
+/// apostrophe close the argument and run what followed.
+///
+/// The "all" chip passes `null` rather than a sentinel string, so a repo with
+/// an event kind literally called "all" cannot collide with it.
+fn kind_chip(kind: Option<&str>, label: &str, pressed: bool) -> Markup {
+    let arg = serde_json::to_string(&kind).unwrap_or_else(|_| "null".to_owned());
+    let class = format!("wp-chip {}", kind_class(&kind.map(str::to_owned)));
+    html! {
+        button type="button" class=(class) data-kind=[kind]
+            aria-pressed=(pressed)
+            onclick=(format!("watchpost.toggleKind({arg}, this)")) { (label) }
+    }
+}
+
+/// The "Add event" disclosure.
+///
+/// The htmx attributes sit on the `<form>`, not on the button: htmx serializes
+/// a form's named fields on submit, so pressing Enter in a field works and no
+/// `hx-include` has to enumerate them.
+fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
+    let blank = EventDraft::default();
+    let values = draft.unwrap_or(&blank);
+    let date = match draft {
+        Some(draft) => draft.date.clone(),
+        None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
+    };
+    html! {
+        details open[draft.is_some()] {
+            summary { "Add event" }
+            form hx-post=(format!("/repos/{repo_id}/events"))
+                hx-target="#events-section"
+                hx-swap="outerHTML" {
+                (field("Date", values.errors.date.as_deref(), html! {
+                    input type="date" name="date" value=(date) required;
+                }))
+                (field("Title", values.errors.title.as_deref(), html! {
+                    input type="text" name="title" value=(values.title) required;
+                }))
+                (field("Kind", values.errors.kind.as_deref(), html! {
+                    input type="text" name="kind" value=(values.kind)
+                        list="kind-list" placeholder="release, hn, blog…";
+                }))
+                // `type=url` is a browser-side nicety only; the scheme
+                // allowlist that actually matters runs on the server.
+                (field("Link", values.errors.url.as_deref(), html! {
+                    input type="url" name="url" value=(values.url) placeholder="https://…";
+                }))
+                (field("Notes", None, html! {
+                    textarea name="notes" rows="3" placeholder="Markdown" { (values.notes) }
+                }))
+                button type="submit" { "Add event" }
+            }
+        }
+    }
+}
+
+/// A labelled input with its rejection message, when it has one.
+fn field(label: &str, error: Option<&str>, input: Markup) -> Markup {
+    html! {
+        label { (label) (input) }
+        @if let Some(message) = error {
+            small class="wp-danger wp-small" role="alert" { (message) }
+        }
+    }
+}
+
+fn events_table(repo_id: i64, events: &[Event]) -> Markup {
+    html! {
+        table {
+            thead {
+                tr {
+                    th scope="col" { "Date" }
+                    th scope="col" { "Kind" }
+                    th scope="col" { "Event" }
+                    th scope="col" { "Notes" }
+                    th scope="col" { "Actions" }
+                }
+            }
+            tbody { @for event in events { (event_row(repo_id, event)) } }
+        }
+    }
+}
+
+/// One event as a display row. Also served on its own by the cancel button, so
+/// the swapped-back row is byte-identical to the one the edit form replaced.
+pub fn event_row(repo_id: i64, event: &Event) -> Markup {
+    let base = format!("/repos/{repo_id}/events/{}", event.id);
+    html! {
+        tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()] {
+            td { (event.date) }
+            td {
+                @if let Some(kind) = &event.kind {
+                    span class=(format!("wp-chip {}", kind_class(&event.kind))) { (kind) }
+                }
+            }
+            td {
+                // Deliberately NOT re-validated here. `validate_event_url` on
+                // the write path is the only thing that keeps a `javascript:`
+                // value out of this href — maud escaping does not help, because
+                // such a value is a perfectly valid attribute string. Every row
+                // that reaches this point went through it.
+                @if let Some(url) = &event.url {
+                    a href=(url) rel="noopener noreferrer" { (event.title) }
+                } @else {
+                    (event.title)
+                }
+            }
+            td {
+                @if !event.notes.trim().is_empty() {
+                    details { summary { "notes" } (render_markdown(&event.notes)) }
+                }
+            }
+            td {
+                button type="button" class="wp-action"
+                    hx-get=(format!("{base}/edit"))
+                    hx-target="closest tr"
+                    hx-swap="outerHTML" { "Edit" }
+                button type="button" class="wp-action"
+                    hx-delete=(base)
+                    hx-confirm="Delete event?"
+                    hx-target="#events-section"
+                    hx-swap="outerHTML" { "Delete" }
+            }
+        }
+    }
+}
+
+/// The same row turned into inputs.
+///
+/// A `<tr>` cannot legally contain a `<form>`, so Save cannot rely on form
+/// serialization the way the add form does — `hx-include="closest tr"` collects
+/// the named inputs in this row instead. Save swaps the whole section (an
+/// edited date reorders the table); Cancel swaps just this row back.
+pub fn event_form_row(repo_id: i64, event: &Event) -> Markup {
+    let base = format!("/repos/{repo_id}/events/{}", event.id);
+    html! {
+        tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()] {
+            td { input type="date" name="date" value=(event.date) required; }
+            td {
+                input type="text" name="kind" list="kind-list"
+                    value=(event.kind.as_deref().unwrap_or_default());
+            }
+            td {
+                input type="text" name="title" value=(event.title) required;
+                input type="url" name="url" placeholder="https://…"
+                    value=(event.url.as_deref().unwrap_or_default());
+            }
+            td { textarea name="notes" rows="3" { (event.notes) } }
+            td {
+                button type="button" class="wp-action"
+                    hx-put=(base)
+                    hx-include="closest tr"
+                    hx-target="#events-section"
+                    hx-swap="outerHTML" { "Save" }
+                button type="button" class="wp-action"
+                    hx-get=(base)
+                    hx-target="closest tr"
+                    hx-swap="outerHTML" { "Cancel" }
+            }
         }
     }
 }
@@ -617,6 +840,7 @@ mod tests {
             referrers: &[],
             paths: &[],
             events: &[],
+            kinds: &[],
             popular: params(),
         };
         let out = period_scope(&view).into_string();
@@ -632,10 +856,118 @@ mod tests {
         );
     }
 
+    fn events_view<'a>(events: &'a [Event], kinds: &'a [String]) -> EventsView<'a> {
+        EventsView {
+            repo_id: 1,
+            events,
+            kinds,
+            draft: None,
+        }
+    }
+
     #[test]
     fn events_section_emits_markers_even_when_empty() {
-        let out = events_section(&[]).into_string();
+        let out = events_section(&events_view(&[], &[])).into_string();
         assert!(out.contains(r#"id="events-data">[]<"#), "out was {out}");
         assert!(out.contains("No events yet"), "out was {out}");
+        // The add form is reachable on a repo with no events at all.
+        assert!(
+            out.contains("<summary>Add event</summary>"),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn a_rejected_draft_reopens_the_form_with_its_values() {
+        let draft = EventDraft {
+            date: "nope".into(),
+            title: "Kept".into(),
+            notes: "kept notes".into(),
+            url: "ftp://x".into(),
+            kind: "release".into(),
+            errors: EventErrors {
+                date: Some("bad date".into()),
+                url: Some("bad url".into()),
+                ..EventErrors::default()
+            },
+        };
+        let view = EventsView {
+            draft: Some(&draft),
+            ..events_view(&[], &[])
+        };
+        let out = events_section(&view).into_string();
+
+        assert!(out.contains("<details open>"), "out was {out}");
+        assert!(out.contains(r#"value="Kept""#), "out was {out}");
+        assert!(out.contains(r#"value="ftp://x""#), "out was {out}");
+        assert!(out.contains("kept notes"), "out was {out}");
+        // One message per failed field, and none for the fields that passed.
+        assert_eq!(
+            out.matches(r#"class="wp-danger wp-small" role="alert""#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        assert!(out.contains("bad date"), "out was {out}");
+    }
+
+    #[test]
+    fn a_hostile_kind_cannot_break_out_of_the_chip_handler() {
+        // Quote, backslash, apostrophe and a newline: everything that would
+        // end the JS string literal early if the kind were spliced in raw.
+        let kinds = vec!["\"'\\\n<x>".to_owned()];
+        let out = events_section(&events_view(&[], &kinds)).into_string();
+
+        let onclick = out
+            .split(r#"onclick=""#)
+            .nth(2)
+            .expect("the kind chip follows the All chip")
+            .split('"')
+            .next()
+            .unwrap();
+        // No raw `"` survived to close the attribute, and no raw newline
+        // survived to terminate the statement.
+        assert!(!onclick.contains('"'), "onclick was {onclick}");
+        assert!(!onclick.contains('\n'), "onclick was {onclick}");
+        assert!(onclick.starts_with("watchpost.toggleKind("), "{onclick}");
+        assert!(!out.contains("<x>"), "out was {out}");
+    }
+
+    #[test]
+    fn a_row_links_its_title_and_hides_notes_behind_a_disclosure() {
+        let event = Event {
+            id: 7,
+            repo_id: 1,
+            date: "2026-08-10".into(),
+            title: "Launch".into(),
+            notes: "**bold**".into(),
+            url: Some("https://example.com/x".into()),
+            kind: Some("release".into()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let out = event_row(1, &event).into_string();
+        assert!(
+            out.starts_with(r#"<tr id="event-row-7" data-kind="release""#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<a href="https://example.com/x" rel="noopener noreferrer">Launch</a>"#),
+            "out was {out}"
+        );
+        assert!(out.contains("<summary>notes</summary>"), "out was {out}");
+        assert!(out.contains("<strong>bold</strong>"), "out was {out}");
+
+        // The edit row keeps the id and kind attributes, so the marker code
+        // sees the same contract mid-edit.
+        let form = event_form_row(1, &event).into_string();
+        assert!(
+            form.starts_with(r#"<tr id="event-row-7" data-kind="release""#),
+            "form was {form}"
+        );
+        assert!(
+            form.contains(r#"hx-include="closest tr""#),
+            "form was {form}"
+        );
     }
 }

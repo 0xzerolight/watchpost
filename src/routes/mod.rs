@@ -10,6 +10,7 @@ use crate::csrf::csrf_middleware;
 use crate::state::AppState;
 
 pub mod assets;
+pub mod events;
 pub mod html;
 pub mod index;
 pub mod repo;
@@ -26,6 +27,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(index::index_page))
         .route("/health", get(async || "OK"))
         .route("/repos/{id}", get(repo::repo_page))
+        .route("/repos/{id}/events", post(events::event_create))
+        // One path, three methods: the display row a cancelled edit swaps back
+        // in, and the two mutations that name an existing event.
+        .route(
+            "/repos/{id}/events/{eid}",
+            get(events::event_row_get)
+                .put(events::event_update)
+                .delete(events::event_delete),
+        )
+        .route(
+            "/repos/{id}/events/{eid}/edit",
+            get(events::event_edit_form),
+        )
         .route("/settings", get(settings::settings_page))
         .route("/settings/discover", get(settings::settings_discover))
         .route("/settings/repos", post(settings::settings_save))
