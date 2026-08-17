@@ -23,6 +23,10 @@ use watchpost::routes::assets::asset_href;
 use watchpost::routes::router;
 use watchpost::state::{AppState, SyncStatus};
 
+/// A well-formed token: 64 lowercase hex chars, the shape the middleware mints.
+/// Anything else is rejected as malformed and replaced.
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 fn app() -> Router {
     let base: Url = "http://127.0.0.1:1/".parse().unwrap();
     let cfg = Config {
@@ -257,7 +261,7 @@ async fn index_reuses_an_existing_token() {
     let resp = app()
         .oneshot(
             Request::get("/")
-                .header("cookie", "wp_csrf=abc123")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -268,6 +272,6 @@ async fn index_reuses_an_existing_token() {
     assert!(resp.headers().get("set-cookie").is_none());
     assert_eq!(
         hx_headers(&body_string(resp).await),
-        serde_json::json!({ "x-csrf-token": "abc123" })
+        serde_json::json!({ "x-csrf-token": TOKEN })
     );
 }

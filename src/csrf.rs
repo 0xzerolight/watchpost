@@ -12,6 +12,20 @@
 //! keeps the flag off so a page can recover the token client-side if needed.
 //! `SameSite=Lax` is a second line of defence, not the primary one.
 //!
+//! The other two attributes are about the cookie surviving rather than
+//! defending. `Max-Age` gives it 30 days: a session cookie dies with the
+//! browser, and the page rendered from a stale bfcache entry afterwards then
+//! carries a token with no cookie behind it — a 403 the user cannot explain or
+//! clear. `Secure` is added only when `x-forwarded-proto` says the browser
+//! spoke HTTPS, because setting it unconditionally would make the cookie
+//! invisible to a plain-HTTP deployment and break every POST there.
+//!
+//! Only a cookie shaped like one this module minted (64 lowercase hex) is
+//! honoured. On a safe request anything else is replaced, on an unsafe one it
+//! can never authorise: a value the server never issued is not a secret, so an
+//! attacker who can plant a cookie must not be able to satisfy the other half
+//! by simply echoing what they planted.
+//!
 //! First-visit correctness is the whole point of the ordering below: on a GET
 //! with no cookie the token is generated *before* the handler runs and stashed
 //! in the request extensions, so the first page render already embeds a token
@@ -33,6 +47,8 @@ use crate::errors::AppError;
 pub const CSRF_COOKIE: &str = "wp_csrf";
 /// Header that must echo the cookie value on unsafe methods.
 pub const CSRF_HEADER: &str = "x-csrf-token";
+/// Cookie lifetime in seconds (30 days).
+const COOKIE_MAX_AGE: u32 = 2_592_000;
 
 /// The CSRF token for the current request.
 ///
@@ -76,6 +92,28 @@ fn cookie_value<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
         .map(|(_, value)| value.trim())
 }
 
+/// Does `s` have the shape [`generate_token`] produces — 64 lowercase hex?
+///
+/// A cookie that fails this never came from here: it is a truncated value, a
+/// leftover from another app on the same host, or a probe. Checking the shape
+/// first is what lets a malformed cookie be *replaced* on a safe request
+/// instead of wedging the session into permanent 403s.
+fn is_token_format(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Did the request reach the proxy over HTTPS?
+///
+/// Only the first hop's scheme matters: `x-forwarded-proto` accumulates one
+/// entry per proxy, and the leftmost is the one the browser actually spoke.
+fn forwarded_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"))
+}
+
 /// 32 bytes of OS randomness as lowercase hex (64 chars).
 fn generate_token() -> String {
     let mut bytes = [0u8; 32];
@@ -99,8 +137,11 @@ pub async fn csrf_middleware(mut req: Request, next: Next) -> Response {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
         let stored = cookie_value(req.headers(), CSRF_COOKIE).unwrap_or_default();
-        // `ct_eq` on slices is length-aware and short-circuit free.
-        let matches: bool = !sent.is_empty() && sent.as_bytes().ct_eq(stored.as_bytes()).into();
+        // A cookie this server never minted is not a secret, so echoing it back
+        // proves nothing; `ct_eq` on slices is length-aware and short-circuit
+        // free, and a well-formed `stored` forces `sent` to match it exactly.
+        let matches: bool =
+            is_token_format(stored) && sent.as_bytes().ct_eq(stored.as_bytes()).into();
         return if matches {
             next.run(req).await
         } else {
@@ -108,15 +149,25 @@ pub async fn csrf_middleware(mut req: Request, next: Next) -> Response {
         };
     }
 
-    if let Some(existing) = cookie_value(req.headers(), CSRF_COOKIE).map(str::to_owned) {
+    // A malformed cookie is treated as no cookie at all: it is overwritten here
+    // rather than carried forward, since keeping it would 403 every POST.
+    if let Some(existing) = cookie_value(req.headers(), CSRF_COOKIE)
+        .filter(|value| is_token_format(value))
+        .map(str::to_owned)
+    {
         req.extensions_mut().insert(CsrfToken(existing));
         return next.run(req).await;
     }
 
+    let secure = forwarded_https(req.headers());
     let token = generate_token();
     req.extensions_mut().insert(CsrfToken(token.clone()));
     let mut resp = next.run(req).await;
-    let cookie = format!("{CSRF_COOKIE}={token}; Path=/; SameSite=Lax");
+    let mut cookie =
+        format!("{CSRF_COOKIE}={token}; Path=/; SameSite=Lax; Max-Age={COOKIE_MAX_AGE}");
+    if secure {
+        cookie.push_str("; Secure");
+    }
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         resp.headers_mut().append(header::SET_COOKIE, value);
     }
@@ -153,5 +204,41 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn generated_tokens_pass_the_format_check() {
+        assert!(is_token_format(&generate_token()));
+    }
+
+    #[test]
+    fn is_token_format_rejects_anything_else() {
+        let valid = "0123456789abcdef".repeat(4);
+        assert!(is_token_format(&valid));
+        assert!(!is_token_format(""));
+        assert!(!is_token_format("abc123"));
+        // Right alphabet, wrong length.
+        assert!(!is_token_format(&valid[..63]));
+        assert!(!is_token_format(&format!("{valid}0")));
+        // Right length, wrong alphabet.
+        assert!(!is_token_format(&valid.to_uppercase()));
+        assert!(!is_token_format(&"g".repeat(64)));
+        assert!(!is_token_format(&format!("{} ", &valid[..63])));
+    }
+
+    #[test]
+    fn forwarded_https_reads_only_the_first_hop() {
+        let proto = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-proto", HeaderValue::from_str(value).unwrap());
+            forwarded_https(&headers)
+        };
+        assert!(proto("https"));
+        assert!(proto("HTTPS"));
+        assert!(proto(" https , http"));
+        assert!(!proto("http"));
+        assert!(!proto("http, https"));
+        assert!(!proto(""));
+        assert!(!forwarded_https(&HeaderMap::new()));
     }
 }

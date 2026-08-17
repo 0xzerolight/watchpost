@@ -22,6 +22,10 @@ use watchpost::ratelimit::RateGate;
 use watchpost::routes::router;
 use watchpost::state::{AppState, SyncStatus};
 
+/// A well-formed CSRF token: 64 lowercase hex chars. The POST below is rejected
+/// for the missing header, not for a malformed cookie.
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 fn app() -> Router {
     let base: Url = "http://127.0.0.1:1/".parse().unwrap();
     let cfg = Config {
@@ -134,7 +138,7 @@ async fn a_csrf_rejection_is_decorated_too() {
     let resp = app()
         .oneshot(
             Request::post("/sync")
-                .header("cookie", "wp_csrf=abc123")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
                 .body(Body::empty())
                 .unwrap(),
         )

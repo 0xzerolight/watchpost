@@ -32,6 +32,9 @@ const REPO_A: &str = "octo/aaa";
 const REPO_B: &str = "octo/bbb";
 const ID_A: i64 = 1;
 const ID_B: i64 = 2;
+/// A well-formed CSRF token: 64 lowercase hex chars. The POSTs below are
+/// rejected for the missing header, not for a malformed cookie.
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -395,7 +398,7 @@ async fn csrf_enforced_on_settings_posts() {
             .clone()
             .oneshot(
                 Request::post(uri)
-                    .header("cookie", "wp_csrf=abc123")
+                    .header("cookie", format!("wp_csrf={TOKEN}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("tracked=1"))
                     .unwrap(),
