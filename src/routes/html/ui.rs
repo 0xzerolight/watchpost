@@ -6,7 +6,10 @@
 //! is wired to its input happens here rather than in four templates that have
 //! quietly drifted apart.
 
+use axum::http::StatusCode;
 use maud::{Markup, html};
+
+use crate::csrf::CsrfToken;
 
 /// Which nav entry the current page owns, so the shell can mark it
 /// `aria-current`. `None` is for pages that live outside the nav.
@@ -89,6 +92,28 @@ pub fn notice(kind: Notice, body: Markup) -> Markup {
     html! {
         p class=(class) role=(role) { (body) }
     }
+}
+
+/// The page every failed request renders: what went wrong, in the words the
+/// user is allowed to have, plus one link out of the dead end.
+///
+/// The CSRF token is deliberately empty. Nothing here mutates, and an error
+/// response has no business minting a token — a page rendered from a request
+/// that never reached a handler would otherwise carry a token whose cookie the
+/// response may not even set.
+pub fn error_page(status: StatusCode, headline: &str, detail: &str) -> Markup {
+    let code = status.as_u16();
+    let reason = status.canonical_reason().unwrap_or("Error");
+    super::base(
+        "Error",
+        NavItem::None,
+        &CsrfToken(String::new()),
+        html! {
+            (page_header(headline, Some(html! { (code) " " (reason) }), None))
+            (notice(Notice::Error, html! { (detail) }))
+            p { a href="/" { "Back to repos" } }
+        },
+    )
 }
 
 /// Wrap a table so a narrow viewport scrolls it instead of the whole page.
@@ -216,7 +241,37 @@ fn field_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
     use chrono::{Duration, Utc};
+
+    #[test]
+    fn error_page_is_a_whole_document_with_a_way_out() {
+        let out = error_page(StatusCode::NOT_FOUND, "Not found", "No such thing.").into_string();
+
+        assert!(out.starts_with("<!DOCTYPE html>"), "{out}");
+        assert!(out.contains("<h1>Not found</h1>"), "{out}");
+        assert!(out.contains("404"), "{out}");
+        assert!(
+            out.contains(r#"class="wp-notice wp-notice-error" role="alert">No such thing."#),
+            "{out}"
+        );
+        // A dead end without a link back is the whole complaint about error
+        // pages, so the link is part of the contract.
+        assert!(out.contains(r#"<a href="/">"#), "{out}");
+        // Outside the nav: neither entry may claim to be the current page.
+        assert!(!out.contains("aria-current"), "{out}");
+    }
+
+    #[test]
+    fn error_page_carries_an_empty_csrf_token() {
+        // Nothing on the page mutates, and a real token must not be minted for
+        // a request that failed.
+        let out = error_page(StatusCode::INTERNAL_SERVER_ERROR, "Boom", "Logged.").into_string();
+        assert!(
+            out.contains(r#"hx-headers="{&quot;x-csrf-token&quot;:&quot;&quot;}""#),
+            "{out}"
+        );
+    }
 
     fn ago(d: Duration) -> String {
         (Utc::now() - d).to_rfc3339()

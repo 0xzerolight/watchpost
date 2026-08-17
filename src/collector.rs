@@ -111,7 +111,6 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
                 // Partial data landed, so no backoff — the repo stays in the
                 // next cycle. The streak still ticks up; a later full success
                 // clears it.
-                warn!(repo = %repo.name, detail = %partial, "partial sync");
                 record_err(&state, &repo, &partial, None).await;
                 report.repos_failed += 1;
                 failed.push((repo.name.clone(), partial));
@@ -127,10 +126,13 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
                     report.aborted = Some(format!("rate limited until {until}"));
                     break;
                 }
-                let msg = e.to_string();
+                // `last_error` is rendered in a tooltip and in the sync
+                // banner, so what is stored is the user-facing category; the
+                // full error goes to the log on the line below.
+                let msg = user_message(&e);
                 let streak = u32::try_from(repo.error_streak).unwrap_or(0);
                 let until = (Utc::now() + repo_backoff(streak)).to_rfc3339();
-                warn!(repo = %repo.name, error = %msg, "sync failed");
+                warn!(repo = %repo.name, error = %e, "sync failed");
                 record_err(&state, &repo, &msg, Some(&until)).await;
                 report.repos_failed += 1;
                 failed.push((repo.name.clone(), msg));
@@ -352,12 +354,29 @@ async fn sync_one_repo(
     if errs.is_empty() {
         return Ok(None);
     }
-    let detail = errs
-        .iter()
-        .map(|(label, e)| format!("{label}: {e}"))
-        .collect::<Vec<_>>()
-        .join("; ");
+    // Two renderings of the same list: the log keeps every detail, the stored
+    // message keeps only the endpoint labels and the error categories, because
+    // it is shown in the UI.
+    let full = join_errors(&errs, GhError::to_string);
+    warn!(repo = %name, detail = %full, "partial sync");
+    let detail = join_errors(&errs, GhError::user_message);
     Ok(Some(format!("partial: {detail}")))
+}
+
+fn join_errors(errs: &[(&'static str, GhError)], render: fn(&GhError) -> String) -> String {
+    errs.iter()
+        .map(|(label, e)| format!("{label}: {}", render(e)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The user-facing text for a failed sync. A db failure has no category worth
+/// showing — the operator's log line is the only useful account of it.
+fn user_message(e: &AppError) -> String {
+    match e {
+        AppError::Gh(gh) => gh.user_message(),
+        _ => "Sync failed; the error was logged.".to_owned(),
+    }
 }
 
 /// Backfill full star history for repos that have never had it, spending at

@@ -741,7 +741,17 @@ async fn unknown_repo_is_not_found() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
 
-    assert_eq!(h.get("/repos/999").await.status(), StatusCode::NOT_FOUND);
+    let resp = h.get("/repos/999").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // A styled page, not the bare string a `Display` impl would produce.
+    let body = body_string(resp).await;
+    assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
+    assert!(
+        body.contains("That page or item does not exist."),
+        "body was {body}"
+    );
+    assert!(body.contains(r#"<a href="/">"#), "no way back: {body}");
 }
 
 #[tokio::test]

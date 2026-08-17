@@ -326,6 +326,35 @@ async fn last_synced_at_renders_as_relative_time() {
     assert!(!body.contains(&at2), "raw rfc3339 leaked: {body}");
 }
 
+/// A failing query must produce a styled 500 that says nothing about the
+/// storage behind it — no file path, no engine name, no sqlite message.
+#[tokio::test]
+async fn a_db_failure_is_a_page_not_a_stack_trace() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.state
+        .db
+        .call(|c| {
+            c.execute_batch("DROP TABLE repo_stats")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let resp = h.get("/").await;
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_string(resp).await;
+
+    assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
+    assert!(body.contains("Something went wrong"), "body was {body}");
+    assert!(!body.contains(".db"), "db path leaked: {body}");
+    assert!(
+        !body.to_lowercase().contains("sqlite"),
+        "engine leaked: {body}"
+    );
+    assert!(!body.contains("repo_stats"), "schema leaked: {body}");
+}
+
 /// A repo name is user-controlled enough to be worth pinning: maud escapes it,
 /// and the `spark-data` island must not be breakable by one either.
 #[tokio::test]

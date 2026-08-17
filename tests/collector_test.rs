@@ -351,8 +351,14 @@ async fn repo_404_does_not_block_next_repo() {
     assert!(stars_on(&state, ID_B, &today()).await.is_some());
 
     // A carries the failure bookkeeping.
-    let err = repo_field::<Option<String>>(&state, ID_A, "last_error").await;
-    assert!(err.is_some(), "A should have recorded an error");
+    // Stored for the UI, so it names the category and not the API URL that
+    // produced it.
+    let err = repo_field::<Option<String>>(&state, ID_A, "last_error")
+        .await
+        .expect("A should have recorded an error");
+    assert!(err.contains("no access"), "got {err}");
+    assert!(!err.contains("http"), "api url leaked: {err}");
+    assert!(!err.contains(REPO_A), "repo path leaked: {err}");
     assert_eq!(repo_field::<i64>(&state, ID_A, "error_streak").await, 1);
     let backoff = repo_field::<Option<String>>(&state, ID_A, "backoff_until")
         .await
@@ -448,7 +454,10 @@ async fn partial_failure_lands_partial_data() {
         .await
         .expect("partial sync must record an error");
     assert!(err.contains("partial"), "got {err}");
+    // The failing endpoint's label survives; the URL behind it does not.
     assert!(err.contains("releases"), "got {err}");
+    assert!(err.contains("(500)"), "got {err}");
+    assert!(!err.contains("http"), "api url leaked: {err}");
     // A partial failure must not lock the repo out of the next cycle.
     assert_eq!(
         repo_field::<Option<String>>(&state, ID_A, "backoff_until").await,

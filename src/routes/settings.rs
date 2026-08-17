@@ -73,8 +73,10 @@ pub async fn settings_discover(State(state): State<Arc<AppState>>) -> Result<Mar
             format!("{count} repos loaded from GitHub")
         }
         Err(e) => {
+            // The notice is what a browser reads, so it carries the category
+            // only; the full error stays in the log line above it.
             warn!(error = %e, "settings discovery failed");
-            format!("Could not load repos from GitHub: {e}")
+            format!("Could not load repos from GitHub: {}", e.user_message())
         }
     };
     let repos = state.db.call(|c| queries::known_repos(c)).await?;
