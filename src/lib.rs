@@ -1,9 +1,10 @@
-//! Library surface exposing modules needed by integration tests (e.g.
-//! `tests/gh_client_test.rs`). The binary (`main.rs`) declares its own
-//! `mod` statements for the same source files; that duplication is
-//! intentional and keeps this task's footprint limited to what Task 5
-//! needs, without refactoring `main.rs`'s existing module wiring.
+//! Library crate: declares all modules once. The binary (`main.rs`)
+//! consumes this crate via `use watchpost::...` so there is a single
+//! compilation of each module (one set of nominal types shared by the
+//! bin, unit tests, and integration tests).
 
+pub mod config;
+pub mod db;
 pub mod errors;
 pub mod gh_client;
 pub mod ratelimit;

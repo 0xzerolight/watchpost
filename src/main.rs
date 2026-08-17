@@ -1,17 +1,10 @@
-mod config;
-mod db;
-mod errors;
-mod gh_client;
-mod ratelimit;
-mod types;
-
 use axum::Router;
 use axum::routing::get;
-use config::Config;
-use db::Db;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use watchpost::config::Config;
+use watchpost::db::Db;
 
 #[tokio::main]
 async fn main() {
