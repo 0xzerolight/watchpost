@@ -929,6 +929,10 @@
           datasets: [
             {
               data: values,
+              // Named variable, not just the literal: `applyTheme()` re-reads
+              // `$wpVar` on a scheme flip, so sparklines recolour with the
+              // rest of the charts instead of keeping the old theme's line.
+              $wpVar: "--wp-marker-0",
               borderColor: colour,
               borderWidth: 1.5,
               pointRadius: 0,

@@ -139,14 +139,34 @@
 
 /*
  * The filter row is a `role="group"`, which Pico styles as a segmented button
- * bar: every child gets `flex: 1` and stretches to an equal share of the row.
- * Chips are pills, so they opt out. `[role=group] > .wp-chip` outranks Pico's
- * `[role=group] > button` on specificity, which `.wp-chip` alone does not.
+ * bar: children stretch, inner corners are squared and adjacent borders are
+ * collapsed with a negative margin. Chips are pills, so they opt out of all
+ * three. The second selector matters: the chips are `type="button"`, so Pico's
+ * margin collapse rides on `[role=group] [type=button]:not(:first-child)` at
+ * (0,3,0), which a plain `[role=group] > .wp-chip` (0,2,0) cannot beat.
  */
-[role="group"] > .wp-chip {
+[role="group"] > .wp-chip,
+[role="group"] > button[type="button"].wp-chip {
   flex: 0 0 auto;
   display: inline-flex;
   width: auto;
+  margin-left: 0;
+  border-radius: 1rem;
+}
+
+/*
+ * Pico treats a `role="group"` as one composite widget: focus anywhere inside
+ * draws the focus ring around the whole (full-width) group and suppresses the
+ * child button's own ring. For a row of independent pill toggles that reads as
+ * a page-wide bar lighting up, so the group ring moves back onto the focused
+ * chip itself.
+ */
+.wp-row[role="group"] {
+  box-shadow: none;
+}
+
+[role="group"] > .wp-chip:focus {
+  box-shadow: 0 0 0 var(--pico-outline-width, 0.125rem) var(--pico-primary-focus);
 }
 
 /* Pressed state for the kind filter toggles (`toggleKind()`). */
