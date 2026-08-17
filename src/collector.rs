@@ -161,6 +161,11 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
 /// tracked repos GitHub no longer lists. On failure, change nothing: a 500
 /// must never be read as "all your repos vanished". The per-repo meta call in
 /// [`sync_one_repo`] keeps metadata fresh in the meantime.
+///
+/// A `200 []` (PAT rotated without repo scope) or a truncated page list that
+/// drops every tracked repo would hide the whole tracked set — and nothing
+/// ever un-hides. So an empty list, or a list in which *all* tracked repos
+/// are missing, is treated as untrustworthy and hides nothing.
 async fn discover(state: &AppState) {
     let discovered = match state.gh.user_repos().await {
         Ok(repos) => repos,
@@ -169,6 +174,10 @@ async fn discover(state: &AppState) {
             return;
         }
     };
+    if discovered.is_empty() {
+        warn!("discovery returned an empty repo list; refusing to hide tracked repos");
+        return;
+    }
     let seen: HashSet<i64> = discovered.iter().map(|r| r.id).collect();
     let hidden = state
         .db
@@ -176,18 +185,25 @@ async fn discover(state: &AppState) {
             for repo in &discovered {
                 queries::upsert_repo(c, repo)?;
             }
-            let missing: Vec<i64> = queries::tracked_repos(c)?
+            let tracked = queries::tracked_repos(c)?;
+            let missing: Vec<i64> = tracked
                 .iter()
                 .filter(|r| !seen.contains(&r.id))
                 .map(|r| r.id)
                 .collect();
+            if !missing.is_empty() && missing.len() == tracked.len() {
+                return Ok(None);
+            }
             queries::mark_hidden(c, &missing)?;
-            Ok(missing.len())
+            Ok(Some(missing.len()))
         })
         .await;
     match hidden {
-        Ok(0) => {}
-        Ok(n) => info!(count = n, "repos no longer listed upstream; hidden"),
+        Ok(Some(0)) => {}
+        Ok(Some(n)) => info!(count = n, "repos no longer listed upstream; hidden"),
+        Ok(None) => {
+            warn!("discovery lists none of the tracked repos; refusing to hide all of them");
+        }
         Err(e) => warn!(error = %e, "discovery write failed"),
     }
 }

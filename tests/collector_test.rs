@@ -23,8 +23,10 @@ use watchpost::types::GhRepo;
 
 const REPO_A: &str = "octo/aaa";
 const REPO_B: &str = "octo/bbb";
+const REPO_C: &str = "octo/ccc";
 const ID_A: i64 = 1;
 const ID_B: i64 = 2;
+const ID_C: i64 = 3;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -549,6 +551,45 @@ async fn vanished_repo_marked_hidden_on_successful_discovery() {
     );
     assert_eq!(stars_on(&state, ID_B, "2026-01-01").await, Some(42));
     assert_eq!(repo_field::<i64>(&state, ID_A, "hidden").await, 0);
+}
+
+#[tokio::test]
+async fn empty_discovery_never_hides() {
+    let server = MockServer::start().await;
+    // A rotated PAT without repo scope answers 200 [] — that must never be
+    // read as "every tracked repo vanished".
+    mount_discovery(&server, vec![]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    seed_tracked(&state, ID_B, REPO_B).await;
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(count(&state, "repos WHERE hidden = 1").await, 0);
+    // The cycle itself still ran.
+    assert_eq!(stars_on(&state, ID_A, &today()).await, Some(10));
+}
+
+#[tokio::test]
+async fn discovery_missing_all_tracked_never_hides() {
+    let server = MockServer::start().await;
+    // Discovery answers with repos, but none of the tracked ones — a stripped
+    // Link header truncating pagination looks exactly like this. Hiding every
+    // tracked repo at once is never trusted.
+    mount_discovery(&server, vec![repo_json(ID_C, REPO_C)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    seed_tracked(&state, ID_B, REPO_B).await;
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(count(&state, "repos WHERE hidden = 1").await, 0);
+    assert_eq!(repo_field::<i64>(&state, ID_A, "hidden").await, 0);
+    assert_eq!(repo_field::<i64>(&state, ID_B, "hidden").await, 0);
 }
 
 #[tokio::test]
