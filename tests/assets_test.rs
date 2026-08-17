@@ -125,6 +125,11 @@ async fn app_js_defines_the_watchpost_namespace() {
         // The settings sync poller succeeds every 2s; without the guard that
         // reads this attribute it would wipe a sticky toast unread.
         "[hx-trigger]",
+        // The delete button's `hx-confirm` is answered by this listener and by
+        // the shell's dialog. Lose either half and the prompt silently reverts
+        // to `window.confirm`.
+        "htmx:confirm",
+        "[data-confirm-ok]",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

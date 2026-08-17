@@ -118,8 +118,8 @@ fn toast_region() -> Markup {
     html! {
         div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden {
             span class="wp-toast-text" {}
-            button class="wp-toast-action" hidden {}
-            button class="wp-toast-close" aria-label="Dismiss" { "×" }
+            button type="button" class="wp-toast-action" hidden {}
+            button type="button" class="wp-toast-close" aria-label="Dismiss" { "×" }
         }
     }
 }
@@ -128,18 +128,24 @@ fn toast_region() -> Markup {
 ///
 /// A native `<dialog>` rather than `window.confirm` so the prompt can name what
 /// is about to be destroyed, and so the modal traps focus the way the platform
-/// expects. Title and text are filled in by the client; the two buttons are
-/// keyed by data attribute rather than by position, so restyling the footer
-/// cannot silently swap Cancel for Confirm.
+/// expects. The client fills in the question; the two buttons are keyed by data
+/// attribute rather than by position, so restyling the footer cannot silently
+/// swap Cancel for Confirm.
+///
+/// The heading is a constant rather than another client-filled slot because
+/// `aria-labelledby` names the dialog from it: pointing at an element the client
+/// might not have written yet would leave the modal with no accessible name at
+/// all, which is worse than the generic one. Cancel comes first in the DOM so
+/// `showModal()`'s initial focus lands on the harmless button.
 fn confirm_dialog() -> Markup {
     html! {
-        dialog id="wp-confirm" {
+        dialog id="wp-confirm" aria-labelledby="wp-confirm-title" {
             article {
-                h2 id="wp-confirm-title" {}
+                h2 id="wp-confirm-title" { "Confirm" }
                 p id="wp-confirm-text" {}
                 footer class="wp-actions wp-actions-end" {
-                    button class="secondary" data-confirm-cancel { "Cancel" }
-                    button data-confirm-ok { "Confirm" }
+                    button type="button" class="secondary" data-confirm-cancel { "Cancel" }
+                    button type="button" data-confirm-ok { "Confirm" }
                 }
             }
         }
@@ -402,8 +408,8 @@ mod tests {
             concat!(
                 r#"<div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden>"#,
                 r#"<span class="wp-toast-text"></span>"#,
-                r#"<button class="wp-toast-action" hidden></button>"#,
-                r#"<button class="wp-toast-close" aria-label="Dismiss">×</button>"#,
+                r#"<button type="button" class="wp-toast-action" hidden></button>"#,
+                r#"<button type="button" class="wp-toast-close" aria-label="Dismiss">×</button>"#,
                 "</div>"
             )
         );
@@ -414,12 +420,12 @@ mod tests {
         assert_eq!(
             confirm_dialog().into_string(),
             concat!(
-                r#"<dialog id="wp-confirm"><article>"#,
-                r#"<h2 id="wp-confirm-title"></h2>"#,
+                r#"<dialog id="wp-confirm" aria-labelledby="wp-confirm-title"><article>"#,
+                r#"<h2 id="wp-confirm-title">Confirm</h2>"#,
                 r#"<p id="wp-confirm-text"></p>"#,
                 r#"<footer class="wp-actions wp-actions-end">"#,
-                r#"<button class="secondary" data-confirm-cancel>Cancel</button>"#,
-                r#"<button data-confirm-ok>Confirm</button>"#,
+                r#"<button type="button" class="secondary" data-confirm-cancel>Cancel</button>"#,
+                r#"<button type="button" data-confirm-ok>Confirm</button>"#,
                 "</footer></article></dialog>"
             )
         );

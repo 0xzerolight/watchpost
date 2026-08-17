@@ -1235,6 +1235,106 @@ htmx.config.includeIndicatorStyles = false;
   });
 
   // -------------------------------------------------------------------------
+  // Confirm dialog
+  // -------------------------------------------------------------------------
+
+  /*
+   * Fill the shell's `#wp-confirm` with `question` and open it, answering
+   * `done(true)` only if the reader pressed Confirm. Returns false — having
+   * changed nothing — if the shell is missing a part, so the caller can leave
+   * the request to htmx rather than swallow it.
+   *
+   * `showModal()` is the reason this is a dialog and not a div: the focus trap,
+   * the inert background and Escape all come from the platform.
+   */
+  function openConfirm(dlg, question, elt, done) {
+    var textEl = dlg.querySelector("#wp-confirm-text");
+    var okBtn = dlg.querySelector("[data-confirm-ok]");
+    var cancelBtn = dlg.querySelector("[data-confirm-cancel]");
+    if (!textEl || !okBtn || !cancelBtn) {
+      return false;
+    }
+
+    // The answer, kept here rather than in `dlg.returnValue`: a dialog closed
+    // by Escape leaves the previous open's return value in place, so reading it
+    // back would confirm a second delete the reader had just escaped out of.
+    var confirmed = false;
+
+    function onOk() {
+      confirmed = true;
+      dlg.close();
+    }
+
+    function onCancel() {
+      dlg.close();
+    }
+
+    /*
+     * Every way out lands here — both buttons close the dialog, and so does
+     * Escape, whose `cancel` event closes it by default. Resolving on `close`
+     * instead of wiring the three paths separately is what keeps the teardown
+     * whole: the two click handlers are removed on the one event that cannot be
+     * skipped, so the next dialog cannot answer with the last one's callback.
+     */
+    function onClose() {
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      // Focus goes back to the button that asked. The platform restores it by
+      // itself only when that button held focus to begin with, and Safari does
+      // not focus a button on click — without this a cancel would drop the
+      // reader at the top of the document. `elt` is still on the page: the
+      // request this is deciding has not been issued yet.
+      if (elt && elt.isConnected && typeof elt.focus === "function") {
+        elt.focus();
+      }
+      done(confirmed);
+    }
+
+    textEl.textContent = question;
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    dlg.addEventListener("close", onClose, { once: true });
+    dlg.showModal();
+    return true;
+  }
+
+  /*
+   * Answer `hx-confirm` with the dialog instead of `window.confirm`.
+   *
+   * htmx fires this before it would prompt, and hands over an `issueRequest` to
+   * call once the answer is known — so cancelling the event and resolving it
+   * from the dialog is a drop-in replacement htmx never notices. `issueRequest`
+   * must be called with `true`: that is what tells htmx the question has
+   * already been asked, and without it the native prompt appears after all.
+   *
+   * Doing nothing is always the safe branch. htmx then runs its own
+   * `confirm()`, which is worse-looking but still asks — a page that fails this
+   * must not end up deleting without a prompt.
+   */
+  document.addEventListener("htmx:confirm", function (evt) {
+    var detail = evt.detail;
+    // Fires for every request htmx makes; only an element carrying an
+    // `hx-confirm` brings a question, and the rest must proceed untouched.
+    if (!detail || !detail.question) {
+      return;
+    }
+    var dlg = document.getElementById("wp-confirm");
+    if (!dlg || typeof dlg.showModal !== "function") {
+      return;
+    }
+    var opened = openConfirm(dlg, detail.question, detail.elt, function (ok) {
+      if (ok) {
+        detail.issueRequest(true);
+      }
+    });
+    // Only once the dialog is actually up — cancelling the event without
+    // anything on screen to answer it would strand the request forever.
+    if (opened) {
+      evt.preventDefault();
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
 
