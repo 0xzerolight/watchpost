@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::routes::html::{json_script, kind_class};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
+use crate::urlcheck::validate_event_url;
 
 /// The `days` value meaning "all history". Not a length — the handler turns it
 /// into a real window from the repo's first observed day.
@@ -274,8 +275,12 @@ pub fn repo_body(view: &RepoView) -> Markup {
             @if let Some(description) = &repo.description {
                 p class="wp-muted" { (description) }
             }
+            // `homepage` is set by the upstream repo owner on GitHub, so it is
+            // untrusted: a `javascript:` value would survive maud's escaping as
+            // a working href. Reuse the event-URL validator (http/https
+            // allowlist); anything else — including empty — renders nothing.
             @if let Some(homepage) = &repo.homepage {
-                @if !homepage.is_empty() {
+                @if validate_event_url(homepage).is_ok() {
                     p { a href=(homepage) rel="noopener noreferrer" { (homepage) } }
                 }
             }

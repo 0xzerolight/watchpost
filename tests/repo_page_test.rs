@@ -89,11 +89,16 @@ impl Harness {
     }
 
     async fn seed_repo(&self, id: i64, name: &str) {
+        self.seed_repo_with_homepage(id, name, "https://example.com/home")
+            .await;
+    }
+
+    async fn seed_repo_with_homepage(&self, id: i64, name: &str, homepage: &str) {
         let repo: GhRepo = serde_json::from_value(json!({
             "id": id,
             "full_name": name,
             "description": "a repo",
-            "homepage": "https://example.com/home",
+            "homepage": homepage,
             "archived": false,
             "fork": false,
             "stargazers_count": 10,
@@ -453,6 +458,23 @@ async fn period_select_swaps_the_scope_wrapper() {
     assert!(
         body.contains(r#"<option value="30" selected>"#),
         "body was {body}"
+    );
+}
+
+#[tokio::test]
+async fn homepage_with_non_http_scheme_is_not_rendered() {
+    let h = harness();
+    h.seed_repo_with_homepage(ID_A, REPO_A, "javascript:alert(1)")
+        .await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(
+        !body.contains("href=\"javascript:"),
+        "javascript: href rendered: {body}"
+    );
+    assert!(
+        !body.contains("javascript:alert(1)"),
+        "unsafe homepage rendered: {body}"
     );
 }
 
