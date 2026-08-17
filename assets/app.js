@@ -1164,15 +1164,38 @@ htmx.config.includeIndicatorStyles = false;
   });
 
   /*
+   * A polling element requests on a timer, so its success reports nothing about
+   * the failure on screen and nobody is waiting on it.
+   */
+  function isPolling(elt) {
+    if (!elt || !elt.closest) {
+      return false;
+    }
+    // `closest` starts at the element itself, which is where the attribute sits
+    // on the settings poller.
+    var source = elt.closest("[hx-trigger]");
+    if (!source) {
+      return false;
+    }
+    return (source.getAttribute("hx-trigger") || "").indexOf("every") !== -1;
+  }
+
+  /*
    * A request that worked answers whatever the last one failed at, and a stale
    * error next to fresh content is worse than no error. htmx fires this after
    * `htmx:responseError` and only sets `successful` on a non-error response, so
    * a failure cannot clear the toast it just raised.
    */
   document.addEventListener("htmx:afterRequest", function (evt) {
-    if (evt.detail && evt.detail.successful) {
-      hideToast();
+    if (!evt.detail || !evt.detail.successful) {
+      return;
     }
+    // Settings polls `#sync-status` every 2s while a sync runs; left alone those
+    // successes would wipe a sticky 403 two seconds after it appeared.
+    if (isPolling(evt.detail.elt)) {
+      return;
+    }
+    hideToast();
   });
 
   document.addEventListener("click", function (evt) {

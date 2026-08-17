@@ -122,6 +122,9 @@ async fn app_js_defines_the_watchpost_namespace() {
         // button.
         "htmx:responseError",
         "htmx:sendError",
+        // The settings sync poller succeeds every 2s; without the guard that
+        // reads this attribute it would wipe a sticky toast unread.
+        "[hx-trigger]",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }
