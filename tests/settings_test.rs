@@ -447,6 +447,70 @@ async fn sync_start_twice_single_run() {
     assert_eq!(h.hits(&format!("/repos/{REPO_A}")).await, 1);
 }
 
+/// A claim whose cycle never runs must not wedge the UI on "Syncing".
+///
+/// Holding `sync_guard` for the whole test reproduces the real race exactly
+/// and makes it deterministic: the handler claims `Running`, and the spawned
+/// `try_run_cycle` can only fail its `try_lock` and return `None` without ever
+/// touching the status. The poll loop then just waits for that task to be
+/// scheduled — no cycle can run to muddy the result, so a status stuck on
+/// `Running` means the claim was genuinely dropped.
+#[tokio::test]
+async fn sync_claim_is_released_when_no_cycle_runs() {
+    let h = harness().await;
+    let _guard = Arc::clone(&h.state.sync_guard).lock_owned().await;
+    // A previous cycle already finished into Done — the exact window in which
+    // finish() has run but the guard is not yet dropped.
+    *h.state.sync.lock().unwrap() = SyncStatus::Done {
+        finished: chrono::Utc::now(),
+        ok: 1,
+        failed: vec![],
+    };
+    let token = h.csrf_token().await;
+
+    let body = body_string(h.post_form("/sync", "", &token).await).await;
+    assert!(body.contains("Syncing"), "body was {body}");
+    assert!(
+        matches!(*h.state.sync.lock().unwrap(), SyncStatus::Running { .. }),
+        "the POST must claim Running"
+    );
+
+    for _ in 0..400 {
+        if !matches!(*h.state.sync.lock().unwrap(), SyncStatus::Running { .. }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert!(
+        matches!(*h.state.sync.lock().unwrap(), SyncStatus::Idle),
+        "a dropped claim must reset to Idle, not stay stuck Running"
+    );
+    // Nothing was collected, so the status is honest: no cycle ever started.
+    assert_eq!(h.hits("/user/repos").await, 0);
+}
+
+/// The compare-and-clear must never clobber a status a real cycle wrote.
+#[tokio::test]
+async fn sync_claim_release_does_not_clobber_a_later_cycle() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+    mount_json(&h.server, "/user/repos".into(), json!([])).await;
+    mount_full_repo(&h.server, ID_A, REPO_A).await;
+    let token = h.csrf_token().await;
+
+    h.post_form("/sync", "", &token).await;
+    let (ok, failed) = h.wait_for_done().await;
+    assert_eq!((ok, failed.len()), (1, 0));
+
+    // Give the spawned task's tail every chance to overwrite Done with Idle.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        matches!(*h.state.sync.lock().unwrap(), SyncStatus::Done { .. }),
+        "a completed cycle keeps its Done status"
+    );
+}
+
 #[tokio::test]
 async fn sync_status_is_idle_before_any_cycle() {
     let h = harness().await;

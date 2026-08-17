@@ -28,6 +28,11 @@ fn null_safe_max_clause(col: &str) -> String {
 // Upserts
 // ---------------------------------------------------------------------------
 
+/// Insert or refresh one repo's metadata. Rediscovery also clears `hidden`,
+/// which keeps the invariant "hidden ⇔ absent from the last successful
+/// discovery": a repo hidden by a truncated upstream listing comes back on the
+/// next listing that includes it, instead of being invisible forever with no
+/// recovery path but a sqlite shell.
 pub fn upsert_repo(conn: &Connection, repo: &GhRepo) -> Result<(), DbError> {
     conn.execute(
         "INSERT INTO repos (id, name, description, homepage, archived, fork)
@@ -37,7 +42,8 @@ pub fn upsert_repo(conn: &Connection, repo: &GhRepo) -> Result<(), DbError> {
            description = excluded.description,
            homepage = excluded.homepage,
            archived = excluded.archived,
-           fork = excluded.fork",
+           fork = excluded.fork,
+           hidden = 0",
         params![
             repo.id,
             repo.full_name,
@@ -1174,6 +1180,36 @@ mod tests {
         assert_eq!(desc, Some("updated".into()));
         assert!(archived);
         assert_eq!(count_rows(&c, "repos"), 1);
+    }
+
+    #[test]
+    fn upsert_repo_unhides_a_rediscovered_repo() {
+        let c = test_conn();
+        let repo = GhRepo {
+            id: 1,
+            full_name: "owner/repo".into(),
+            description: None,
+            homepage: None,
+            archived: false,
+            fork: false,
+            stargazers_count: 0,
+            forks_count: 0,
+            subscribers_count: None,
+            open_issues_count: 0,
+        };
+        upsert_repo(&c, &repo).unwrap();
+        set_tracked(&c, 1, true).unwrap();
+        mark_hidden(&c, &[1]).unwrap();
+        assert!(known_repos(&c).unwrap().is_empty());
+
+        // A later listing that includes the repo again must restore it.
+        upsert_repo(&c, &repo).unwrap();
+        let known = known_repos(&c).unwrap();
+        assert_eq!(known.len(), 1);
+        assert!(!known[0].hidden);
+        // Un-hiding never touches the user's own `tracked` flag.
+        assert!(known[0].tracked);
+        assert_eq!(tracked_repos(&c).unwrap().len(), 1);
     }
 
     #[test]

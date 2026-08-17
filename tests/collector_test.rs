@@ -171,6 +171,18 @@ async fn repo_field<T: FromSql + Send + 'static>(state: &AppState, id: i64, col:
         .unwrap()
 }
 
+/// Ids the picker/dashboard would show, in `known_repos` order (by name).
+async fn known_repo_ids(state: &AppState) -> Vec<i64> {
+    state
+        .db
+        .call(|c| queries::known_repos(c))
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.id)
+        .collect()
+}
+
 async fn count(state: &AppState, table: &str) -> i64 {
     let sql = format!("SELECT COUNT(*) FROM {table}");
     state
@@ -551,6 +563,36 @@ async fn vanished_repo_marked_hidden_on_successful_discovery() {
     );
     assert_eq!(stars_on(&state, ID_B, "2026-01-01").await, Some(42));
     assert_eq!(repo_field::<i64>(&state, ID_A, "hidden").await, 0);
+}
+
+#[tokio::test]
+async fn rediscovered_repo_is_unhidden() {
+    let server = MockServer::start().await;
+    // B was hidden by an earlier truncated listing; this listing has it again.
+    mount_discovery(
+        &server,
+        vec![repo_json(ID_A, REPO_A), repo_json(ID_B, REPO_B)],
+    )
+    .await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+    mount_full_repo(&server, ID_B, REPO_B).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    seed_tracked(&state, ID_B, REPO_B).await;
+    state
+        .db
+        .call(|c| queries::mark_hidden(c, &[ID_B]))
+        .await
+        .unwrap();
+    assert_eq!(known_repo_ids(&state).await, vec![ID_A]);
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(repo_field::<i64>(&state, ID_B, "hidden").await, 0);
+    assert_eq!(known_repo_ids(&state).await, vec![ID_A, ID_B]);
+    // Back in the cycle too, not just visible.
+    assert_eq!(stars_on(&state, ID_B, &today()).await, Some(10));
 }
 
 #[tokio::test]

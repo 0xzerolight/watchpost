@@ -177,9 +177,11 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
 /// [`sync_one_repo`] keeps metadata fresh in the meantime.
 ///
 /// A `200 []` (PAT rotated without repo scope) or a truncated page list that
-/// drops every tracked repo would hide the whole tracked set — and nothing
-/// ever un-hides. So an empty list, or a list in which *all* tracked repos
-/// are missing, is treated as untrustworthy and hides nothing.
+/// drops every tracked repo would hide the whole tracked set at once. So an
+/// empty list, or a list in which *all* tracked repos are missing, is treated
+/// as untrustworthy and hides nothing. Narrower glitches are self-healing:
+/// [`queries::upsert_repo`] clears `hidden`, so a repo the next listing does
+/// include comes straight back.
 async fn discover(state: &AppState) {
     let discovered = match state.gh.user_repos().await {
         Ok(repos) => repos,

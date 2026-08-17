@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use maud::{Markup, html};
 use tracing::warn;
 
@@ -118,18 +118,29 @@ pub async fn settings_save(
 /// Two guards, at different levels. This handler claims `SyncStatus::Running`
 /// under the status mutex in one check-and-set, so an impatient second click
 /// is a no-op rather than a queued cycle. The spawned task then goes through
-/// [`collector::try_run_cycle`], which owns the real serialization: if the
-/// cron tick claimed the guard in between, that call returns `None` and no
-/// second cycle runs — the running one still finishes into `Done`, so the
-/// status this handler set always resolves.
+/// [`collector::try_run_cycle`], which owns the real serialization: if another
+/// cycle holds the guard, that call returns `None` and no second cycle runs.
+///
+/// A dropped claim would otherwise wedge the UI. The claim can land in the
+/// window between a running cycle's `finish()` (status already `Done`) and its
+/// release of the guard: `try_run_cycle` then returns `None` having never
+/// touched the status, leaving this handler's `Running` in place until the
+/// next cron tick. So the spawned task clears its own claim — and only its
+/// own, compared by timestamp under the status mutex, so a real cycle's
+/// status is never clobbered.
 ///
 /// Either way the response is the same polling fragment, so the button is
 /// idempotent from the browser's side.
 pub async fn sync_start(State(state): State<Arc<AppState>>) -> Markup {
-    if claim_cycle(&state) {
+    if let Some(claim) = claim_cycle(&state) {
         let spawned = Arc::clone(&state);
         tokio::spawn(async move {
-            collector::try_run_cycle(spawned).await;
+            if collector::try_run_cycle(Arc::clone(&spawned))
+                .await
+                .is_none()
+            {
+                release_claim(&spawned, claim);
+            }
         });
     }
     sync_status_fragment(&current_status(&state))
@@ -140,17 +151,26 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Markup {
     sync_status_fragment(&current_status(&state))
 }
 
-/// Mark a cycle as starting, unless one already is. `true` means the caller
-/// owns the spawn.
-fn claim_cycle(state: &AppState) -> bool {
+/// Mark a cycle as starting, unless one already is. `Some(started)` means the
+/// caller owns the spawn; the timestamp identifies this exact claim.
+fn claim_cycle(state: &AppState) -> Option<DateTime<Utc>> {
     let mut status = state.sync.lock().expect("sync status mutex poisoned");
     if matches!(*status, SyncStatus::Running { .. }) {
-        return false;
+        return None;
     }
-    *status = SyncStatus::Running {
-        started: Utc::now(),
-    };
-    true
+    let started = Utc::now();
+    *status = SyncStatus::Running { started };
+    Some(started)
+}
+
+/// Undo a claim whose cycle never ran. Compare-and-clear: only a `Running`
+/// still carrying this claim's timestamp is reset, so a cycle that started in
+/// the meantime keeps its own status.
+fn release_claim(state: &AppState, claim: DateTime<Utc>) {
+    let mut status = state.sync.lock().expect("sync status mutex poisoned");
+    if matches!(*status, SyncStatus::Running { started } if started == claim) {
+        *status = SyncStatus::Idle;
+    }
 }
 
 fn current_status(state: &AppState) -> SyncStatus {
