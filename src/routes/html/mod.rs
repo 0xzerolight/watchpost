@@ -12,6 +12,9 @@ use crate::routes::assets;
 pub mod index;
 pub mod repo;
 pub mod settings;
+pub mod ui;
+
+pub use ui::*;
 
 /// The `htmx.config.responseHandling` override the shell inlines. Kept as a
 /// named constant so a test can pin the exact string: nothing but a browser

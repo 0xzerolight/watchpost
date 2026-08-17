@@ -8,7 +8,7 @@
 
 use maud::{Markup, html};
 
-use crate::routes::html::json_script_class;
+use crate::routes::html::{json_script_class, relative_time};
 use crate::types::RepoOverview;
 
 /// How many days of stars a card's sparkline shows. The array embedded per
@@ -93,75 +93,9 @@ fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
     if n == 1 { one } else { many }
 }
 
-/// A coarse "3h ago" for a stored RFC 3339 timestamp.
-///
-/// Deliberately lossy: on a dashboard the useful question is whether a repo
-/// synced recently, and an exact timestamp forces the reader to do the
-/// subtraction. Anything that does not parse falls back to the stored string,
-/// so a malformed value is visible rather than silently rendered as "never".
-/// A timestamp in the future (clock skew) reads as "just now" rather than a
-/// negative age.
-fn relative_time(at: Option<&str>) -> String {
-    let Some(at) = at else {
-        return "never".to_owned();
-    };
-    let Ok(then) = chrono::DateTime::parse_from_rfc3339(at) else {
-        return at.to_owned();
-    };
-    let elapsed = chrono::Utc::now().signed_duration_since(then.with_timezone(&chrono::Utc));
-    let (minutes, hours, days) = (
-        elapsed.num_minutes(),
-        elapsed.num_hours(),
-        elapsed.num_days(),
-    );
-    if minutes < 1 {
-        "just now".to_owned()
-    } else if hours < 1 {
-        format!("{minutes}m ago")
-    } else if days < 1 {
-        format!("{hours}h ago")
-    } else {
-        format!("{days}d ago")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
-
-    fn ago(d: Duration) -> String {
-        (Utc::now() - d).to_rfc3339()
-    }
-
-    #[test]
-    fn relative_time_buckets_by_magnitude() {
-        assert_eq!(relative_time(None), "never");
-        assert_eq!(relative_time(Some(&ago(Duration::seconds(5)))), "just now");
-        assert_eq!(relative_time(Some(&ago(Duration::minutes(7)))), "7m ago");
-        assert_eq!(relative_time(Some(&ago(Duration::minutes(59)))), "59m ago");
-        assert_eq!(relative_time(Some(&ago(Duration::hours(3)))), "3h ago");
-        assert_eq!(relative_time(Some(&ago(Duration::hours(23)))), "23h ago");
-        assert_eq!(relative_time(Some(&ago(Duration::days(4)))), "4d ago");
-    }
-
-    #[test]
-    fn relative_time_survives_bad_input() {
-        // A future timestamp is clock skew, not a negative age.
-        assert_eq!(relative_time(Some(&ago(-Duration::hours(2)))), "just now");
-        // Unparseable values are shown as stored rather than swallowed.
-        assert_eq!(relative_time(Some("not a date")), "not a date");
-    }
-
-    #[test]
-    fn relative_time_reads_non_utc_offsets() {
-        // Stored values are UTC today, but an offset timestamp must still be
-        // compared as an instant, not as wall-clock digits.
-        let then = (Utc::now() - Duration::hours(2))
-            .with_timezone(&chrono::FixedOffset::east_opt(5 * 3600).unwrap())
-            .to_rfc3339();
-        assert_eq!(relative_time(Some(&then)), "2h ago");
-    }
 
     #[test]
     fn card_embeds_the_spark_hooks_side_by_side() {
