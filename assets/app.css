@@ -9,7 +9,24 @@
  * same colour in a badge and on a chart.
  */
 
+/*
+ * Spacing, type and radius scale. Pico ships a single `--pico-spacing`, which
+ * is the right size for block padding and too big for the gap between two
+ * inline controls; the rules below need a handful of steps, and named steps
+ * keep the same gap from being written as 0.5rem here and 0.45rem there.
+ */
 :root {
+  --wp-space-1: 0.25rem;
+  --wp-space-2: 0.5rem;
+  --wp-space-3: 0.75rem;
+  --wp-space-4: 1rem;
+  --wp-space-5: 1.5rem;
+  --wp-space-6: 2rem;
+  --wp-text-sm: 0.8125rem;
+  --wp-text-xs: 0.75rem;
+  /* Larger than any element is tall, so a pill stays a pill at any height. */
+  --wp-radius-pill: 999px;
+
   --wp-marker-0: #2f6fd0;
   --wp-marker-1: #d1493f;
   --wp-marker-2: #2e8b57;
@@ -129,9 +146,9 @@
   width: auto;
   padding: 0.1rem 0.6rem;
   border: 1px solid var(--wp-kind-color, var(--pico-muted-border-color));
-  border-radius: 1rem;
+  border-radius: var(--wp-radius-pill);
   color: var(--wp-kind-color, inherit);
-  font-size: 0.75rem;
+  font-size: var(--wp-text-xs);
   line-height: 1.6;
   white-space: nowrap;
   background: transparent;
@@ -151,7 +168,7 @@
   display: inline-flex;
   width: auto;
   margin-left: 0;
-  border-radius: 1rem;
+  border-radius: var(--wp-radius-pill);
 }
 
 /*
@@ -219,6 +236,225 @@
   font-size: 0.8rem;
 }
 
+/*
+ * The skip link (first element in <body>). It has to stay in the tab order and
+ * keep its accessible name, so it is moved out of the viewport rather than
+ * hidden: `display: none` and `visibility: hidden` both take it out of the tab
+ * order, which is the one thing it exists for.
+ */
+.wp-skip {
+  position: absolute;
+  z-index: 20;
+  top: var(--wp-space-2);
+  left: var(--wp-space-2);
+  padding: var(--wp-space-2) var(--wp-space-4);
+  border: 1px solid var(--pico-primary, #2f6fd0);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: var(--pico-card-background-color, #fff);
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.wp-skip:focus {
+  transform: none;
+}
+
+/*
+ * Present to a screenreader, absent on screen — for labels whose purpose is
+ * obvious from context (`field_compact`). The 1px box with `clip-path` is the
+ * form that survives: zero-size or `text-indent` elements are skipped by some
+ * screenreaders, and `position: absolute` alone still paints.
+ */
+.wp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+/*
+ * Page title on the left, actions on the right. `align-items: end` puts the
+ * buttons on the baseline of the last title line instead of centring them
+ * against a two-line hgroup, and the wrap means a narrow viewport stacks them
+ * rather than crushing the heading.
+ */
+.wp-page-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--wp-space-4);
+  flex-wrap: wrap;
+  margin-block-end: var(--wp-space-6);
+}
+
+/* Pico's hgroup margin would push the actions off the title's baseline. */
+.wp-page-header hgroup {
+  margin-bottom: 0;
+}
+
+/*
+ * A row of controls. The button rules are the point: Pico stretches every
+ * button to its container's width and adds a bottom margin for form layout, so
+ * an action that happens to sit in a flex row renders as a full-width bar next
+ * to a normal one. Naming the `[type]` attributes as well as the element covers
+ * `<input type="submit">`.
+ */
+.wp-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--wp-space-2);
+  flex-wrap: wrap;
+}
+
+.wp-actions > button,
+.wp-actions > [type="submit"],
+.wp-actions > [type="button"] {
+  width: auto;
+  margin-bottom: 0;
+}
+
+/* Trailing alignment, for dialog footers and anything else read right-to-left. */
+.wp-actions-end {
+  justify-content: flex-end;
+}
+
+/*
+ * Empty states. Dashed rather than solid so the block reads as a placeholder
+ * for content that will arrive, not as a card that is content.
+ */
+.wp-empty {
+  padding: var(--wp-space-5);
+  border: 1px dashed var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  color: var(--pico-muted-color, #6b7280);
+  text-align: center;
+}
+
+.wp-empty > :last-child {
+  margin-bottom: 0;
+}
+
+/*
+ * The same block inside a table. The cell contributes nothing but its colspan —
+ * Pico's cell padding around an already-padded box gives the empty row twice
+ * the inset of a real one. `.wp-empty-cta` needs no rule of its own: it is a
+ * link, and it is a class so a template can find it, not so it can be dressed.
+ */
+.wp-empty-row td {
+  padding: 0;
+}
+
+/*
+ * Notices. One rule, three tones: each variant sets `--wp-notice-color` and the
+ * base reads it for both the rule and the tint, so a fourth tone is one line.
+ * `color-mix` with `transparent` keeps the tint honest in both themes — it
+ * blends with whatever surface the notice lands on instead of a baked-in white.
+ */
+.wp-notice {
+  --wp-notice-color: var(--pico-muted-border-color);
+  margin-block-end: var(--wp-space-4);
+  padding: var(--wp-space-3) var(--wp-space-4);
+  border-left: 3px solid var(--wp-notice-color);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: color-mix(in srgb, var(--wp-notice-color) 12%, transparent);
+}
+
+.wp-notice-success { --wp-notice-color: var(--pico-ins-color); }
+.wp-notice-error { --wp-notice-color: var(--pico-del-color); }
+.wp-notice-info { --wp-notice-color: var(--pico-muted-border-color); }
+
+/*
+ * Field validation message. Pico already colours `input + small` when the
+ * control is `aria-invalid`; this only takes it down a size so the message
+ * reads as an annotation of the field rather than as body copy.
+ */
+.wp-field-error {
+  font-size: var(--wp-text-sm);
+}
+
+/* The wrapper already scrolls (Pico's `.overflow-auto`); the table inside it
+ * keeps its own bottom margin, which would stack with the wrapper's. */
+.wp-table-wrap > table {
+  margin-bottom: 0;
+}
+
+/*
+ * htmx busy indicator. Pico draws the spinning glyph from `aria-busy="true"`;
+ * the span only needs a box to draw it in, since an empty inline element has no
+ * height of its own.
+ */
+.wp-spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
+}
+
+/*
+ * The shared toast. Fixed to the bottom-right corner so it never displaces the
+ * content the user is reading, and capped in width because a full-bleed banner
+ * for a one-line confirmation is a page takeover.
+ */
+.wp-toast {
+  position: fixed;
+  z-index: 30;
+  right: var(--wp-space-4);
+  bottom: var(--wp-space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--wp-space-3);
+  max-width: 28rem;
+  padding: var(--wp-space-3) var(--wp-space-4);
+  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: var(--pico-card-background-color, #fff);
+  box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
+  animation: wp-toast-in 0.15s ease-out 1;
+}
+
+/*
+ * The element ships `hidden` and the client unhides it. `display: flex` above
+ * beats the UA's `[hidden] { display: none }`, so the toast would render empty
+ * on every page without this.
+ */
+.wp-toast[hidden] {
+  display: none;
+}
+
+.wp-toast-text {
+  flex: 1 1 auto;
+}
+
+/* Pico would render the dismiss button as a full-width bar under the message. */
+.wp-toast-close {
+  width: auto;
+  margin: 0;
+  padding: 0 var(--wp-space-1);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  line-height: 1;
+}
+
+@keyframes wp-toast-in {
+  from { opacity: 0; transform: translateY(var(--wp-space-2)); }
+  to { opacity: 1; transform: none; }
+}
+
+/*
+ * The confirm dialog asks one question. Pico's dialog article is sized for a
+ * form; at that width a two-line prompt sprawls and the buttons drift far from
+ * the text they answer.
+ */
+#wp-confirm article {
+  max-width: 26rem;
+}
+
 /* Layout utilities — enough for a row of controls, not a grid system. */
 .wp-row {
   display: flex;
@@ -241,10 +477,6 @@
 .wp-danger { color: var(--pico-del-color, #b3261e); }
 .wp-small { font-size: 0.85rem; }
 
-@media (prefers-reduced-motion: reduce) {
-  .wp-flash { animation: none; }
-}
-
 /*
  * htmx request indicators. These are htmx's own injected rules, moved here
  * because the CSP's `style-src 'self'` blocks the inline <style> it would add;
@@ -254,3 +486,38 @@
 .htmx-indicator { opacity: 0; }
 .htmx-request .htmx-indicator { opacity: 1; transition: opacity 200ms ease-in; }
 .htmx-request.htmx-indicator { opacity: 1; transition: opacity 200ms ease-in; }
+
+/*
+ * In-flight state for the element that made the request. htmx sets
+ * `.htmx-request` on it for the life of the request but styles nothing beyond
+ * the indicator, so a filter change or a sort click looked identical to a page
+ * that had ignored it. The cursor covers every requesting element; the fade is
+ * scoped to swapped regions (a table body, a row) because dimming a whole form
+ * while its own spinner runs reads as a failure rather than as work.
+ */
+.htmx-request {
+  cursor: progress;
+}
+
+table.htmx-request tbody,
+tr.htmx-request {
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+
+/*
+ * Motion opt-out. This block sits last on purpose: the rules it cancels are
+ * above it at equal specificity, so anywhere earlier and the later transition
+ * would win and the opt-out would be silently dead.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .wp-flash { animation: none; }
+
+  .wp-toast { animation: none; }
+
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator { transition: none; }
+
+  table.htmx-request tbody,
+  tr.htmx-request { transition: none; }
+}

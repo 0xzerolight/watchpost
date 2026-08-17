@@ -88,6 +88,8 @@ async fn app_css_is_served_as_css() {
     let body = body_string(resp).await;
     assert!(body.contains("--wp-marker-0"), "body was {body}");
     assert!(body.contains(".chart-box"), "body was {body}");
+    // The shared components ui.rs emits are styled here and nowhere else.
+    assert!(body.contains(".wp-notice"), "body was {body}");
 }
 
 #[tokio::test]
