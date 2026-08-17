@@ -24,19 +24,73 @@ pub fn json_script<T: Serialize>(id: &str, value: &T) -> Markup {
 
 /// Render untrusted markdown to HTML.
 ///
-/// Raw HTML events are filtered out of the parser stream, so the output can
-/// only contain tags markdown itself generated (`<p>`, `<strong>`, `<a>`, …).
-/// That is what makes `PreEscaped` safe here: a user writing `<script>` or
-/// `<img onerror=x>` in a note produces no such tag in the output.
+/// Two filters make the `PreEscaped` output safe. Raw HTML events are dropped
+/// from the parser stream, so the output can only contain tags markdown itself
+/// generated (`<p>`, `<strong>`, `<a>`, …). And link/image destinations — the
+/// attribute values that land in `href`/`src` — are scheme-allowlisted:
+/// relative URLs plus `http`/`https`/`mailto` pass through, anything else
+/// (`javascript:`, `data:`, …) is replaced with an empty destination.
 pub fn render_markdown(src: &str) -> Markup {
-    use pulldown_cmark::{Event, Options, Parser};
+    use pulldown_cmark::{Event, Options, Parser, Tag};
 
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let events = Parser::new_ext(src, options)
-        .filter(|event| !matches!(event, Event::Html(_) | Event::InlineHtml(_)));
+        .filter(|event| !matches!(event, Event::Html(_) | Event::InlineHtml(_)))
+        .map(|event| match event {
+            Event::Start(Tag::Link {
+                mut dest_url,
+                link_type,
+                title,
+                id,
+            }) => {
+                if !is_safe_url(&dest_url) {
+                    dest_url = "".into();
+                }
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                })
+            }
+            Event::Start(Tag::Image {
+                mut dest_url,
+                link_type,
+                title,
+                id,
+            }) => {
+                if !is_safe_url(&dest_url) {
+                    dest_url = "".into();
+                }
+                Event::Start(Tag::Image {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                })
+            }
+            other => other,
+        });
     let mut out = String::with_capacity(src.len());
     pulldown_cmark::html::push_html(&mut out, events);
     PreEscaped(out)
+}
+
+/// Allow a markdown link/image destination: relative URLs (no scheme) plus
+/// http/https/mailto. Scheme comparison is ASCII-case-insensitive, matching
+/// how browsers parse `JavaScript:`-style evasions.
+fn is_safe_url(url: &str) -> bool {
+    match url.split_once(':') {
+        None => true,
+        Some((scheme, _)) => {
+            // A ':' after '/', '?' or '#' is not a scheme separator
+            // (e.g. `/path:x`), so such URLs are still relative.
+            scheme.contains(['/', '?', '#'])
+                || ["http", "https", "mailto"]
+                    .iter()
+                    .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+        }
+    }
 }
 
 /// Map an event kind to one of eight stable colour-slot classes.
@@ -99,6 +153,38 @@ mod tests {
         assert!(!out.contains("<script"), "output was {out}");
         assert!(!out.contains("onerror"), "output was {out}");
         assert!(!out.contains("<img"), "output was {out}");
+    }
+
+    #[test]
+    fn render_markdown_strips_unsafe_link_and_image_schemes() {
+        let out = render_markdown("[x](javascript:alert(1))").into_string();
+        assert!(!out.contains("javascript:"), "output was {out}");
+
+        // Case variant must be caught too — browsers match schemes
+        // case-insensitively.
+        let out = render_markdown("[x](JavaScript:alert(1))").into_string();
+        assert!(
+            !out.to_ascii_lowercase().contains("javascript:"),
+            "output was {out}"
+        );
+
+        let out = render_markdown("![x](data:text/html,<script>alert(1)</script>)").into_string();
+        assert!(!out.contains("data:"), "output was {out}");
+    }
+
+    #[test]
+    fn render_markdown_keeps_safe_link_destinations() {
+        let out = render_markdown("[ok](https://example.com)").into_string();
+        assert!(
+            out.contains(r#"href="https://example.com""#),
+            "output was {out}"
+        );
+
+        let out = render_markdown("[ok](/path)").into_string();
+        assert!(out.contains(r#"href="/path""#), "output was {out}");
+
+        let out = render_markdown("[ok](mailto:a@b.c)").into_string();
+        assert!(out.contains(r#"href="mailto:a@b.c""#), "output was {out}");
     }
 
     #[test]
