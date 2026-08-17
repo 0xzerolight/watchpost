@@ -1,0 +1,259 @@
+//! Router-level proofs for the embedded asset handler and the base layout,
+//! driven through the real `axum::Router` via `tower::ServiceExt::oneshot`.
+//!
+//! The layout assertions matter more than they look: a page that loses its
+//! `hx-headers` attribute still renders fine but breaks every POST with a 403,
+//! and a page that loses `historyCacheSize = 0` only breaks on the back button.
+//! Both failures are invisible to a smoke test, so they are pinned here.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+use url::Url;
+
+use watchpost::config::Config;
+use watchpost::db::Db;
+use watchpost::gh_client::GhClient;
+use watchpost::ratelimit::RateGate;
+use watchpost::routes::assets::asset_href;
+use watchpost::routes::router;
+use watchpost::state::{AppState, SyncStatus};
+
+fn app() -> Router {
+    let base: Url = "http://127.0.0.1:1/".parse().unwrap();
+    let cfg = Config {
+        github_token: "t".into(),
+        cron_schedule: "0 5 * * * *".into(),
+        db_path: PathBuf::from(":memory:"),
+        host: "127.0.0.1".into(),
+        port: 8080,
+        log_level: "info".into(),
+        github_api_base: base.clone(),
+    };
+    router(Arc::new(AppState {
+        db: Db::open_in_memory().unwrap(),
+        gh: GhClient::new("t", base).unwrap(),
+        cfg,
+        gate: RateGate::new(),
+        sync: Mutex::new(SyncStatus::Idle),
+        sync_guard: Arc::new(tokio::sync::Mutex::new(())),
+    }))
+}
+
+async fn get(uri: &str) -> axum::response::Response {
+    app()
+        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn body_string(resp: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(resp.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn header(resp: &axum::response::Response, name: &str) -> String {
+    resp.headers()
+        .get(name)
+        .unwrap_or_else(|| panic!("missing {name} header"))
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// serve_asset
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn app_css_is_served_as_css() {
+    let resp = get("/assets/app.css").await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(header(&resp, "content-type"), "text/css; charset=utf-8");
+    assert_eq!(
+        header(&resp, "cache-control"),
+        "public, max-age=31536000, immutable"
+    );
+    let body = body_string(resp).await;
+    assert!(body.contains("--wp-marker-0"), "body was {body}");
+    assert!(body.contains(".chart-box"), "body was {body}");
+}
+
+#[tokio::test]
+async fn app_css_ignores_the_cache_busting_query() {
+    let resp = get("/assets/app.css?v=9.9.9").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn app_js_defines_the_watchpost_namespace() {
+    let resp = get("/assets/app.js").await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        header(&resp, "content-type"),
+        "text/javascript; charset=utf-8"
+    );
+    let body = body_string(resp).await;
+    for name in [
+        "initRepoCharts",
+        "refreshMarkers",
+        "toggleKind",
+        "initSparklines",
+        "applyTheme",
+    ] {
+        assert!(body.contains(name), "app.js is missing {name}");
+    }
+}
+
+#[tokio::test]
+async fn vendor_assets_are_served_with_their_types() {
+    for (file, content_type, needle) in [
+        ("pico-2.0.6.min.css", "text/css; charset=utf-8", "Pico CSS"),
+        (
+            "htmx-2.0.4.min.js",
+            "text/javascript; charset=utf-8",
+            "htmx",
+        ),
+        (
+            "chart-4.4.7.umd.js",
+            "text/javascript; charset=utf-8",
+            "Chart.js",
+        ),
+        ("favicon.svg", "image/svg+xml", "<svg"),
+    ] {
+        let resp = get(&format!("/assets/{file}")).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{file}");
+        assert_eq!(header(&resp, "content-type"), content_type, "{file}");
+        assert_eq!(
+            header(&resp, "cache-control"),
+            "public, max-age=31536000, immutable",
+            "{file}"
+        );
+        assert!(body_string(resp).await.contains(needle), "{file}");
+    }
+}
+
+#[tokio::test]
+async fn unknown_asset_is_404() {
+    let resp = get("/assets/nope.js").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn asset_path_traversal_is_404() {
+    // Not a security boundary (nothing is read from disk), but a miss must
+    // stay a miss rather than matching some prefix rule.
+    let resp = get("/assets/..%2f..%2fetc%2fpasswd").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn asset_href_busts_the_cache_for_own_files() {
+    let href = asset_href("app.css");
+    assert!(href.starts_with("/assets/app.css?v="), "href was {href}");
+    assert!(href.ends_with(env!("CARGO_PKG_VERSION")), "href was {href}");
+    assert!(asset_href("app.js").contains("?v="));
+}
+
+// ---------------------------------------------------------------------------
+// base layout, end to end
+// ---------------------------------------------------------------------------
+
+/// Pull the `hx-headers` attribute out of a rendered page and parse it,
+/// undoing HTML attribute escaping first. Asserting on the parsed value rather
+/// than a raw substring keeps the test honest about *what htmx will send*
+/// instead of pinning the escaping style of the template engine.
+fn hx_headers(body: &str) -> serde_json::Value {
+    let rest = body.split_once("hx-headers=\"").expect("no hx-headers").1;
+    let raw = rest.split_once('"').expect("unterminated hx-headers").0;
+    let decoded = raw
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    serde_json::from_str(&decoded).unwrap_or_else(|e| panic!("hx-headers {decoded:?}: {e}"))
+}
+
+#[tokio::test]
+async fn health_still_serves() {
+    let resp = get("/health").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_string(resp).await, "OK");
+}
+
+#[tokio::test]
+async fn index_renders_the_base_layout() {
+    let resp = get("/").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let set_cookie = header(&resp, "set-cookie");
+    let cookie_token = set_cookie
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .strip_prefix("wp_csrf=")
+        .expect("first visit must set wp_csrf")
+        .to_owned();
+    assert_eq!(cookie_token.len(), 64);
+
+    let body = body_string(resp).await;
+
+    assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
+    assert!(body.contains("<title>Home · watchpost</title>"), "{body}");
+
+    // The token the page embeds must be the one the cookie just set, or the
+    // session's first POST 403s.
+    assert!(body.contains("hx-headers"), "{body}");
+    assert_eq!(
+        hx_headers(&body),
+        serde_json::json!({ "x-csrf-token": cookie_token })
+    );
+
+    assert!(body.contains("htmx.config.historyCacheSize = 0"), "{body}");
+
+    for href in [
+        "/assets/pico-2.0.6.min.css",
+        "/assets/htmx-2.0.4.min.js",
+        "/assets/chart-4.4.7.umd.js",
+    ] {
+        assert!(body.contains(href), "missing {href} in {body}");
+    }
+    // The favicon is inlined so a cold page load never round-trips for it.
+    assert!(body.contains(r#"rel="icon""#), "{body}");
+    assert!(body.contains("data:image/svg+xml"), "{body}");
+    assert!(body.contains("/assets/app.css?v="), "{body}");
+    assert!(body.contains("/assets/app.js?v="), "{body}");
+
+    assert!(body.contains(r#"href="/settings""#), "{body}");
+    assert!(body.contains("<main class=\"container\">"), "{body}");
+}
+
+#[tokio::test]
+async fn index_reuses_an_existing_token() {
+    let resp = app()
+        .oneshot(
+            Request::get("/")
+                .header("cookie", "wp_csrf=abc123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get("set-cookie").is_none());
+    assert_eq!(
+        hx_headers(&body_string(resp).await),
+        serde_json::json!({ "x-csrf-token": "abc123" })
+    );
+}

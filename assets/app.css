@@ -1,0 +1,153 @@
+/*
+ * watchpost's own styles, layered on top of Pico. Everything here is either a
+ * token other rules read (`--wp-marker-*`), a widget Pico has no equivalent for
+ * (chips, the marker tip, the flash highlight), or a two-line layout utility.
+ *
+ * The marker palette is eight categorical slots. `kind_class()` in
+ * src/routes/html/mod.rs hashes an event kind into one of them server-side and
+ * assets/app.js repeats that hash for client-drawn markers, so a kind keeps the
+ * same colour in a badge and on a chart.
+ */
+
+:root {
+  --wp-marker-0: #2f6fd0;
+  --wp-marker-1: #d1493f;
+  --wp-marker-2: #2e8b57;
+  --wp-marker-3: #b4720d;
+  --wp-marker-4: #7c5cd6;
+  --wp-marker-5: #0f8b8d;
+  --wp-marker-6: #c2557f;
+  --wp-marker-7: #a0522d;
+  --wp-flash-bg: #fff3c4;
+}
+
+/*
+ * Dark variants are lighter and less saturated: the light palette is tuned for
+ * contrast against white and turns muddy on a dark surface.
+ *
+ * Both selectors carry the same block. The media query follows the OS, and
+ * `[data-theme=dark]` is what Pico's (and `applyTheme()`'s) explicit toggle
+ * sets — a user who forces dark on a light OS needs the override too.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --wp-marker-0: #7aa9f7;
+    --wp-marker-1: #f08a80;
+    --wp-marker-2: #6fce9a;
+    --wp-marker-3: #e3b45c;
+    --wp-marker-4: #b39ef0;
+    --wp-marker-5: #4fc3c5;
+    --wp-marker-6: #ec93b6;
+    --wp-marker-7: #d09a72;
+    --wp-flash-bg: #4a4020;
+  }
+}
+
+[data-theme="dark"] {
+  --wp-marker-0: #7aa9f7;
+  --wp-marker-1: #f08a80;
+  --wp-marker-2: #6fce9a;
+  --wp-marker-3: #e3b45c;
+  --wp-marker-4: #b39ef0;
+  --wp-marker-5: #4fc3c5;
+  --wp-marker-6: #ec93b6;
+  --wp-marker-7: #d09a72;
+  --wp-flash-bg: #4a4020;
+}
+
+/*
+ * Chart.js sizes its canvas to the parent, so the parent must have a height of
+ * its own — a bare canvas in a flow container grows on every resize.
+ */
+.chart-box {
+  position: relative;
+  height: 220px;
+}
+
+/* Kind slots: set the colour, let `.wp-chip` and friends read it. */
+.wp-kind-0 { --wp-kind-color: var(--wp-marker-0); }
+.wp-kind-1 { --wp-kind-color: var(--wp-marker-1); }
+.wp-kind-2 { --wp-kind-color: var(--wp-marker-2); }
+.wp-kind-3 { --wp-kind-color: var(--wp-marker-3); }
+.wp-kind-4 { --wp-kind-color: var(--wp-marker-4); }
+.wp-kind-5 { --wp-kind-color: var(--wp-marker-5); }
+.wp-kind-6 { --wp-kind-color: var(--wp-marker-6); }
+.wp-kind-7 { --wp-kind-color: var(--wp-marker-7); }
+.wp-kind-none { --wp-kind-color: var(--pico-muted-color, #6b7280); }
+
+.wp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.6rem;
+  border: 1px solid var(--wp-kind-color, var(--pico-muted-border-color));
+  border-radius: 1rem;
+  color: var(--wp-kind-color, inherit);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: nowrap;
+  background: transparent;
+}
+
+/* Pressed state for the kind filter toggles (`toggleKind()`). */
+.wp-chip[aria-pressed="true"] {
+  background: var(--wp-kind-color, var(--pico-muted-border-color));
+  color: var(--pico-card-background-color, #fff);
+}
+
+/*
+ * Marks the row htmx just swapped in, so an out-of-band update is visible
+ * without a layout shift.
+ */
+.wp-flash {
+  animation: wp-flash 1.5s ease-out 1;
+}
+
+@keyframes wp-flash {
+  from { background-color: var(--wp-flash-bg); }
+  to { background-color: transparent; }
+}
+
+/* Floating tip shown next to a hovered chart marker; positioned by app.js. */
+#marker-tip {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  max-width: 22rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: var(--pico-card-background-color, #fff);
+  box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+#marker-tip.wp-visible {
+  display: block;
+}
+
+/* Layout utilities — enough for a row of controls, not a grid system. */
+.wp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.wp-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wp-gap-1 { gap: 0.25rem; }
+.wp-gap-2 { gap: 1rem; }
+.wp-grow { flex: 1 1 auto; }
+.wp-right { margin-left: auto; }
+.wp-muted { color: var(--pico-muted-color, #6b7280); }
+.wp-small { font-size: 0.85rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wp-flash { animation: none; }
+}

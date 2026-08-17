@@ -1,0 +1,33 @@
+Vendored third-party assets — embedded into the binary via include_bytes!.
+Downloaded 2026-08-17. Filenames carry the version, so they are served with a
+one-year immutable cache header and never need a ?v= query.
+
+To re-verify: `cd assets/vendor && sha256sum *` and compare with the sha256
+lines below. To upgrade: download the new version, rename the file with the new
+version number, update this file and the constants in src/routes/assets.rs.
+
+name:    Pico CSS
+version: 2.0.6
+file:    pico-2.0.6.min.css
+sha256:  dd5fd5591afd81ee21dcc117ad85c014dc3f1f19dc2d7b7d101ea0acc29274c2
+source:  https://cdn.jsdelivr.net/npm/@picocss/pico@2.0.6/css/pico.min.css
+license: MIT
+
+name:    htmx
+version: 2.0.4
+file:    htmx-2.0.4.min.js
+sha256:  e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447
+source:  https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js
+license: BSD-2-Clause / Zero-Clause BSD
+
+name:    Chart.js
+version: 4.4.7
+file:    chart-4.4.7.umd.js
+sha256:  2812cb8825fdc57469eb2f7bb055e9429244e599920511ee477e828499b632cb
+source:  https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js
+license: MIT
+note:    chart.js 4.4.7 publishes no chart.umd.min.js — the npm package ships
+         chart.umd.js only, already minified. Requesting the .min.js path from
+         jsdelivr returns that same file with the upstream banner swapped for a
+         jsdelivr-generated one, so the canonical chart.umd.js is vendored
+         instead and the filename drops ".min".

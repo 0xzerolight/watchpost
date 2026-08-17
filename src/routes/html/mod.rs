@@ -1,9 +1,62 @@
 //! Shared HTML rendering helpers. Page templates land here in later tasks;
-//! this module currently holds the pieces every template needs, including the
-//! two that carry XSS-defence weight (`json_script`, `render_markdown`).
+//! this module currently holds the document shell (`base`) plus the pieces
+//! every template needs, including the two that carry XSS-defence weight
+//! (`json_script`, `render_markdown`).
 
-use maud::{Markup, PreEscaped, html};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Serialize;
+
+use crate::csrf::{CSRF_HEADER, CsrfToken};
+use crate::routes::assets;
+
+/// The document shell every page renders into.
+///
+/// Two details are load-bearing:
+///
+/// * `hx-headers` on `<body>` makes every htmx request inherit the CSRF token,
+///   so no individual form or button has to remember it. The value is built
+///   with `serde_json` rather than spliced together, so a token that somehow
+///   contained a quote could not escape the attribute.
+/// * htmx is loaded synchronously so the inline config below runs against a
+///   real `htmx` object, before any element on the page can trigger a swap.
+pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
+    let hx_headers = serde_json::json!({ CSRF_HEADER: csrf.0 }).to_string();
+
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) " · watchpost" }
+                link rel="icon" type="image/svg+xml" href=(assets::favicon_data_uri());
+                link rel="stylesheet" href=(format!("/assets/{}", assets::PICO_CSS));
+                link rel="stylesheet" href=(assets::asset_href(assets::APP_CSS));
+                script src=(format!("/assets/{}", assets::HTMX_JS)) {}
+                // The charts are only needed once the DOM exists, so both of
+                // these defer; `defer` also keeps them in order, and app.js
+                // depends on Chart.
+                script src=(format!("/assets/{}", assets::CHART_JS)) defer {}
+                script src=(assets::asset_href(assets::APP_JS)) defer {}
+                // htmx's history cache restores a serialized DOM snapshot,
+                // which brings back <canvas> elements with no Chart.js
+                // instance behind them — dead charts on every back button.
+                // Disabling the cache costs a re-request and keeps pages live.
+                script { "htmx.config.historyCacheSize = 0;" }
+            }
+            body hx-headers=(hx_headers) {
+                nav class="container" {
+                    ul { li { a href="/" { strong { "watchpost" } } } }
+                    ul {
+                        li { a href="/" { "Home" } }
+                        li { a href="/settings" { "Settings" } }
+                    }
+                }
+                main class="container" { (inner) }
+            }
+        }
+    }
+}
 
 /// Embed `value` as JSON in a `<script type="application/json">` island the
 /// client reads by `id`.

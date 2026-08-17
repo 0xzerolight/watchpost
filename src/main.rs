@@ -1,7 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use axum::Router;
-use axum::routing::get;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
@@ -11,6 +9,7 @@ use watchpost::config::{Config, DEFAULT_CRON};
 use watchpost::db::Db;
 use watchpost::gh_client::GhClient;
 use watchpost::ratelimit::RateGate;
+use watchpost::routes::router;
 use watchpost::state::{AppState, SyncStatus};
 
 #[tokio::main]
@@ -79,7 +78,7 @@ async fn main() {
         }
     };
 
-    let app = Router::new().route("/health", get(|| async { "OK" }));
+    let app = router(Arc::clone(&state));
 
     let addr = format!("{}:{}", state.cfg.host, state.cfg.port);
     let listener = tokio::net::TcpListener::bind(&addr)
