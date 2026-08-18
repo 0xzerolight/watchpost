@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-18
+
+First release. Everything below is relative to the pre-release state of the repository, which was
+never tagged.
+
 ### Added
 
 - One-line install: `curl … | bash` on Linux and macOS, `irm … | iex` on Windows. Both pull a
@@ -23,29 +28,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `WATCHPOST_TZ`: displayed times — "last synced", the `--doctor` rate-limit reset, and the day a
   new event defaults to — render in the configured IANA zone instead of always UTC. Stored dates,
   chart day buckets and `WATCHPOST_CRON` stay UTC.
-
-### Changed
-
-- `WATCHPOST_GITHUB_TOKEN` is optional. Missing is no longer a startup error; it is the state the
-  setup page exists to resolve. Schema v3 adds a `settings` table to hold a token saved there.
-- `--doctor` reports which token is in use and where it came from, and fails an install that has
-  none with a pointer to the setup page rather than a request that was never made.
-
-### Fixed
-
-- The Add event form pre-filled the UTC day, so between local midnight and the UTC rollover it
-  defaulted to the wrong date.
-- A line chart with only one or two observed days drew nothing at all — the Downloads card on a
-  repo whose releases were first read this week was an empty plot area under a correctly scaled
-  axis. Such points now get a marker.
-
-## [1.0.0] - 2026-08-18
-
-First release. Everything below is relative to the pre-release state of the repository, which was
-never tagged.
-
-### Added
-
 - Global error toast: a failed request says so instead of failing silently.
 - Loading indicators and disabled states on every request that can be waited on.
 - Delete confirmation in a real dialog rather than a bare button.
@@ -60,6 +42,10 @@ never tagged.
 
 ### Changed
 
+- `WATCHPOST_GITHUB_TOKEN` is optional. Missing is no longer a startup error; it is the state the
+  setup page exists to resolve. Schema v3 adds a `settings` table to hold a token saved there.
+- `--doctor` reports which token is in use and where it came from, and fails an install that has
+  none with a pointer to the setup page rather than a request that was never made.
 - The pages are rebuilt on one shared component set: real labels on every form field, consistent
   headings, empty states, and a restructured repo, settings and index page.
 - Spacing, type and colour are design tokens from a single source; the event-kind chips meet WCAG
@@ -74,6 +60,11 @@ never tagged.
 
 ### Fixed
 
+- The Add event form pre-filled the UTC day, so between local midnight and the UTC rollover it
+  defaulted to the wrong date.
+- A line chart with only one or two observed days drew nothing at all — the Downloads card on a
+  repo whose releases were first read this week was an empty plot area under a correctly scaled
+  axis. Such points now get a marker.
 - Rate-limit classification is limited to 403 and 429; a transient 5xx is retried instead of being
   counted as a rate limit.
 - Daily stats record the last observation of the day rather than the intraday maximum.
