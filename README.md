@@ -112,8 +112,9 @@ cargo build --release
 ./target/release/watchpost
 ```
 
-Rust stable, no system dependencies beyond a C toolchain (SQLite is compiled in). `make ci` runs
-the same gate as CI: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+Rust 1.88 or newer, no system dependencies beyond a C toolchain (SQLite is compiled in). `make ci`
+runs the same gate as CI: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test`.
 
 The Docker image is single-arch — it builds for the host architecture. Cross-building a multi-arch
 image (cargo-zigbuild or buildx with a musl cross toolchain) is a follow-up, not a v1 concern.

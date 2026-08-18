@@ -2,6 +2,13 @@
 name = "watchpost"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "Self-hosted GitHub repo metrics with a promo-event timeline"
+repository = "https://github.com/0xzerolight/watchpost"
+license = "AGPL-3.0-or-later"
+readme = "README.md"
+keywords = ["github", "metrics", "analytics", "self-hosted"]
+categories = ["web-programming::http-server", "command-line-utilities"]
 
 [dependencies]
 axum = "0.8"
@@ -30,5 +37,11 @@ tower = { version = "0.5", features = ["util"] }
 temp-env = "0.3"
 tempfile = "3"
 
+# The binary embeds every asset and ships as one file, so the ~2min build is a
+# one-off cost paid for a smaller, faster artifact. Deliberately no
+# panic = "abort": the catch-panic layer has to unwind to turn a handler panic
+# into a 500 instead of taking the process down.
 [profile.release]
 strip = true
+lto = "fat"
+codegen-units = 1
