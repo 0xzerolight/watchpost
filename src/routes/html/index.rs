@@ -22,11 +22,7 @@ pub type Card = (RepoOverview, Vec<Option<i64>>);
 /// The dashboard body, for wrapping in [`super::base`].
 pub fn index_body(cards: &[Card], tz: Tz) -> Markup {
     html! {
-        (page_header(
-            "Repositories",
-            Some(html! { "Tracked repositories and their latest metrics." }),
-            None,
-        ))
+        (page_header("Repositories", None, None))
         @if cards.is_empty() {
             (empty_state(
                 "No repos tracked yet — stats start collecting on the next sync.",
@@ -165,13 +161,14 @@ mod tests {
     fn dashboard_leads_with_the_shared_page_header() {
         let out = index_body(&[], Tz::UTC).into_string();
         assert!(
-            out.starts_with(r#"<header class="wp-page-header"><hgroup><h1>Repositories</h1>"#),
+            out.starts_with(
+                r#"<header class="wp-page-header"><hgroup><h1>Repositories</h1></hgroup></header>"#
+            ),
             "out was {out}"
         );
-        assert!(
-            out.contains("<p>Tracked repositories and their latest metrics.</p>"),
-            "out was {out}"
-        );
+        // No subtitle: a heading that says "Repositories" over a grid of repo
+        // cards has nothing left to explain.
+        assert!(!out.contains("<p>Tracked"), "out was {out}");
     }
 
     #[test]
