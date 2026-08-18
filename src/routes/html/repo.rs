@@ -48,9 +48,12 @@ pub const PERIODS: [(i64, &str); 5] = [
 /// The path data is factored out because the tests assert on it — an icon that
 /// silently became the wrong direction would otherwise still match on its
 /// wrapper.
-const SORT_ASC_PATH: &str = r#"<path d="M2 6.5 5 3.5 8 6.5"/>"#;
-const SORT_DESC_PATH: &str = r#"<path d="M2 3.5 5 6.5 8 3.5"/>"#;
-const SORT_IDLE_PATH: &str = r#"<path d="M2.5 4.2 5 1.7 7.5 4.2M2.5 5.8 5 8.3 7.5 5.8"/>"#;
+const SORT_ASC_PATH: &str = r#"<path d="M2.5 8 6 4.5 9.5 8"/>"#;
+const SORT_DESC_PATH: &str = r#"<path d="M2.5 4.5 6 8 9.5 4.5"/>"#;
+/// The idle pair needs a wider gap than the halves of the active chevron: at
+/// the size these render, two chevrons a stroke-width apart close up into a
+/// diamond instead of reading as one arrow above another.
+const SORT_IDLE_PATH: &str = r#"<path d="M3 4.5 6 1.5 9 4.5M3 7.5 6 10.5 9 7.5"/>"#;
 
 // ---------------------------------------------------------------------------
 // Payloads the client reads
@@ -540,7 +543,7 @@ fn sort_th(
                 hx-replace-url="true"
                 hx-indicator="closest table" {
                     (label)
-                    svg class=(icon_class) viewBox="0 0 10 10"
+                    svg class=(icon_class) viewBox="0 0 12 12"
                         aria-hidden="true" focusable="false" {
                             (PreEscaped(path))
                         }
@@ -1083,7 +1086,7 @@ mod tests {
             "out was {out}"
         );
         assert!(
-            out.contains(r#"Views<svg class="wp-sort-icon" viewBox="0 0 10 10""#),
+            out.contains(r#"Views<svg class="wp-sort-icon" viewBox="0 0 12 12""#),
             "out was {out}"
         );
         assert!(out.contains(SORT_DESC_PATH), "out was {out}");
@@ -1098,7 +1101,7 @@ mod tests {
         };
         let out = popular_table(PopularKind::Referrers, &[], &params).into_string();
         assert!(
-            out.contains(r#"Referrer<svg class="wp-sort-icon" viewBox="0 0 10 10""#),
+            out.contains(r#"Referrer<svg class="wp-sort-icon" viewBox="0 0 12 12""#),
             "out was {out}"
         );
         assert!(out.contains(SORT_ASC_PATH), "out was {out}");
