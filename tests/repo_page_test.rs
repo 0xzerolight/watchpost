@@ -718,28 +718,6 @@ async fn path_sort_is_independent_of_the_referrer_sort() {
     assert!(at(&body, "reddit") < at(&body, "google"), "body was {body}");
 }
 
-#[tokio::test]
-async fn uniques_columns_explain_that_they_are_never_summed() {
-    let h = harness();
-    h.seed_repo(ID_A, REPO_A).await;
-    h.seed_referrer(ID_A, days_ago(1), "google", 5, 4).await;
-
-    let body = body_string(h.get("/repos/1").await).await;
-    assert_eq!(
-        body.matches(r#"data-tooltip="Peak daily unique — uniques are never summed""#)
-            .count(),
-        2,
-        "both uniques columns need the tooltip: {body}"
-    );
-    // The count columns are honest about being accumulated, not exact totals.
-    assert_eq!(
-        body.matches(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#)
-            .count(),
-        2,
-        "both count columns need the tooltip: {body}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Events + errors
 // ---------------------------------------------------------------------------

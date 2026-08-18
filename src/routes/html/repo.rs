@@ -448,14 +448,9 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
             caption { (caption) }
             thead {
                 tr {
-                    (sort_th(kind, SortKey::Name, name_label, sort, params, None))
-                    // "Views" alone would read as an exact all-time total,
-                    // which the accumulated-increases aggregation is not —
-                    // the tooltip says what the number really is.
-                    (sort_th(kind, SortKey::Count, "Views", sort, params,
-                        Some("Accumulated views — sum of observed daily increases; undercounts before install or during downtime")))
-                    (sort_th(kind, SortKey::Uniques, "Uniques", sort, params,
-                        Some("Peak daily unique — uniques are never summed")))
+                    (sort_th(kind, SortKey::Name, name_label, sort, params))
+                    (sort_th(kind, SortKey::Count, "Views", sort, params))
+                    (sort_th(kind, SortKey::Uniques, "Uniques", sort, params))
                 }
             }
             tbody {
@@ -514,7 +509,6 @@ fn sort_th(
     label: &str,
     current: Sort,
     params: &PopularParams,
-    tooltip: Option<&str>,
 ) -> Markup {
     let url = params.sort_url(kind, key);
     let table = table_id(kind);
@@ -534,8 +528,7 @@ fn sort_th(
                 hx-target=(format!("#{table}"))
                 hx-swap="outerHTML"
                 hx-replace-url="true"
-                hx-indicator="closest table"
-                data-tooltip=[tooltip] {
+                hx-indicator="closest table" {
                     (label)
                     span class="wp-sort-glyph" aria-hidden="true" { (glyph) }
                 }
@@ -1000,20 +993,12 @@ mod tests {
     }
 
     #[test]
-    fn uniques_header_explains_the_aggregation() {
+    fn an_empty_table_still_renders_its_swap_target() {
         let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
-        assert!(
-            out.contains(r#"data-tooltip="Peak daily unique — uniques are never summed""#),
-            "out was {out}"
-        );
-        // The count column says what its number is too — accumulated observed
-        // increases, not an exact all-time total.
-        assert!(
-            out.contains(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#),
-            "out was {out}"
-        );
-        // The two numeric columns and nothing else.
-        assert_eq!(out.matches("data-tooltip").count(), 2, "out was {out}");
+        // Column headers carry no tooltips: the numbers are labelled, and a
+        // paragraph of caveat on a hover is not how a one-user dashboard
+        // explains itself.
+        assert!(!out.contains("data-tooltip"), "out was {out}");
         // An empty table still renders its swap target, and says why it is
         // empty across the full width of the columns it has.
         assert!(
