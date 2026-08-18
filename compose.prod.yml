@@ -1,0 +1,36 @@
+# The compose file the installer downloads: pulls the published image instead
+# of building it. `compose.yml` next to this one is the from-source variant,
+# for developing on watchpost rather than running it.
+services:
+  watchpost:
+    image: ghcr.io/0xzerolight/watchpost:latest
+    container_name: watchpost
+    # Loopback only: watchpost has no authentication, so anything that can
+    # reach this port has full read/write — including the form that sets the
+    # GitHub token. Widen deliberately, behind a proxy that authenticates (see
+    # the README's security section), never by accident.
+    ports:
+      - "127.0.0.1:${WATCHPOST_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    environment:
+      # A bind mount keeps host ownership, so the container has to become the
+      # host user to write ./data. 1000 is the usual first Linux user; the
+      # installer writes the real values to .env when they differ.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
