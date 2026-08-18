@@ -216,9 +216,78 @@ async fn asset_path_traversal_is_404() {
 #[test]
 fn asset_href_busts_the_cache_for_own_files() {
     let href = asset_href("app.css");
-    assert!(href.starts_with("/assets/app.css?v="), "href was {href}");
-    assert!(href.ends_with(env!("CARGO_PKG_VERSION")), "href was {href}");
+    let hash = href
+        .strip_prefix("/assets/app.css?v=")
+        .unwrap_or_else(|| panic!("href was {href}"));
+    // A content hash, not a version: 16 lowercase hex digits.
+    assert_eq!(hash.len(), 16, "href was {href}");
+    assert!(
+        hash.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "href was {href}"
+    );
     assert!(asset_href("app.js").contains("?v="));
+    assert_ne!(asset_href("app.css"), asset_href("app.js"));
+}
+
+/// The cache buster in the markup and the `ETag` on the wire are the same hash,
+/// which is what makes the 304 below reachable from a page the browser rendered
+/// rather than only from a handcrafted request.
+#[tokio::test]
+async fn an_asset_is_tagged_with_the_hash_in_its_url() {
+    let resp = get("/assets/app.css").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let etag = header(&resp, "etag");
+    let hash = asset_href("app.css")
+        .split_once("?v=")
+        .map(|(_, hash)| hash.to_owned())
+        .unwrap();
+    assert_eq!(etag, format!("\"{hash}\""));
+}
+
+#[tokio::test]
+async fn a_matching_etag_is_answered_with_an_empty_304() {
+    let first = get("/assets/chart-4.4.7.umd.js").await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let etag = header(&first, "etag");
+    assert!(!body_string(first).await.is_empty());
+
+    let resp = app()
+        .oneshot(
+            Request::get("/assets/chart-4.4.7.umd.js")
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    // The revalidation has to refresh the cached entry, or the next request
+    // arrives without a tag and pays for the whole 205KB again.
+    assert_eq!(header(&resp, "etag"), etag);
+    assert_eq!(
+        header(&resp, "cache-control"),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(body_string(resp).await, "");
+}
+
+#[tokio::test]
+async fn a_stale_etag_is_answered_with_the_asset() {
+    let resp = app()
+        .oneshot(
+            Request::get("/assets/app.css")
+                .header("if-none-match", "\"0000000000000000\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_string(resp).await.contains(".chart-box"));
 }
 
 // ---------------------------------------------------------------------------
