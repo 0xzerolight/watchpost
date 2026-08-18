@@ -9,9 +9,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- One-line install: `curl … | bash` on Linux and macOS, `irm … | iex` on Windows. Both pull a
+  published image, write `PUID`/`PGID` so the bind-mounted `data/` is writable whatever the host
+  uid is, wait for `/health`, and open the setup page. `scripts/update.sh` updates in place.
+- A first-run setup page. An install with no `WATCHPOST_GITHUB_TOKEN` now boots and redirects every
+  page to `/setup`, where a pasted token is checked against GitHub before it is saved and
+  collection starts immediately. The token can be replaced from the settings page afterwards; only
+  its last four characters are ever rendered. An environment token still wins and hides the form.
+- Published multi-arch images at `ghcr.io/0xzerolight/watchpost`, `linux/amd64` and `linux/arm64`,
+  built on a tag push.
+- `PUID`/`PGID`: the container entrypoint aligns the data directory with the host user and drops
+  privileges, replacing the manual `chown -R <uid> data` the README used to ask for.
 - `WATCHPOST_TZ`: displayed times — "last synced", the `--doctor` rate-limit reset, and the day a
   new event defaults to — render in the configured IANA zone instead of always UTC. Stored dates,
   chart day buckets and `WATCHPOST_CRON` stay UTC.
+
+### Changed
+
+- `WATCHPOST_GITHUB_TOKEN` is optional. Missing is no longer a startup error; it is the state the
+  setup page exists to resolve. Schema v3 adds a `settings` table to hold a token saved there.
+- `--doctor` reports which token is in use and where it came from, and fails an install that has
+  none with a pointer to the setup page rather than a request that was never made.
 
 ### Fixed
 
