@@ -614,9 +614,11 @@ htmx.config.includeIndicatorStyles = false;
   /*
    * Tear down whatever chart already owns this canvas.
    *
-   * A period change re-creates all four charts on the canvases they are already
-   * drawn on. Re-creating without this leaks the old instance and its resize
-   * listener; `Chart.getChart` is the supported way to find it.
+   * Chart.js refuses to build on a canvas that is already in use, and a
+   * discarded instance keeps its resize observer attached; `Chart.getChart` is
+   * the supported way to find it. Sparklines rebuild on their own canvases
+   * after a swap, and `syncChart` comes through here when a canvas holds a
+   * chart it cannot update into the one the spec describes.
    */
   function destroyOn(canvas) {
     var old = Chart.getChart(canvas);
@@ -650,34 +652,151 @@ htmx.config.includeIndicatorStyles = false;
     });
   }
 
-  function makeChart(canvasId, spec) {
-    var canvas = document.getElementById(canvasId);
-    if (!canvas) {
-      return null;
-    }
-    destroyOn(canvas);
+  /*
+   * A cumulative series' line shape. Copied onto each dataset that asks for it
+   * rather than handed over as-is — see `CHART_SPECS`.
+   */
+  var LINE_STYLE = {
+    borderWidth: 2,
+    tension: 0,
+    pointStyle: false,
+    fill: false,
+  };
 
-    spec.datasets.forEach(function (dataset) {
-      var colour = css(dataset.$wpVar, "#888888");
-      dataset.borderColor = colour;
-      dataset.backgroundColor = colour;
+  /*
+   * The four repo charts, as data.
+   *
+   * These are descriptors and nothing here is ever written to. Chart.js owns
+   * the objects it is handed — it stores the dataset object itself and
+   * `applyTheme` writes resolved colours onto it — so `buildDataset` copies
+   * what it needs onto a fresh object per chart, and one shared style constant
+   * cannot end up wearing four charts' colours in turn.
+   *
+   * The two policies that used to be restated per chart live here once:
+   *
+   *   - `zeroBased` follows what the series measures. Stars and total
+   *     downloads are running totals, and their axis reads better tight around
+   *     the curve than anchored at a zero the data never visits; views and
+   *     clones are counts per bucket, where a floating zero would exaggerate
+   *     every wobble.
+   *   - `mode` is the roll-up `agg` applies once a bucket is wider than a day,
+   *     and it is a property of the series rather than of the chart: a
+   *     carried-forward total takes its last observation, a count sums, and
+   *     uniques can only peak.
+   */
+  var CHART_SPECS = [
+    {
+      canvasId: "chart_stars",
+      type: "line",
+      zeroBased: false,
+      datasets: [
+        {
+          source: "stars",
+          label: "Stars",
+          mode: "last",
+          cssVar: "--wp-marker-3",
+          style: LINE_STYLE,
+        },
+      ],
+    },
+    {
+      canvasId: "chart_views",
+      type: "bar",
+      zeroBased: true,
+      datasets: [
+        {
+          source: "views_count",
+          label: "Views",
+          mode: "sum",
+          cssVar: "--wp-marker-0",
+        },
+        {
+          source: "views_uniques",
+          // The uniques series is called something else once a bucket is wider
+          // than a day, so its label comes from the view.
+          labelKey: "uniquesLabel",
+          mode: "max",
+          cssVar: "--wp-marker-5",
+        },
+      ],
+    },
+    {
+      canvasId: "chart_clones",
+      type: "bar",
+      zeroBased: true,
+      datasets: [
+        {
+          source: "clones_count",
+          label: "Clones",
+          mode: "sum",
+          cssVar: "--wp-marker-2",
+        },
+        {
+          source: "clones_uniques",
+          labelKey: "uniquesLabel",
+          mode: "max",
+          cssVar: "--wp-marker-4",
+        },
+      ],
+    },
+    {
+      canvasId: "chart_downloads",
+      type: "line",
+      zeroBased: false,
+      datasets: [
+        {
+          source: "downloads_total",
+          label: "Downloads",
+          mode: "last",
+          cssVar: "--wp-marker-6",
+          style: LINE_STYLE,
+        },
+      ],
+    },
+  ];
+
+  function datasetLabel(descriptor, view) {
+    return descriptor.labelKey ? view[descriptor.labelKey] : descriptor.label;
+  }
+
+  function buildDataset(descriptor, view) {
+    var colour = css(descriptor.cssVar, "#888888");
+    var dataset = {
+      label: datasetLabel(descriptor, view),
+      data: view.values[descriptor.source],
+      // The variable name travels with the dataset because the colour above is
+      // a resolved literal: `applyTheme` re-reads `$wpVar` on a scheme flip,
+      // and that is the only thing that recolours a line already drawn.
+      $wpVar: descriptor.cssVar,
+      borderColor: colour,
+      backgroundColor: colour,
       // A null is a day watchpost did not observe, not a zero. Bridging it
       // would draw a straight line through missing data and read as a real
       // measurement.
-      dataset.spanGaps = false;
-    });
+      spanGaps: false,
+    };
+    return Object.assign(dataset, descriptor.style);
+  }
+
+  function createChart(canvas, spec, view, events) {
+    destroyOn(canvas);
 
     var chart = new Chart(canvas, {
       type: spec.type,
-      data: { labels: spec.labels, datasets: spec.datasets },
+      data: {
+        labels: view.keys,
+        datasets: spec.datasets.map(function (descriptor) {
+          return buildDataset(descriptor, view);
+        }),
+      },
       options: {
         responsive: true,
         // `.chart-box` supplies the height; without this the canvas grows on
         // every resize.
         maintainAspectRatio: false,
-        // Animation off: a period change re-creates these charts from scratch,
-        // and a growth animation on every swap reads as a glitch rather than a
-        // transition. It also keeps the marker overlay in step with the axis.
+        // Animation off: the markers are painted at the axis' final pixel
+        // positions, so a tweening axis would leave every dashed line standing
+        // beside the column it belongs to until the animation settled.
         animation: false,
         // Hovering anywhere in a column reports every series in it, which is
         // what a reader comparing count against uniques wants.
@@ -693,16 +812,20 @@ htmx.config.includeIndicatorStyles = false;
             ticks: { maxRotation: 0, autoSkip: true, autoSkipPadding: 16 },
           },
           y: {
-            beginAtZero: spec.zeroBased !== false,
+            beginAtZero: spec.zeroBased,
             ticks: { precision: 0 },
           },
         },
         plugins: {
+          // A legend earns its space only where there are two series to tell
+          // apart.
           legend: { display: spec.datasets.length > 1 },
           tooltip: {
             callbacks: {
               title: function (items) {
-                return spec.titles[items[0].dataIndex];
+                // Read off the chart, not off a captured array: the titles
+                // change under a live chart on every period change.
+                return items[0].chart.$wp.titles[items[0].dataIndex];
               },
               label: function (item) {
                 var name = item.dataset.label ? item.dataset.label + ": " : "";
@@ -722,8 +845,102 @@ htmx.config.includeIndicatorStyles = false;
       plugins: [eventMarkers],
     });
 
+    /*
+     * What this file keeps on a chart beyond what Chart.js knows about: the
+     * events to mark, the date → column map that places them, and the tooltip
+     * headings.
+     *
+     * Attached after construction — the first render happens inside the
+     * constructor, before this exists, which is why the plugin treats a missing
+     * `$wp` as "nothing to draw" and why the chart is drawn once more below.
+     *
+     * Every later render writes to this object's fields and never replaces it.
+     * `refreshMarkers` swaps `events` on whichever object each chart is
+     * holding, so handing a chart a second `$wp` would strand its markers on
+     * the first one.
+     */
+    chart.$wp = {
+      events: events,
+      bucketOf: view.bucketOf,
+      titles: view.titles,
+    };
+
     live.add(chart);
+    chart.draw();
     return chart;
+  }
+
+  /*
+   * Bring the chart on `spec`'s canvas up to date with `view`.
+   *
+   * The update path is the point of the whole arrangement: a period change
+   * re-labels and re-fills four live charts instead of destroying them, which
+   * is what it takes for the cards not to blank for a frame on every zoom.
+   * Building from scratch is left for the canvas that has no chart yet — a
+   * first render, or an htmx swap that brought new canvas elements with it.
+   */
+  function syncChart(spec, view, events) {
+    var canvas = document.getElementById(spec.canvasId);
+    if (!canvas) {
+      return null;
+    }
+
+    var chart = Chart.getChart(canvas);
+    // Anything that is not already this spec's chart cannot be updated into
+    // one: a different plot type, a different number of series, or a chart
+    // this file did not build and therefore holds no `$wp` on.
+    if (
+      !chart ||
+      !chart.$wp ||
+      chart.config.type !== spec.type ||
+      chart.data.datasets.length !== spec.datasets.length
+    ) {
+      return createChart(canvas, spec, view, events);
+    }
+
+    chart.data.labels = view.keys;
+    spec.datasets.forEach(function (descriptor, i) {
+      var dataset = chart.data.datasets[i];
+      dataset.data = view.values[descriptor.source];
+      dataset.label = datasetLabel(descriptor, view);
+    });
+    // Fields, never the object — see `createChart`. Colours are deliberately
+    // not rewritten here: they are already whatever the current scheme
+    // resolved to, and `applyTheme` owns changing them.
+    chart.$wp.events = events;
+    chart.$wp.bucketOf = view.bucketOf;
+    chart.$wp.titles = view.titles;
+    chart.update("none");
+    return chart;
+  }
+
+  /*
+   * Past a quarter of history the x-axis stops being one column per day
+   * (`getBucketKind`), which changes what a column is — and on the two charts
+   * that plot uniques it changes what the number means, since uniques peak
+   * rather than sum. The card's note says so, and says nothing at day zoom.
+   */
+  var BUCKET_NOTES = { week: "Weekly buckets", month: "Monthly buckets" };
+
+  function cardNote(spec, view) {
+    var note = BUCKET_NOTES[view.kind];
+    if (!note) {
+      return "";
+    }
+    var plotsUniques = spec.datasets.some(function (descriptor) {
+      return descriptor.mode === "max";
+    });
+    return plotsUniques ? note + " — uniques shown as peak daily" : note;
+  }
+
+  /* Fill the card heading's note slot, which the server renders empty. */
+  function setCardNote(canvasId, text) {
+    var canvas = document.getElementById(canvasId);
+    var card = canvas ? canvas.closest(".wp-card") : null;
+    var note = card ? card.querySelector(".wp-card-note") : null;
+    if (note) {
+      note.textContent = text;
+    }
   }
 
   /*
@@ -810,18 +1027,20 @@ htmx.config.includeIndicatorStyles = false;
     }
   }
 
-  /* Build the four repo charts from the trailing `days` of `payload`. */
-  function renderCharts(payload, days) {
+  /*
+   * Everything the four charts plot at the trailing `days` of `payload`, and
+   * nothing about the charts themselves.
+   *
+   * Returns `{keys, titles, bucketOf, kind, uniquesLabel, values}` — axis
+   * labels, tooltip headings, the marker plugin's date → column map, the bucket
+   * width the window came out at, the name the uniques series goes by at that
+   * width, and one rolled-up array per series named in `CHART_SPECS`.
+   */
+  function computeView(payload, days) {
     var labels = tail(payload.labels, days);
     var source = payload.series || {};
     var kind = getBucketKind(labels);
     var buckets = bucketize(labels, kind);
-    var keys = buckets.map(function (b) {
-      return b.key;
-    });
-    var titles = buckets.map(function (b) {
-      return b.title;
-    });
 
     // date → column, for the marker plugin. Built from the same buckets the
     // values were aggregated over, so a marker cannot drift from its data.
@@ -832,103 +1051,42 @@ htmx.config.includeIndicatorStyles = false;
       });
     });
 
-    function rollup(name, mode) {
-      var values = tail(source[name], days);
-      return buckets.map(function (bucket) {
-        return agg(values, bucket.dayIdxs, mode);
+    var values = {};
+    CHART_SPECS.forEach(function (spec) {
+      spec.datasets.forEach(function (descriptor) {
+        var series = tail(source[descriptor.source], days);
+        values[descriptor.source] = buckets.map(function (bucket) {
+          return agg(series, bucket.dayIdxs, descriptor.mode);
+        });
       });
-    }
-
-    // At day zoom the uniques bar is that day's unique count; wider buckets
-    // cannot sum it (see `agg`), so the label says what the number really is.
-    var uniquesLabel = kind === "day" ? "Unique" : "Peak daily unique";
-
-    var charts = [
-      makeChart("chart_stars", {
-        type: "line",
-        labels: keys,
-        titles: titles,
-        // Stars are a running total, so the axis reads better tight around the
-        // curve than anchored at zero.
-        zeroBased: false,
-        datasets: [
-          {
-            label: "Stars",
-            data: rollup("stars", "last"),
-            $wpVar: "--wp-marker-3",
-            borderWidth: 2,
-            tension: 0,
-            pointStyle: false,
-            fill: false,
-          },
-        ],
-      }),
-      makeChart("chart_views", {
-        type: "bar",
-        labels: keys,
-        titles: titles,
-        datasets: [
-          {
-            label: "Views",
-            data: rollup("views_count", "sum"),
-            $wpVar: "--wp-marker-0",
-          },
-          {
-            label: uniquesLabel,
-            data: rollup("views_uniques", "max"),
-            $wpVar: "--wp-marker-5",
-          },
-        ],
-      }),
-      makeChart("chart_clones", {
-        type: "bar",
-        labels: keys,
-        titles: titles,
-        datasets: [
-          {
-            label: "Clones",
-            data: rollup("clones_count", "sum"),
-            $wpVar: "--wp-marker-2",
-          },
-          {
-            label: uniquesLabel,
-            data: rollup("clones_uniques", "max"),
-            $wpVar: "--wp-marker-4",
-          },
-        ],
-      }),
-      makeChart("chart_downloads", {
-        type: "line",
-        labels: keys,
-        titles: titles,
-        zeroBased: false,
-        datasets: [
-          {
-            label: "Downloads",
-            data: rollup("downloads_total", "last"),
-            $wpVar: "--wp-marker-6",
-            borderWidth: 2,
-            tension: 0,
-            pointStyle: false,
-            fill: false,
-          },
-        ],
-      }),
-    ];
-
-    var events = readJson("events-data") || [];
-    charts.forEach(function (chart) {
-      if (!chart) {
-        return;
-      }
-      // Attached after construction — the first render happens inside the
-      // constructor, before this exists, which is why the plugin treats a
-      // missing `$wp` as "nothing to draw" and why each chart is drawn once
-      // more here.
-      chart.$wp = { events: events, bucketOf: bucketOf };
-      chart.draw();
     });
 
+    return {
+      keys: buckets.map(function (b) {
+        return b.key;
+      }),
+      titles: buckets.map(function (b) {
+        return b.title;
+      }),
+      bucketOf: bucketOf,
+      kind: kind,
+      // At day zoom the uniques bar is that day's unique count; wider buckets
+      // cannot sum it (see `agg`), so the label says what the number really is.
+      uniquesLabel: kind === "day" ? "Unique" : "Peak daily unique",
+      values: values,
+    };
+  }
+
+  /* Show the trailing `days` of `payload` on the four repo charts. */
+  function renderCharts(payload, days) {
+    var view = computeView(payload, days);
+    // One read for all four charts, and the array each of them goes on holding
+    // — `refreshMarkers` swaps it out on every chart at once.
+    var events = readJson("events-data") || [];
+    CHART_SPECS.forEach(function (spec) {
+      syncChart(spec, view, events);
+      setCardNote(spec.canvasId, cardNote(spec, view));
+    });
     applyFilter();
   }
 

@@ -394,9 +394,10 @@ fn charts_section(view: &RepoView) -> Markup {
     }
 }
 
-/// One chart panel. The empty `.wp-card-note` is the slot the client fills with
-/// the series' latest value; it renders either way, so the title never reflows
-/// when the number arrives.
+/// One chart panel. The empty `.wp-card-note` is the slot the client fills when
+/// a window is too long to plot a column per day, to say how wide the buckets
+/// are; it renders either way, so the heading never reflows when the note
+/// arrives.
 fn chart_card(title: &str, canvas_id: &str) -> Markup {
     html! {
         article class="wp-card" {

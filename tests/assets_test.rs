@@ -133,6 +133,12 @@ async fn app_js_defines_the_watchpost_namespace() {
         // An event row is a table row, not a form, so Enter in one of its
         // fields submits nothing without this listener.
         "tr.wp-edit-row",
+        // The three names a period change goes through. Losing any of them
+        // means the charts are being destroyed and rebuilt again, which is the
+        // blank card this arrangement exists to avoid.
+        "CHART_SPECS",
+        "computeView",
+        "syncChart",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }
