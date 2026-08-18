@@ -693,13 +693,52 @@
   }
 
   /*
+   * How big a marker one point gets: visible only where the run of observed
+   * points around it is too short to read as a line.
+   *
+   * `spanGaps: false` strokes a segment between two adjacent observed values
+   * and nowhere else, so the first days of a series draw next to nothing while
+   * the axis already scales to them. A repo whose release assets were first
+   * read two days ago is one observed bucket at weekly zoom — no segment at all
+   * — and two neighbouring columns at daily zoom, which is a couple of pixels
+   * against the right edge. Both cases read as an empty chart under correct
+   * numbers.
+   *
+   * A run of three or more is a line and needs no help, so every point in one
+   * stays at 0: a marker per day turns a line into a caterpillar.
+   *
+   * `pointStyle: false` cannot do this job — Chart.js reads it as "draw an
+   * empty path" whatever the radius says. A radius of 0 is what suppresses a
+   * point.
+   */
+  function strandedPointRadius(ctx) {
+    var data = ctx.dataset.data;
+    var i = ctx.dataIndex;
+    var seen = function (j) {
+      return data[j] !== null && data[j] !== undefined;
+    };
+    if (!seen(i)) {
+      return 0;
+    }
+    // The three ways this point can sit in a run of three: two behind, one
+    // either side, or two ahead.
+    var inLine =
+      (seen(i - 1) && (seen(i - 2) || seen(i + 1))) ||
+      (seen(i + 1) && seen(i + 2));
+    return inLine ? 0 : 3;
+  }
+
+  /*
    * A cumulative series' line shape. Copied onto each dataset that asks for it
    * rather than handed over as-is — see `CHART_SPECS`.
    */
   var LINE_STYLE = {
     borderWidth: 2,
     tension: 0,
-    pointStyle: false,
+    pointRadius: strandedPointRadius,
+    // Hover resolves the radius again in `active` mode, and the default there
+    // is 4 — without this, pointing at a normal line pops a dot onto it.
+    pointHoverRadius: strandedPointRadius,
     fill: false,
   };
 

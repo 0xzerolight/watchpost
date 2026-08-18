@@ -17,6 +17,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The Add event form pre-filled the UTC day, so between local midnight and the UTC rollover it
   defaulted to the wrong date.
+- A line chart with only one or two observed days drew nothing at all — the Downloads card on a
+  repo whose releases were first read this week was an empty plot area under a correctly scaled
+  axis. Such points now get a marker.
 
 ## [1.0.0] - 2026-08-18
 
