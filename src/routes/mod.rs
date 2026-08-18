@@ -19,8 +19,15 @@ pub mod index;
 pub mod repo;
 pub mod security;
 pub mod settings;
+pub mod setup;
 
 /// The application router.
+///
+/// The setup gate is innermost, so an install with no GitHub token answers
+/// every page with a redirect to `/setup`. It sits *under* CSRF rather than
+/// over it because `/setup` accepts a POST: the double-submit pair has to be
+/// checked before the handler runs, and the page it renders on rejection still
+/// needs a token in the request extensions.
 ///
 /// CSRF sits under the trace layer so a rejected request is still logged, and
 /// over every route so a page render always finds a token in the request
@@ -69,6 +76,13 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/sync", post(settings::sync_start))
         .route("/sync/status", get(settings::sync_status))
         .route("/assets/{file}", get(assets::serve_asset))
+        .route("/setup", get(setup::setup_page).post(setup::setup_submit))
+        // Inside CSRF, so a POST to /setup is validated before it arrives and
+        // the page render still finds a token in the request extensions.
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            setup::setup_gate,
+        ))
         .layer(axum::middleware::from_fn(csrf_middleware))
         .layer(axum::middleware::from_fn(security::security_headers))
         // gzip only, and deliberately so: brotli wins negotiation wherever it
