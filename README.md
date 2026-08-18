@@ -8,7 +8,8 @@ under a marker on the chart instead of being a spike you no longer remember the 
 It collects hourly into a local SQLite file, serves a small server-rendered dashboard, and talks to
 nothing but the GitHub API.
 
-<!-- screenshot: repo page with traffic chart + event markers -> assets/screenshot.png -->
+![The repo page: stars, views, clones and downloads over 90 days, with event markers on every
+chart, the top referrers and paths, and the event list underneath.](assets/screenshot.png)
 
 ## What it records
 
