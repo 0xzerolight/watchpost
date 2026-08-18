@@ -123,6 +123,67 @@ async fn stargazers_sends_star_accept_header() {
 }
 
 #[tokio::test]
+async fn transient_5xx_retried_once_then_typed() {
+    // Scenario A: one flaky 502 must not cost the repo a 30min–24h backoff.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/flaky"))
+        .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/flaky"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(repo_json(7)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gh = client_for(&server);
+    let repo = gh.repo("octo/flaky").await.unwrap();
+    assert_eq!(repo.id, 7);
+    server.verify().await;
+
+    // Scenario B: a persistent 5xx retries exactly once, then surfaces typed.
+    let server2 = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/always-500"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&server2)
+        .await;
+
+    let gh2 = client_for(&server2);
+    let err = gh2.repo("octo/always-500").await.unwrap_err();
+    assert!(
+        matches!(err, GhError::Status { status: 500, .. }),
+        "got {err:?}"
+    );
+    server2.verify().await;
+}
+
+#[tokio::test]
+async fn client_error_is_not_retried() {
+    // 4xx is not transient in the retryable sense — one attempt only.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/capped/stargazers"))
+        .respond_with(ResponseTemplate::new(422).set_body_string("pagination capped"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let gh = client_for(&server);
+    let err = gh.stargazer_pages("octo/capped", 1, 1).await.unwrap_err();
+    assert!(
+        matches!(err, GhError::Status { status: 422, .. }),
+        "got {err:?}"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn secondary_limit_retried_once_then_typed() {
     // Scenario A: first call hits the secondary limit with a short
     // retry-after; the retried call succeeds.

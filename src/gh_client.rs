@@ -3,9 +3,11 @@
 //!
 //! Every request funnels through [`GhClient::send`], which classifies
 //! non-2xx responses via [`crate::ratelimit::classify`] and maps them onto
-//! [`GhError`]. A `SecondaryLimited` classification is retried exactly once
-//! after sleeping `min(retry_after, 120s)`; a second failure returns the
-//! typed error to the caller. No response, header, or JSON value is ever
+//! [`GhError`]. Two failures are retried exactly once each: `SecondaryLimited`
+//! after sleeping `min(retry_after, 120s)`, and a 5xx `Transient` after
+//! `TRANSIENT_RETRY_DELAY` — otherwise one flaky 502 would cost that repo a
+//! 30min–24h backoff. A second failure returns the typed error to the
+//! caller. No response, header, or JSON value is ever
 //! `.unwrap()`/`.expect()`d — malformed input degrades to a typed error
 //! (or, for the `Link` header, to "no next page") rather than panicking.
 
@@ -29,6 +31,7 @@ use crate::types::{GhRepo, TrafficDay};
 
 const BODY_SNIPPET_CAP: usize = 256;
 const SECONDARY_RETRY_CAP: Duration = Duration::from_secs(120);
+const TRANSIENT_RETRY_DELAY: Duration = Duration::from_millis(250);
 const RATE_LIMIT_WARN_THRESHOLD: i64 = 500;
 const STAR_ACCEPT: &str = "application/vnd.github.star+json";
 
@@ -292,10 +295,14 @@ impl GhClient {
         Ok((items, next))
     }
 
-    /// Send a GET, retrying once on `SecondaryLimited`. Returns the raw
-    /// response on success or a typed [`GhError`] on a non-retried failure.
+    /// Send a GET, retrying once on `SecondaryLimited` and once on a 5xx
+    /// `Transient`. The two budgets are independent — a response that is
+    /// rate-limited and later flaky still gets one attempt of each kind, and
+    /// neither can loop. Returns the raw response on success or a typed
+    /// [`GhError`] on a failure that was not retried away.
     async fn send(&self, url: &Url, accept: Option<&str>) -> Result<reqwest::Response, GhError> {
-        let mut retried = false;
+        let mut retried_secondary = false;
+        let mut retried_transient = false;
 
         loop {
             let mut req = self.client.get(url.clone());
@@ -324,10 +331,10 @@ impl GhClient {
 
             match classify(status, &headers, &snippet) {
                 GhFailureClass::SecondaryLimited { retry_after } => {
-                    if retried {
+                    if retried_secondary {
                         return Err(GhError::SecondaryLimited { retry_after });
                     }
-                    retried = true;
+                    retried_secondary = true;
                     tokio::time::sleep(retry_after.min(SECONDARY_RETRY_CAP)).await;
                     continue;
                 }
@@ -337,6 +344,16 @@ impl GhClient {
                 GhFailureClass::NotFound => return Err(GhError::NotFound { url: url_string }),
                 GhFailureClass::Forbidden => return Err(GhError::Forbidden { url: url_string }),
                 GhFailureClass::Transient => {
+                    // Server-side flakiness only. A 4xx is a verdict about
+                    // the request and repeating it just wastes quota — and
+                    // 422 in particular is the stargazer cap the collector
+                    // reads as "never retry this repo".
+                    if status.is_server_error() && !retried_transient {
+                        retried_transient = true;
+                        debug!(%status, %url, "transient 5xx; retrying once");
+                        tokio::time::sleep(TRANSIENT_RETRY_DELAY).await;
+                        continue;
+                    }
                     return Err(GhError::Status {
                         status: status.as_u16(),
                         url: url_string,

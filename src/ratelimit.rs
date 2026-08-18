@@ -23,64 +23,76 @@ pub enum GhFailureClass {
 
 /// Classify a GitHub API response into a failure class.
 ///
+/// The two limit classes are the expensive ones: both close the collector's
+/// *global* gate, stalling every repo for as long as the limit says. So the
+/// limit signals are read only on the statuses GitHub actually reports a
+/// limit with — 403 and 429. `retry-after` and `x-ratelimit-remaining` are
+/// advisory headers any proxy or cache in the path may set, and trusting
+/// them on other statuses let a 503-with-retry-after from an intermediary,
+/// or a 404 that merely arrived while quota read zero, shut down collection
+/// wholesale.
+///
 /// Classification order (short-circuits on first match):
-/// 1. retry-after header present → SecondaryLimited
-/// 2. x-ratelimit-remaining == 0 → PrimaryLimited
-/// 3. status 429 OR body contains "secondary rate limit" → SecondaryLimited
-/// 4. status 403 → Forbidden
-/// 5. status 404 → NotFound
-/// 6. any other non-2xx → Transient
+/// 1. status 403 or 429 — the only statuses that can mean "rate limited":
+///    a. retry-after header parses → SecondaryLimited
+///    b. x-ratelimit-remaining == 0 → PrimaryLimited
+///    c. status 429 OR body contains "secondary rate limit" → SecondaryLimited
+///    d. otherwise (403, no limit signal) → Forbidden
+/// 2. status 404 → NotFound
+/// 3. any other non-2xx → Transient
 #[allow(dead_code)]
 pub fn classify(status: StatusCode, headers: &HeaderMap, body_snippet: &str) -> GhFailureClass {
-    // 1. Check for retry-after header (wins over everything else)
-    if let Some(retry_after_str) = headers.get("retry-after").and_then(|h| h.to_str().ok())
-        && let Ok(secs) = retry_after_str.parse::<u64>()
-    {
-        return GhFailureClass::SecondaryLimited {
-            retry_after: StdDuration::from_secs(secs),
-        };
-    }
+    if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
+        // 1a. retry-after wins over the other limit signals: it is the one
+        // that carries a duration GitHub picked.
+        if let Some(retry_after_str) = headers.get("retry-after").and_then(|h| h.to_str().ok())
+            && let Ok(secs) = retry_after_str.parse::<u64>()
+        {
+            return GhFailureClass::SecondaryLimited {
+                retry_after: StdDuration::from_secs(secs),
+            };
+        }
 
-    // 2. Check for x-ratelimit-remaining == 0
-    if let Some(remaining_str) = headers
-        .get("x-ratelimit-remaining")
-        .and_then(|h| h.to_str().ok())
-        && remaining_str == "0"
-    {
-        // Parse x-ratelimit-reset; fallback to now + 1h if missing/unparsable
-        let reset_at = headers
-            .get("x-ratelimit-reset")
+        // 1b. Quota exhausted.
+        if let Some(remaining_str) = headers
+            .get("x-ratelimit-remaining")
             .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.parse::<i64>().ok())
-            .map(|epoch_secs| {
-                DateTime::<Utc>::from_timestamp(epoch_secs, 0)
-                    .unwrap_or_else(|| Utc::now() + Duration::hours(1))
-            })
-            .unwrap_or_else(|| Utc::now() + Duration::hours(1));
+            && remaining_str == "0"
+        {
+            // Parse x-ratelimit-reset; fallback to now + 1h if missing/unparsable
+            let reset_at = headers
+                .get("x-ratelimit-reset")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|epoch_secs| {
+                    DateTime::<Utc>::from_timestamp(epoch_secs, 0)
+                        .unwrap_or_else(|| Utc::now() + Duration::hours(1))
+                })
+                .unwrap_or_else(|| Utc::now() + Duration::hours(1));
 
-        return GhFailureClass::PrimaryLimited { reset_at };
-    }
+            return GhFailureClass::PrimaryLimited { reset_at };
+        }
 
-    // 3. Status 429 or body contains "secondary rate limit"
-    if status == StatusCode::TOO_MANY_REQUESTS
-        || body_snippet.to_lowercase().contains("secondary rate limit")
-    {
-        return GhFailureClass::SecondaryLimited {
-            retry_after: StdDuration::from_secs(60),
-        };
-    }
+        // 1c. Secondary limit with no retry-after to go on.
+        if status == StatusCode::TOO_MANY_REQUESTS
+            || body_snippet.to_lowercase().contains("secondary rate limit")
+        {
+            return GhFailureClass::SecondaryLimited {
+                retry_after: StdDuration::from_secs(60),
+            };
+        }
 
-    // 4. Status 403 → Forbidden
-    if status == StatusCode::FORBIDDEN {
+        // 1d. 429 already returned above, so this is a 403 carrying no limit
+        // signal at all: a real permission problem (missing PAT scope).
         return GhFailureClass::Forbidden;
     }
 
-    // 5. Status 404 → NotFound
+    // 2. Status 404 → NotFound
     if status == StatusCode::NOT_FOUND {
         return GhFailureClass::NotFound;
     }
 
-    // 6. Any other non-2xx → Transient
+    // 3. Any other non-2xx → Transient
     GhFailureClass::Transient
 }
 
@@ -233,9 +245,50 @@ mod tests {
     }
 
     #[test]
+    fn s404_during_exhausted_quota_is_still_not_found() {
+        // A deleted repo read while quota happens to sit at zero: the missing
+        // resource is the news, and closing the global gate over it would
+        // stall every other repo until reset.
+        let h = headers(&[
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "1790000000"),
+        ]);
+        assert!(matches!(
+            classify(StatusCode::NOT_FOUND, &h, ""),
+            GhFailureClass::NotFound
+        ));
+    }
+
+    #[test]
     fn s500_transient() {
         assert!(matches!(
             classify(StatusCode::INTERNAL_SERVER_ERROR, &headers(&[]), ""),
+            GhFailureClass::Transient
+        ));
+    }
+
+    #[test]
+    fn s5xx_with_retry_after_is_transient_not_a_limit() {
+        // Any intermediary may answer with retry-after; only 403/429 mean
+        // GitHub itself is rate limiting us.
+        let h = headers(&[("retry-after", "300")]);
+        assert!(matches!(
+            classify(StatusCode::SERVICE_UNAVAILABLE, &h, ""),
+            GhFailureClass::Transient
+        ));
+        assert!(matches!(
+            classify(StatusCode::INTERNAL_SERVER_ERROR, &h, ""),
+            GhFailureClass::Transient
+        ));
+    }
+
+    #[test]
+    fn s422_stays_transient_with_limit_headers_present() {
+        // The stargazer 40k cap arrives as 422; the collector keys its
+        // "never retry this repo" branch off GhError::Status { 422 }.
+        let h = headers(&[("x-ratelimit-remaining", "0"), ("retry-after", "60")]);
+        assert!(matches!(
+            classify(StatusCode::UNPROCESSABLE_ENTITY, &h, ""),
             GhFailureClass::Transient
         ));
     }
