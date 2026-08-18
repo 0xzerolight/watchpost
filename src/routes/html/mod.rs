@@ -135,11 +135,15 @@ fn toast_region() -> Markup {
 /// The heading is a constant rather than another client-filled slot because
 /// `aria-labelledby` names the dialog from it: pointing at an element the client
 /// might not have written yet would leave the modal with no accessible name at
-/// all, which is worse than the generic one. Cancel comes first in the DOM so
+/// all, which is worse than the generic one. `aria-describedby` points at the
+/// slot the client *does* fill, so the question is announced along with the
+/// name — without it a screenreader opens on "Confirm, dialog" and never reads
+/// what is about to be destroyed. Cancel comes first in the DOM so
 /// `showModal()`'s initial focus lands on the harmless button.
 fn confirm_dialog() -> Markup {
     html! {
-        dialog id="wp-confirm" aria-labelledby="wp-confirm-title" {
+        dialog id="wp-confirm" aria-labelledby="wp-confirm-title"
+            aria-describedby="wp-confirm-text" {
             article {
                 h2 id="wp-confirm-title" { "Confirm" }
                 p id="wp-confirm-text" {}
@@ -420,7 +424,8 @@ mod tests {
         assert_eq!(
             confirm_dialog().into_string(),
             concat!(
-                r#"<dialog id="wp-confirm" aria-labelledby="wp-confirm-title"><article>"#,
+                r#"<dialog id="wp-confirm" aria-labelledby="wp-confirm-title" "#,
+                r#"aria-describedby="wp-confirm-text"><article>"#,
                 r#"<h2 id="wp-confirm-title">Confirm</h2>"#,
                 r#"<p id="wp-confirm-text"></p>"#,
                 r#"<footer class="wp-actions wp-actions-end">"#,

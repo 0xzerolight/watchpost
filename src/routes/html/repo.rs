@@ -587,7 +587,11 @@ pub struct EventsView<'a> {
 pub fn events_section(view: &EventsView) -> Markup {
     let markers: Vec<EventMarker> = view.events.iter().map(EventMarker::from).collect();
     html! {
-        section id="events-section" {
+        // `tabindex="-1"` makes the section focusable without putting it in the
+        // tab order: it is where app.js parks focus when the control that
+        // started a mutation left with the swap — a deleted row's Delete
+        // button, or the Add button inside a disclosure that closed on success.
+        section id="events-section" tabindex="-1" {
             h2 { "Events" }
             (kind_chips(view.kinds))
             (event_add_form(view.repo_id, view.draft))
@@ -699,7 +703,7 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
                         placeholder="Markdown" { (values.notes) }
                 }))
                 div class="wp-actions" {
-                    button type="submit" { "Add event" }
+                    button type="submit" id="event-add-submit" { "Add event" }
                     (spinner("event-add-spinner"))
                 }
             }
@@ -760,12 +764,15 @@ pub fn event_row(repo_id: i64, event: &Event) -> Markup {
                 // Delete points its indicator at the row, which `tr.htmx-request`
                 // fades — the section swap it triggers is too coarse to show
                 // which row is going.
-                button type="button" class="wp-action"
+                // The ids are what app.js puts focus back on after the swap:
+                // `hx-disabled-elt` blurs the button at request start, so htmx's
+                // own restore has nothing to restore.
+                button type="button" class="wp-action" id=(format!("event-edit-{}", event.id))
                     hx-get=(format!("{base}/edit"))
                     hx-target="closest tr"
                     hx-swap="outerHTML"
                     hx-disabled-elt="this" { "Edit" }
-                button type="button" class="wp-action"
+                button type="button" class="wp-action" id=(format!("event-del-{}", event.id))
                     hx-delete=(base)
                     hx-confirm="Delete event?"
                     hx-target="#events-section"
@@ -1277,6 +1284,48 @@ mod tests {
         assert!(
             out.contains(r##"hx-confirm="Delete event?" hx-target="#events-section""##),
             "out was {out}"
+        );
+    }
+
+    #[test]
+    fn every_swapping_control_carries_the_id_focus_comes_back_to() {
+        // These ids are not decoration. Each of these controls disables itself
+        // for the life of its request, which blurs it, so htmx's own focus
+        // restore has nothing left to work with — app.js records the id at
+        // request start and focuses it again once the swap has settled. A
+        // control that loses its id silently drops the reader at the top of the
+        // document on every press.
+        let event = Event {
+            id: 7,
+            repo_id: 1,
+            date: "2026-08-10".into(),
+            title: "Launch".into(),
+            notes: String::new(),
+            url: None,
+            kind: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let row = event_row(1, &event).into_string();
+        assert!(row.contains(r#"id="event-edit-7""#), "row was {row}");
+        assert!(row.contains(r#"id="event-del-7""#), "row was {row}");
+
+        let form = event_form_row(1, 7, &EventDraft::default()).into_string();
+        assert!(form.contains(r#"id="event-save-7""#), "form was {form}");
+        assert!(form.contains(r#"id="event-cancel-7""#), "form was {form}");
+
+        let section = events_section(&events_view(std::slice::from_ref(&event), &[])).into_string();
+        assert!(
+            section.contains(r#"id="event-add-submit""#),
+            "section was {section}"
+        );
+        // Where focus lands when the control itself left with the swap: a
+        // deleted row's Delete button, or the Add button once its disclosure
+        // closes. Focusable only programmatically — the section must not become
+        // a stop on the way through the page with Tab.
+        assert!(
+            section.starts_with(r#"<section id="events-section" tabindex="-1">"#),
+            "section was {section}"
         );
     }
 

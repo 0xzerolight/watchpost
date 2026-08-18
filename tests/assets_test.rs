@@ -137,6 +137,14 @@ async fn app_js_defines_the_watchpost_namespace() {
         // An event row is a table row, not a form, so Enter in one of its
         // fields submits nothing without this listener.
         "tr.wp-edit-row",
+        // Focus continuity. Every mutating control disables itself, which blurs
+        // it before htmx looks for something to restore — these two listeners
+        // are the only thing keeping a keyboard user from being dropped at the
+        // top of the document on every save.
+        "htmx:beforeRequest",
+        "htmx:afterSettle",
+        // Where focus goes when the control that started the swap left with it.
+        "events-section",
         // The three names a period change goes through. Losing any of them
         // means the charts are being destroyed and rebuilt again, which is the
         // blank card this arrangement exists to avoid.

@@ -1607,6 +1607,119 @@ htmx.config.includeIndicatorStyles = false;
   });
 
   // -------------------------------------------------------------------------
+  // Focus continuity
+  // -------------------------------------------------------------------------
+
+  /*
+   * Which element started the request in flight, as an id.
+   *
+   * htmx already restores focus across a swap, but only for an element that
+   * still held it when the response arrived — it reads `document.activeElement`
+   * at swap time and re-focuses it by id if the swap took it away. Every
+   * mutating control on these pages carries `hx-disabled-elt`, and disabling
+   * the focused element blurs it, so by swap time the active element is
+   * `<body>` and htmx has nothing to restore. The reader presses Save with the
+   * keyboard and is dropped at the top of the document.
+   *
+   * Recording the id at request start is what survives that blur. Elements
+   * htmx never disables — sort links, the fields of an edit row and their caret
+   * position — are still htmx's to restore, and this leaves them alone.
+   */
+  var pendingFocusId = null;
+
+  /*
+   * The id of the control the reader actually pressed.
+   *
+   * Usually that is `elt` itself, but not for a form: the add form and the repo
+   * picker carry their own `hx-post`, so htmx reports the `<form>` as the
+   * requesting element and the submit button — the thing that was pressed and
+   * is about to be disabled — is only findable as whatever holds focus inside
+   * it. `htmx:beforeRequest` fires before `hx-disabled-elt` is applied, which is
+   * what makes that reading possible at all.
+   */
+  function pressedId(elt) {
+    if (!elt || !elt.contains) {
+      return null;
+    }
+    var active = document.activeElement;
+    if (active && active.id && elt.contains(active)) {
+      return active.id;
+    }
+    return elt.id || null;
+  }
+
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    pendingFocusId = pressedId(evt.detail ? evt.detail.elt : null);
+  });
+
+  /* The first thing a reader would type into in a freshly swapped edit row. */
+  function editRowField(target) {
+    if (!target || !target.matches) {
+      return null;
+    }
+    var row = target.matches("tr.wp-edit-row")
+      ? target
+      : target.querySelector("tr.wp-edit-row");
+    return row ? row.querySelector("input, textarea") : null;
+  }
+
+  /*
+   * Put focus somewhere sensible once the swap has settled.
+   *
+   * `afterSettle` rather than `afterSwap` for two reasons, and both are timing.
+   * htmx re-enables an `hx-disabled-elt` after the swap, and a disabled button
+   * cannot take focus. And an element that keeps its id across a swap wears its
+   * *old* attributes until settle — a display row turning into an edit row is
+   * still classless `tr#event-row-7` at `afterSwap`, so a `tr.wp-edit-row`
+   * selector would find nothing there.
+   *
+   * Nothing here runs unless focus was actually lost, and an edit row is
+   * preferred over the recorded id: when Edit brings one, the caret belongs in
+   * its date field rather than back on the button it has just replaced.
+   */
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    var id = pendingFocusId;
+    // Consumed either way. A later swap nobody pressed anything for — a
+    // background poll — must not inherit this and move focus to a stale id.
+    pendingFocusId = null;
+
+    // Anything other than `<body>` means focus is already somewhere deliberate:
+    // htmx restored it — caret position and all, which is how a rejected save
+    // leaves the reader in the field they were correcting — or the reader moved
+    // on while the request was in flight. Stealing it back would interrupt
+    // someone typing.
+    var active = document.activeElement;
+    if (active && active !== document.body) {
+      return;
+    }
+    var field = editRowField(evt.target);
+    if (field) {
+      field.focus();
+      return;
+    }
+    if (!id) {
+      return;
+    }
+    var elt = document.getElementById(id);
+    if (elt && typeof elt.focus === "function") {
+      elt.focus();
+      // Whether the focus landed is the test, not whether the element exists: a
+      // control can survive the swap and still refuse focus, which is what the
+      // Add button does when the disclosure holding it closes on a save.
+      if (document.activeElement === elt) {
+        return;
+      }
+    }
+    // So the control is gone (a deleted row took its Delete button with it) or
+    // cannot hold focus where it now is. The section it acted on is the nearest
+    // thing to where the reader was, and carries `tabindex="-1"` to take this.
+    var section = document.getElementById("events-section");
+    if (section) {
+      section.focus();
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
 
@@ -1680,7 +1793,13 @@ htmx.config.includeIndicatorStyles = false;
     // chips, which is a redraw rather than a rebuild.
     var chartEl = document.getElementById("chart-data");
     if (chartEl && chartEl !== chartSource) {
-      initRepoCharts();
+      // Same contract `boot` reads: a false answer means nothing rendered and
+      // therefore nothing filtered the page, so the fallback still owes it a
+      // pass — an island that arrived unparseable or with no labels would
+      // otherwise leave the fresh chips showing every kind.
+      if (!initRepoCharts()) {
+        applyFilter();
+      }
     } else if (document.getElementById("events-data")) {
       refreshMarkers();
     }
