@@ -239,13 +239,27 @@ pub fn update_deltas_recent(conn: &Connection, window_days: u32) -> Result<(), D
 }
 
 /// LAG-based delta computation (ghstats' `UPDATE ... FROM` pattern —
-/// substrate rule 3). The LAG CTE computes over ALL rows per
-/// `(repo_id, key)` partition; only the outer `UPDATE`'s `WHERE` is
-/// window-scoped. Window-scoping the CTE instead would give the first
-/// in-window row `LAG = NULL`, so its delta would become the *full* rolling
-/// count — a fake spike at the window edge every cycle. A row with no
-/// predecessor at all (true first observation) gets `delta = count`
-/// (baseline-from-zero), via the `COALESCE`.
+/// substrate rule 3). The outer `UPDATE` rewrites the trailing
+/// `window_days`; the LAG CTE spans **twice** that, so the oldest row being
+/// updated still sees the predecessor it is a diff against. A row with no
+/// visible predecessor gets `delta = count` (baseline-from-zero), via the
+/// `COALESCE`.
+///
+/// Both bounds are load-bearing. Scoping the CTE to `window_days` too would
+/// give the first in-window row `LAG = NULL`, so its delta would become the
+/// *full* rolling count — a fake spike at the window edge every cycle. Not
+/// scoping it at all recomputes `LAG` over every row these tables have ever
+/// held, hourly, for a result the outer `WHERE` then throws away: cost that
+/// grows with history rather than with the window.
+///
+/// Doubling is what makes the two bounds agree. A row at the outer window's
+/// edge keeps its predecessor as long as the gap between the two is at most
+/// `window_days`, which hourly collection always satisfies. Only an
+/// observation gap wider than `2 × window_days` — a collector down for six
+/// weeks at the default 21 — drops a predecessor, and the row restarts from
+/// baseline. That is arguably the more correct reading anyway: `count` is
+/// GitHub's rolling 14-day total, so a diff across a gap that long measures
+/// nothing.
 fn update_deltas_table(
     conn: &Connection,
     table: &str,
@@ -261,13 +275,15 @@ fn update_deltas_table(
                     count - LAG(count) OVER w AS delta_count,
                     uniques - LAG(uniques) OVER w AS delta_uniques
              FROM {table}
+             WHERE date >= date('now', ?1)
              WINDOW w AS (PARTITION BY repo_id, {key} ORDER BY date)
          ) AS lag_tbl
          WHERE t.repo_id = lag_tbl.repo_id AND t.date = lag_tbl.date AND t.{key} = lag_tbl.k
-           AND t.date >= date('now', ?1)"
+           AND t.date >= date('now', ?2)"
     );
+    let lag_window = format!("-{} day", window_days.saturating_mul(2));
     let window = format!("-{window_days} day");
-    conn.execute(&sql, params![window])?;
+    conn.execute(&sql, params![lag_window, window])?;
     Ok(())
 }
 
@@ -1217,6 +1233,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(delta, 3);
+    }
+
+    #[test]
+    fn delta_lag_reaches_back_twice_the_window() {
+        // -30d is outside the 21-day update window but inside the LAG CTE's
+        // 42-day reach, so the -1d row is still a diff. This is the gap the
+        // doubled CTE window exists to cover.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let older = days_ago(30);
+        let recent = days_ago(1);
+        upsert_referrers(
+            &c,
+            1,
+            &older,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 100,
+                uniques: 10,
+            }],
+        )
+        .unwrap();
+        upsert_referrers(
+            &c,
+            1,
+            &recent,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 130,
+                uniques: 12,
+            }],
+        )
+        .unwrap();
+        update_deltas_recent(&c, 21).unwrap();
+        let delta: i64 = c
+            .query_row(
+                "SELECT count_delta FROM repo_referrers WHERE date = ?1",
+                [&recent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(delta, 30); // 130 - 100
+    }
+
+    #[test]
+    fn delta_beyond_twice_the_window_restarts_from_zero() {
+        // The predecessor at -50d is outside the CTE's 42-day reach, so the
+        // -1d row has no visible LAG and takes its full count as a fresh
+        // baseline. Documents the deliberate cost of bounding the recompute:
+        // reachable only through an observation gap of more than twice the
+        // window, which hourly collection never produces.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let ancient = days_ago(50);
+        let recent = days_ago(1);
+        upsert_referrers(
+            &c,
+            1,
+            &ancient,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 100,
+                uniques: 10,
+            }],
+        )
+        .unwrap();
+        upsert_referrers(
+            &c,
+            1,
+            &recent,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 130,
+                uniques: 12,
+            }],
+        )
+        .unwrap();
+        update_deltas_recent(&c, 21).unwrap();
+        let (count_delta, uniques_delta): (i64, i64) = c
+            .query_row(
+                "SELECT count_delta, uniques_delta FROM repo_referrers WHERE date = ?1",
+                [&recent],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count_delta, 130); // baseline-from-zero, not 130 - 100
+        assert_eq!(uniques_delta, 12);
     }
 
     #[test]
