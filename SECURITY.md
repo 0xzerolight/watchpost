@@ -8,8 +8,15 @@ sync button. Syncing spends the token's GitHub rate budget, so an open instance 
 a stranger to exhaust it. The token itself is never rendered (`--doctor` prints its last 4
 characters and length, nothing else), but everything it can read is on the page.
 
-Both defaults keep the port private. Outside Docker `WATCHPOST_HOST` is `127.0.0.1`, and
-`compose.yml` publishes to `127.0.0.1:8080`. The container itself listens on `0.0.0.0` — that is
+The setup page is part of that surface. On an install that has never been given a token, anyone
+who can reach the port can supply one; on a configured install, anyone who can reach it can
+replace it. That is the same exposure the sync button and the event forms already carry, and it
+has the same answer: keep the port on the loopback, and put authentication in front of it before
+widening. Setting `WATCHPOST_GITHUB_TOKEN` in the environment closes the browser path completely —
+an environment token wins over a saved one, and the settings page then offers no form at all.
+
+Both defaults keep the port private. Outside Docker `WATCHPOST_HOST` is `127.0.0.1`, and both
+compose files publish to `127.0.0.1:8080`. The container itself listens on `0.0.0.0` — that is
 what makes publishing work at all — but the host offers the port to the loopback and nowhere else,
 so as shipped nothing on your network can reach it.
 

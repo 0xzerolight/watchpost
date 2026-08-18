@@ -21,8 +21,9 @@ use crate::collector;
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::AppError;
-use crate::routes::html::settings::{repos_picker, sync_status_fragment};
+use crate::routes::html::settings::{repos_picker, sync_status_fragment, token_panel};
 use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
+use crate::routes::setup;
 use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::RepoRow;
 
@@ -51,6 +52,10 @@ pub async fn settings_page(
             section {
                 h2 { "Repositories" }
                 (picker)
+            }
+            section {
+                h2 { "GitHub token" }
+                (token_panel(&state.gh_slot(), None))
             }
         },
     ))
@@ -87,7 +92,20 @@ pub async fn settings_discover(
         ));
     }
 
-    let (kind, text) = match state.gh.user_repos().await {
+    // Nothing to discover with yet. The picker still renders, so the notice
+    // lands next to the token form rather than on an error page.
+    let Some(gh) = state.gh() else {
+        let repos = state.db.call(|c| queries::known_repos(c)).await?;
+        return Ok(picker_as_submitted(
+            repos,
+            &checked,
+            Notice::Info,
+            "No GitHub token yet — add one below.".to_owned(),
+            state.cfg.timezone,
+        ));
+    };
+
+    let (kind, text) = match gh.user_repos().await {
         Ok(discovered) => {
             let count = discovered.len();
             state
@@ -185,6 +203,22 @@ pub async fn settings_save(
         Some((Notice::Success, "Saved".to_owned())),
         state.cfg.timezone,
     ))
+}
+
+/// POST /settings/token — save or rotate the token.
+///
+/// The same validate-and-save path the setup page uses, so a token accepted
+/// here is a token that authenticated; only the fragment it answers with
+/// differs. A rejected replacement changes nothing, which is what keeps a
+/// mistyped rotation from costing an install the credential it was working
+/// with.
+pub async fn settings_token(State(state): State<Arc<AppState>>, body: String) -> Markup {
+    let raw = setup::form_field(&body, "token").unwrap_or_default();
+    let msg = match setup::apply_token(&state, &raw).await {
+        Ok(()) => (Notice::Success, "Token saved.".to_owned()),
+        Err(text) => (Notice::Error, text),
+    };
+    token_panel(&state.gh_slot(), Some(msg))
 }
 
 /// POST /sync — start a cycle unless one is already in flight.

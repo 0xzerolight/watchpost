@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
@@ -21,10 +21,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use chrono_tz::Tz;
-use watchpost::config::Config;
+use watchpost::config::{Config, TokenSource};
 use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
-use watchpost::ratelimit::RateGate;
 use watchpost::routes::router;
 use watchpost::state::{AppState, SyncStatus};
 use watchpost::types::GhRepo;
@@ -48,10 +47,19 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_with_token("t", TokenSource::Env).await
+}
+
+/// The same harness with the token said to have come from `source`. The token
+/// text is distinguishable so a leak is unambiguous.
+async fn harness_with_token(token: &str, source: TokenSource) -> Harness {
     let server = MockServer::start().await;
     let base: Url = server.uri().parse().unwrap();
     let cfg = Config {
-        github_token: "t".into(),
+        github_token: match source {
+            TokenSource::Env => Some(token.to_owned()),
+            _ => None,
+        },
         cron_schedule: "0 5 * * * *".into(),
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
@@ -60,14 +68,13 @@ async fn harness() -> Harness {
         github_api_base: base.clone(),
         timezone: Tz::UTC,
     };
-    let state = Arc::new(AppState {
-        db: Db::open_in_memory().unwrap(),
-        gh: GhClient::new("t", base).unwrap(),
+    let state = Arc::new(AppState::new(
+        Db::open_in_memory().unwrap(),
         cfg,
-        gate: RateGate::new(),
-        sync: Mutex::new(SyncStatus::Idle),
-        sync_guard: Arc::new(tokio::sync::Mutex::new(())),
-    });
+        Some(GhClient::new(token, base).unwrap()),
+        Some(token),
+        source,
+    ));
     Harness {
         app: router(Arc::clone(&state)),
         server,
@@ -217,6 +224,15 @@ async fn mount_json(server: &MockServer, p: String, body: Value) {
     Mock::given(method("GET"))
         .and(path(p))
         .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// `/rate_limit` answering `status` — the endpoint a token check probes.
+async fn mount_rate_limit(server: &MockServer, status: u16, body: Value) {
+    Mock::given(method("GET"))
+        .and(path("/rate_limit"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
         .mount(server)
         .await;
 }
@@ -679,4 +695,116 @@ async fn done_fragment_has_no_polling_trigger() {
     assert!(!body.contains("hx-trigger"), "body was {body}");
     // The control to start another cycle survives the swap.
     assert!(body.contains(r#"hx-post="/sync""#), "body was {body}");
+}
+
+// ---------------------------------------------------------------------------
+// The GitHub token panel
+// ---------------------------------------------------------------------------
+
+/// An environment token cannot be replaced from a browser — the next boot
+/// would read the environment again and overwrite whatever was saved — so the
+/// panel states where it came from instead of offering a field.
+#[tokio::test]
+async fn the_settings_page_says_when_the_token_came_from_the_environment() {
+    let h = harness_with_token("ghp_env_5678", TokenSource::Env).await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    assert!(body.contains("WATCHPOST_GITHUB_TOKEN"), "{body}");
+    assert!(body.contains("…5678"), "{body}");
+    assert!(
+        !body.contains(r#"hx-post="/settings/token""#),
+        "an env token must not offer a form:\n{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_stored_token_is_offered_for_replacement() {
+    let h = harness_with_token("ghp_db_4321", TokenSource::Database).await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    assert!(body.contains(r#"hx-post="/settings/token""#), "{body}");
+    assert!(body.contains("…4321"), "{body}");
+}
+
+#[tokio::test]
+async fn the_token_is_never_rendered_in_full() {
+    let h = harness_with_token("ghp_SECRETSECRET1234", TokenSource::Database).await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    assert!(!body.contains("ghp_SECRETSECRET1234"), "the token leaked");
+    assert!(!body.contains("SECRETSECRET"), "the token leaked");
+    assert!(body.contains("…1234"), "{body}");
+}
+
+#[tokio::test]
+async fn a_stored_token_can_be_replaced_from_the_settings_page() {
+    let h = harness_with_token("ghp_db_4321", TokenSource::Database).await;
+    mount_rate_limit(
+        &h.server,
+        200,
+        json!({
+            "resources": { "core": { "limit": 5000, "remaining": 4999, "used": 1, "reset": 0 } }
+        }),
+    )
+    .await;
+    let csrf = h.csrf_token().await;
+
+    let resp = h
+        .post_form("/settings/token", "token=ghp_rotated9999", &csrf)
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let stored = h
+        .state
+        .db
+        .call(|c| queries::get_setting(c, queries::GITHUB_TOKEN_KEY))
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("ghp_rotated9999"));
+    assert_eq!(h.state.gh_slot().hint.as_deref(), Some("9999"));
+
+    let body = body_string(resp).await;
+    assert!(body.contains("Token saved"), "{body}");
+    assert!(body.contains("…9999"), "{body}");
+}
+
+/// A rejected replacement must leave the working token in place: rotating is
+/// not a reason to lose the credential the install is already collecting with.
+#[tokio::test]
+async fn a_rejected_replacement_keeps_the_current_token() {
+    let h = harness_with_token("ghp_db_4321", TokenSource::Database).await;
+    mount_rate_limit(&h.server, 401, json!({"message": "Bad credentials"})).await;
+    let csrf = h.csrf_token().await;
+
+    let resp = h.post_form("/settings/token", "token=ghp_bad", &csrf).await;
+
+    let slot = h.state.gh_slot();
+    assert_eq!(slot.hint.as_deref(), Some("4321"));
+    assert!(slot.client.is_some());
+    let body = body_string(resp).await;
+    assert!(body.contains("GitHub rejected that token"), "{body}");
+}
+
+#[tokio::test]
+async fn replacing_the_token_without_csrf_is_rejected() {
+    let h = harness_with_token("ghp_db_4321", TokenSource::Database).await;
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/settings/token")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("token=ghp_forged"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(h.state.gh_slot().hint.as_deref(), Some("4321"));
 }

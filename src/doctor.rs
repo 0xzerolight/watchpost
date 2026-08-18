@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use chrono_tz::Tz;
 
-use crate::config::Config;
+use crate::config::{Config, TokenSource, resolve_token, token_last4};
 use crate::db::Db;
 use crate::db::queries;
 use crate::errors::{DbError, GhError};
@@ -27,6 +27,7 @@ const TABLES: &[&str] = &[
     "repo_popular_paths",
     "release_assets",
     "events",
+    "settings",
 ];
 
 /// How much of a stored `last_error` the per-repo table shows. Long GitHub
@@ -88,13 +89,22 @@ pub async fn probe_db(db: &Db, path: &Path) -> Result<DbProbe, DbError> {
 pub fn doctor_report(
     cfg: &Config,
     db: &Result<DbProbe, DbError>,
-    gh: &Result<RateLimitInfo, GhError>,
+    gh: &Option<Result<RateLimitInfo, GhError>>,
+    token: Option<&str>,
+    source: TokenSource,
 ) -> (String, bool) {
     let mut out = String::new();
     out.push_str("watchpost doctor\n\n");
 
     out.push_str("config\n");
-    out.push_str(&format!("  {}\n\n", cfg.redacted_summary()));
+    out.push_str(&format!("  {}\n", cfg.redacted_summary()));
+    // `redacted_summary` describes the environment; this line describes what
+    // the process actually resolved, which on a wizard install is the token in
+    // the database and not the one (absent) in the environment.
+    out.push_str(&format!(
+        "  token in use: {}\n\n",
+        token_summary(token, source)
+    ));
 
     out.push_str("database\n");
     let db_ok = match db {
@@ -132,7 +142,22 @@ pub fn doctor_report(
     out.push_str("github\n");
     out.push_str(&format!("  api base: {}\n", cfg.github_api_base));
     let gh_ok = match gh {
-        Ok(rl) => {
+        // An install with no token is not healthy — it collects nothing — but
+        // it is also not broken, so the hint names the two ways to fix it
+        // rather than describing a failure.
+        None => {
+            out.push_str("  no token configured\n");
+            // The bind address is deliberately not interpolated here. In the
+            // image it is 0.0.0.0, which is where the server listens and not
+            // an address anybody can open — printing it as a URL would send
+            // the reader somewhere that does not resolve.
+            out.push_str(
+                "  hint: open watchpost in a browser and paste a personal access token on the\n  \
+                 /setup page, or set WATCHPOST_GITHUB_TOKEN in the environment.\n",
+            );
+            false
+        }
+        Some(Ok(rl)) => {
             out.push_str(&format!(
                 "  rate limit (core): {} of {} remaining, resets {}\n",
                 rl.remaining,
@@ -149,7 +174,7 @@ pub fn doctor_report(
             out.push('\n');
             true
         }
-        Err(e) => {
+        Some(Err(e)) => {
             out.push_str(&format!("  FAILED: {e}\n"));
             if is_auth_error(e) {
                 out.push_str(SCOPE_HINT);
@@ -200,20 +225,45 @@ pub fn doctor_report(
     (out, ok)
 }
 
+/// How the report names the token actually in use.
+fn token_summary(token: Option<&str>, source: TokenSource) -> String {
+    match (token, source) {
+        (Some(t), TokenSource::Env) => {
+            format!("…{} from WATCHPOST_GITHUB_TOKEN", token_last4(t))
+        }
+        (Some(t), _) => format!("…{} from the database", token_last4(t)),
+        (None, _) => "none".to_string(),
+    }
+}
+
 /// Open the database and query GitHub, print the report, and return the exit
 /// code. Opens its own `Db` — `--doctor` never reaches the server path.
 pub async fn run_doctor(cfg: &Config) -> ExitCode {
-    let db_probe = match Db::open(&cfg.db_path) {
-        Ok(db) => probe_db(&db, &cfg.db_path).await,
-        Err(e) => Err(e),
+    // The database is opened before the token is resolved because it is where
+    // a wizard-supplied token lives: a doctor run that only read the
+    // environment would report "no token" on an install that has one and is
+    // working.
+    let (stored, db_probe) = match Db::open(&cfg.db_path) {
+        Ok(db) => {
+            let stored = db
+                .call(|c| queries::get_setting(c, queries::GITHUB_TOKEN_KEY))
+                .await
+                .unwrap_or(None);
+            (stored, probe_db(&db, &cfg.db_path).await)
+        }
+        Err(e) => (None, Err(e)),
+    };
+    let (token, source) = resolve_token(cfg.github_token.as_deref(), stored);
+
+    let gh_result = match token.as_deref() {
+        Some(t) => Some(match GhClient::new(t, cfg.github_api_base.clone()) {
+            Ok(gh) => gh.rate_limit().await,
+            Err(e) => Err(e),
+        }),
+        None => None,
     };
 
-    let gh_result = match GhClient::new(&cfg.github_token, cfg.github_api_base.clone()) {
-        Ok(gh) => gh.rate_limit().await,
-        Err(e) => Err(e),
-    };
-
-    let (report, ok) = doctor_report(cfg, &db_probe, &gh_result);
+    let (report, ok) = doctor_report(cfg, &db_probe, &gh_result, token.as_deref(), source);
     print!("{report}");
 
     if ok {

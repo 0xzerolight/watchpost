@@ -134,8 +134,6 @@ impl axum::response::IntoResponse for AppError {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ConfigError {
-    #[error("WATCHPOST_GITHUB_TOKEN is required")]
-    MissingToken,
     #[error("bad value for {var}: {msg}")]
     BadValue { var: String, msg: String },
 }

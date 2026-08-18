@@ -9,7 +9,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use chrono_tz::Tz;
-use watchpost::config::Config;
+use watchpost::config::{Config, TokenSource};
 use watchpost::db::Db;
 use watchpost::db::queries;
 use watchpost::doctor::{doctor_report, probe_db, run_doctor};
@@ -22,7 +22,7 @@ const SECRET_TOKEN: &str = "ghp_SECRETSECRETSECRET1234";
 
 fn config_for(api_base: &str) -> Config {
     Config {
-        github_token: SECRET_TOKEN.to_string(),
+        github_token: Some(SECRET_TOKEN.to_string()),
         cron_schedule: "0 5 * * * *".to_string(),
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".to_string(),
@@ -91,12 +91,18 @@ async fn report_lists_schema_version_and_table_counts() {
     seed_repo(&db, "octo/repo", true).await;
 
     let probe = probe_db(&db, &cfg.db_path).await;
-    let gh = GhClient::new(&cfg.github_token, cfg.github_api_base.clone())
+    let gh = GhClient::new(SECRET_TOKEN, cfg.github_api_base.clone())
         .unwrap()
         .rate_limit()
         .await;
 
-    let (report, ok) = doctor_report(&cfg, &probe, &gh);
+    let (report, ok) = doctor_report(
+        &cfg,
+        &probe,
+        &Some(gh),
+        Some(SECRET_TOKEN),
+        TokenSource::Env,
+    );
 
     assert!(ok, "healthy db + reachable api must pass:\n{report}");
     assert!(report.contains("user_version:"), "{report}");
@@ -107,6 +113,7 @@ async fn report_lists_schema_version_and_table_counts() {
         "repo_popular_paths",
         "release_assets",
         "events",
+        "settings",
     ] {
         assert!(report.contains(&format!("rows {table}:")), "{report}");
     }
@@ -130,11 +137,17 @@ async fn report_never_prints_the_token() {
     let db = seeded_db();
 
     let probe = probe_db(&db, &cfg.db_path).await;
-    let gh = GhClient::new(&cfg.github_token, cfg.github_api_base.clone())
+    let gh = GhClient::new(SECRET_TOKEN, cfg.github_api_base.clone())
         .unwrap()
         .rate_limit()
         .await;
-    let (report, _) = doctor_report(&cfg, &probe, &gh);
+    let (report, _) = doctor_report(
+        &cfg,
+        &probe,
+        &Some(gh),
+        Some(SECRET_TOKEN),
+        TokenSource::Env,
+    );
 
     assert!(!report.contains(SECRET_TOKEN), "{report}");
     assert!(!report.contains("SECRETSECRET"), "{report}");
@@ -150,11 +163,17 @@ async fn unauthorized_rate_limit_prints_the_scope_hint_and_fails() {
     let db = seeded_db();
 
     let probe = probe_db(&db, &cfg.db_path).await;
-    let gh = GhClient::new(&cfg.github_token, cfg.github_api_base.clone())
+    let gh = GhClient::new(SECRET_TOKEN, cfg.github_api_base.clone())
         .unwrap()
         .rate_limit()
         .await;
-    let (report, ok) = doctor_report(&cfg, &probe, &gh);
+    let (report, ok) = doctor_report(
+        &cfg,
+        &probe,
+        &Some(gh),
+        Some(SECRET_TOKEN),
+        TokenSource::Env,
+    );
 
     assert!(!ok, "{report}");
     assert!(report.contains("FAILED"), "{report}");
@@ -169,14 +188,64 @@ async fn forbidden_rate_limit_also_prints_the_scope_hint() {
     let db = seeded_db();
 
     let probe = probe_db(&db, &cfg.db_path).await;
-    let gh = GhClient::new(&cfg.github_token, cfg.github_api_base.clone())
+    let gh = GhClient::new(SECRET_TOKEN, cfg.github_api_base.clone())
         .unwrap()
         .rate_limit()
         .await;
-    let (report, ok) = doctor_report(&cfg, &probe, &gh);
+    let (report, ok) = doctor_report(
+        &cfg,
+        &probe,
+        &Some(gh),
+        Some(SECRET_TOKEN),
+        TokenSource::Env,
+    );
 
     assert!(!ok, "{report}");
     assert!(report.contains("Administration: read"), "{report}");
+}
+
+/// An install nobody has given a token to collects nothing, so the doctor has
+/// to fail — but the report says how to fix it rather than describing a
+/// request that failed, because no request was made.
+#[tokio::test]
+async fn a_missing_token_fails_and_points_at_the_setup_page() {
+    let mut cfg = config_for("https://api.github.com/");
+    cfg.github_token = None;
+    let db = seeded_db();
+
+    let probe = probe_db(&db, &cfg.db_path).await;
+    let (report, ok) = doctor_report(&cfg, &probe, &None, None, TokenSource::Unset);
+
+    assert!(!ok, "{report}");
+    assert!(report.contains("no token configured"), "{report}");
+    assert!(report.contains("/setup"), "{report}");
+    assert!(report.contains("WATCHPOST_GITHUB_TOKEN"), "{report}");
+    // `FAILED:` is how a probe reports a request that was made and failed. The
+    // verdict line at the foot says "see FAILED above", hence the colon.
+    assert!(
+        !report.contains("FAILED:"),
+        "nothing was attempted:\n{report}"
+    );
+}
+
+/// The report names the token in use, and a token that came from the database
+/// must not be described as the environment's.
+#[tokio::test]
+async fn the_report_names_where_the_token_came_from() {
+    let mut cfg = config_for("https://api.github.com/");
+    cfg.github_token = None;
+    let db = seeded_db();
+    let probe = probe_db(&db, &cfg.db_path).await;
+
+    let (report, _) = doctor_report(
+        &cfg,
+        &probe,
+        &None,
+        Some(SECRET_TOKEN),
+        TokenSource::Database,
+    );
+    assert!(report.contains("…1234 from the database"), "{report}");
+    assert!(!report.contains(SECRET_TOKEN), "{report}");
 }
 
 #[tokio::test]

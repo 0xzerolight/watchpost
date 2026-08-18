@@ -33,9 +33,25 @@ GitHub throws your traffic data away after 14 days. watchpost samples it hourly 
 
 watchpost runs in Docker. Get it at [get.docker.com](https://get.docker.com), or install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on macOS/Windows. Make sure it's running before you continue.
 
-### 2. Create a GitHub token
+### 2. Install watchpost
 
-Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) and grant these **Repository permissions**:
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/0xzerolight/watchpost/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/0xzerolight/watchpost/main/scripts/install.ps1 | iex
+```
+
+This pulls the image, starts the container on <http://127.0.0.1:8080>, and opens the setup page. Both scripts run code fetched from this repository - read the note at the top of either one, and pin a release tag with `WATCHPOST_REF` if you would rather not track `main`.
+
+### 3. Paste a GitHub token
+
+The setup page asks for a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) and checks it against GitHub before saving it. Under **Repository permissions** grant:
 
 | Permission | What it buys you |
 |------------|------------------|
@@ -46,47 +62,65 @@ Create a [fine-grained personal access token](https://github.com/settings/person
 
 A classic token with the `repo` scope also works. A missing permission only costs that one part of a sync, not the whole sync - without *Administration: read* the traffic charts stay empty while everything else still lands. Traffic is only served for repositories you own or administer, whatever the token says.
 
-### 3. Run watchpost
+Collection starts as soon as the token is saved, so the repo list appears within a minute; traffic data follows on the same pass. Pick which repos to track on the **Settings** page - nothing is tracked until you say so.
 
-```bash
-git clone https://github.com/0xzerolight/watchpost.git
-cd watchpost
-cp .env.example .env    # paste your token into WATCHPOST_GITHUB_TOKEN
-mkdir -p data
+<details>
+<summary><strong>Manual install (without the script)</strong></summary>
+
+**Prebuilt image** - the same image the script uses, you just supply the compose file:
+
+```sh
+mkdir -p watchpost/data && cd watchpost
+curl -fsSL https://raw.githubusercontent.com/0xzerolight/watchpost/main/compose.prod.yml -o docker-compose.yml
+printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" > .env   # only if your host uid is not 1000
 docker compose up -d
 ```
 
-Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and pick which repositories to track on the **Settings** page - nothing is tracked until you say so. The first sync runs at startup, so the list fills in within a minute.
+**Build from source** - no prebuilt image, builds from the Dockerfile:
 
-The container runs as uid 1000. If your host user has a different uid, `chown -R <uid> data` after creating the directory, or the database cannot be created.
-
-<details>
-<summary><strong>Build from source (no Docker)</strong></summary>
-
-Rust 1.88 or newer, no system dependencies beyond a C toolchain - SQLite is compiled in.
-
-```bash
+```sh
 git clone https://github.com/0xzerolight/watchpost.git
 cd watchpost
-cp .env.example .env    # paste your token into WATCHPOST_GITHUB_TOKEN
-cargo build --release
-./target/release/watchpost
+docker compose up -d
 ```
 
-The release profile uses fat LTO and a single codegen unit, so the first build takes a couple of minutes.
+**Without Docker** (Rust 1.88+, no system dependencies beyond a C toolchain - SQLite is compiled in):
+
+```sh
+git clone https://github.com/0xzerolight/watchpost.git
+cd watchpost
+cargo run --release
+```
+
+Then open <http://127.0.0.1:8080> and paste a token into the setup page. Outside Docker the database lands in `./data/watchpost.db`; set `WATCHPOST_GITHUB_TOKEN` beforehand to skip the setup page entirely. The release profile uses fat LTO and a single codegen unit, so the first build takes a couple of minutes.
 
 </details>
 
 <details>
 <summary><strong>Updating</strong></summary>
 
-```bash
-cd watchpost
-git pull
-docker compose up -d --build
+```sh
+curl -fsSL https://raw.githubusercontent.com/0xzerolight/watchpost/main/scripts/update.sh | bash
 ```
 
-The database is backed up automatically before any schema migration, and the newest three backups are kept.
+or, in the install directory:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+The database is backed up before any schema migration the new image performs, and the newest three backups are kept.
+
+</details>
+
+<details>
+<summary><strong>Choosing a different port</strong></summary>
+
+`WATCHPOST_HOST_PORT` in the install directory's `.env` is the port on *your machine*; the installer writes it. It is deliberately not `WATCHPOST_PORT`, which is the port the binary binds *inside* the container and which the image fixes at 8080.
+
+```sh
+WATCHPOST_HOST_PORT=9000 curl -fsSL https://raw.githubusercontent.com/0xzerolight/watchpost/main/scripts/install.sh | bash
+```
 
 </details>
 
@@ -97,7 +131,7 @@ All settings are environment variables, read from `.env` by compose. See [`.env.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `WATCHPOST_GITHUB_TOKEN` | *(required)* | Token used for every API call |
+| `WATCHPOST_GITHUB_TOKEN` | *(unset)* | Token used for every API call. Optional: with none set, watchpost serves a setup page that saves one to the database instead. When it *is* set it wins over a saved token, and the settings page offers no way to change it |
 | `WATCHPOST_CRON` | `0 5 * * * *` | Collection schedule, six fields (seconds first), UTC. An unparseable value falls back to the default |
 | `WATCHPOST_DB_PATH` | `./data/watchpost.db` | SQLite file. `/app/data/watchpost.db` in the image |
 | `WATCHPOST_HOST` | `127.0.0.1` | Bind address. The image sets `0.0.0.0` |
@@ -105,6 +139,8 @@ All settings are environment variables, read from `.env` by compose. See [`.env.
 | `WATCHPOST_LOG` | `info` | `tracing` filter, e.g. `watchpost=debug` |
 | `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise. Must be `http`/`https`; a missing trailing slash is added |
 | `WATCHPOST_TZ` | `UTC` | IANA zone name (e.g. `Europe/Madrid`) the UI displays times in. An unknown name is a startup error, not a silent fall back to UTC |
+
+Two more are read by compose rather than by the binary: `WATCHPOST_HOST_PORT` (the published host port) and `PUID`/`PGID` (the host uid/gid the container drops to, default 1000).
 
 </details>
 
@@ -144,7 +180,7 @@ More detail, and the caveats worth knowing before you draw conclusions from the 
 
 ## Security
 
-**No built-in authentication** by design (single-user tool). Anyone who can reach the port gets the whole app, including write access to your events and the sync button. Both defaults keep it private: `WATCHPOST_HOST` is `127.0.0.1` and `compose.yml` publishes to `127.0.0.1:8080` only. For remote access, put it behind a reverse proxy that does the authenticating ([Authelia](https://www.authelia.com/), [Authentik](https://goauthentik.io/), Caddy `basicauth`) and forward `X-Forwarded-Proto: https`. See [SECURITY.md](SECURITY.md).
+**No built-in authentication** by design (single-user tool). Anyone who can reach the port gets the whole app, including write access to your events, the sync button and the token form. Both defaults keep it private: `WATCHPOST_HOST` is `127.0.0.1` and both compose files publish to `127.0.0.1:8080` only. For remote access, put it behind a reverse proxy that does the authenticating ([Authelia](https://www.authelia.com/), [Authentik](https://goauthentik.io/), Caddy `basicauth`) and forward `X-Forwarded-Proto: https`. See [SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 
@@ -152,13 +188,13 @@ More detail, and the caveats worth knowing before you draw conclusions from the 
 |-------|-----|
 | **No repositories listed** | Open **Settings**, press **Refresh from GitHub**, tick the repos you want and **Save**. Nothing is tracked by default. |
 | **Views and clones charts are empty** | The token is missing *Administration: read*, or the repo is not one you own or administer. `--doctor` shows the per-repo last error. |
-| **Container exits, or "unable to open database"** | `data/` is not writable by uid 1000. `chown -R 1000:1000 data`. |
+| **Container exits, or "unable to open database"** | `data/` is not writable by the uid the container runs as. Set `PUID`/`PGID` in the install directory's `.env` to your own uid/gid and restart. |
 | **Syncs stop and nothing updates** | You are rate limited. `--doctor` prints the remaining budget and the reset time. Collection resumes on its own. |
 | **"database was written by a newer build"** | You downgraded. Reinstall the newer version, or restore one of the `data/watchpost.v*.bak` files. |
 | **Startup fails with a timezone error** | `WATCHPOST_TZ` must be an IANA zone name such as `Europe/Madrid`, not an abbreviation or an offset. |
 | **Times look shifted** | Displayed timestamps follow `WATCHPOST_TZ`, but day buckets are always UTC - GitHub returns traffic already summed per UTC day and those buckets cannot be re-cut. |
 
-Still stuck? Run `docker compose exec watchpost watchpost --doctor` for a secret-safe diagnostic snapshot - effective config (the token as last-4 and length only), database path, schema version, row counts, rate-limit budget and per-repo sync state - and paste it into a bug report. Logs: `docker compose logs -f`.
+Still stuck? Run `docker compose exec watchpost watchpost --doctor` for a secret-safe diagnostic snapshot - effective config (the token as last-4 and length only, plus where it came from), database path, schema version, row counts, rate-limit budget and per-repo sync state - and paste it into a bug report. Logs: `docker compose logs -f`.
 
 ## Contributing
 

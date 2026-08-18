@@ -9,7 +9,7 @@ Rust 1.88 or newer. No system dependencies beyond a C toolchain — SQLite is co
 ```bash
 git clone https://github.com/0xzerolight/watchpost.git
 cd watchpost
-cp .env.example .env    # paste a GitHub token into WATCHPOST_GITHUB_TOKEN
+cp .env.example .env    # optional: a token here skips the setup page
 cargo run               # dotenvy loads .env automatically
 ```
 

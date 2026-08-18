@@ -8,6 +8,28 @@ use crate::types::{
     RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
 };
 
+/// Settings key holding the GitHub PAT the setup page saved.
+pub const GITHUB_TOKEN_KEY: &str = "github_token";
+
+/// Read one setting. `None` means the key was never written — not an error.
+pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, DbError> {
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+        r.get(0)
+    })
+    .optional()
+    .map_err(DbError::from)
+}
+
+/// Write one setting, replacing any previous value for that key.
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )?;
+    Ok(())
+}
+
 /// Builds the NULL-safe last-write-wins `SET` fragment for one nullable
 /// column (substrate rule 1). NULL incoming means "not observed this run",
 /// never "observed as zero", so it keeps the existing value; any non-NULL
@@ -1969,5 +1991,27 @@ mod tests {
         seed_repo(&c, 1);
         upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(5))).unwrap();
         assert!(dense_series(&c, 1, Metric::Stars, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_setting_round_trips_and_overwrites_in_place() {
+        let c = test_conn();
+        assert_eq!(get_setting(&c, GITHUB_TOKEN_KEY).unwrap(), None);
+        set_setting(&c, GITHUB_TOKEN_KEY, "ghp_first").unwrap();
+        assert_eq!(
+            get_setting(&c, GITHUB_TOKEN_KEY).unwrap().as_deref(),
+            Some("ghp_first")
+        );
+        // Upsert, not a second row: rotating a token must not leave the old one
+        // readable in the same table.
+        set_setting(&c, GITHUB_TOKEN_KEY, "ghp_second").unwrap();
+        assert_eq!(
+            get_setting(&c, GITHUB_TOKEN_KEY).unwrap().as_deref(),
+            Some("ghp_second")
+        );
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

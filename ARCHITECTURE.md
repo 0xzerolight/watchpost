@@ -93,7 +93,8 @@ so restarting is a way to force a refresh.
 docker compose exec watchpost watchpost --doctor
 ```
 
-`--doctor` prints the effective configuration (the token as last-4 and length only, never the value),
-the database path, schema version and per-table row counts, the current GitHub rate limit budget,
-and a per-repo table of last sync time, error streak, backoff and last error. It exits non-zero if
-the database is unwritable or the API is unreachable, which makes it usable as a post-deploy check.
+`--doctor` prints the effective configuration (the token as last-4 and length only, never the value)
+and where that token came from, the database path, schema version and per-table row counts, the
+current GitHub rate limit budget, and a per-repo table of last sync time, error streak, backoff and
+last error. It exits non-zero if the database is unwritable, the API is unreachable, or no token has
+been configured yet — which makes it usable as a post-deploy check.

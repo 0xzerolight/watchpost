@@ -19,7 +19,12 @@ const DEFAULT_TZ: &str = "UTC";
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub github_token: String,
+    /// The token `WATCHPOST_GITHUB_TOKEN` supplied, if any. `None` is a normal
+    /// state, not a fatal one: an install that has never been given a token
+    /// boots into the setup page, and the token it saves lives in the database
+    /// instead. This field is only ever the environment's answer —
+    /// [`resolve_token`] decides which token the process actually uses.
+    pub github_token: Option<String>,
     pub cron_schedule: String,
     pub db_path: PathBuf,
     pub host: String,
@@ -40,11 +45,12 @@ impl Config {
         // Trimmed, then required to be non-empty: a token set to "" or to a
         // stray newline (a secrets file, a quoted .env line) is not a token,
         // and letting it through only moves the failure to the first 401.
+        // Absent is not an error — it is the install that has not been set up
+        // yet, and the setup page is where it goes.
         let github_token = env::var("WATCHPOST_GITHUB_TOKEN")
             .map(|t| t.trim().to_string())
             .ok()
-            .filter(|t| !t.is_empty())
-            .ok_or(ConfigError::MissingToken)?;
+            .filter(|t| !t.is_empty());
 
         let cron_schedule = env::var("WATCHPOST_CRON").unwrap_or_else(|_| DEFAULT_CRON.to_string());
 
@@ -92,19 +98,9 @@ impl Config {
     }
 
     pub fn redacted_summary(&self) -> String {
-        let token_summary = if self.github_token.is_empty() {
-            "unset".to_string()
-        } else {
-            let last4: String = self
-                .github_token
-                .chars()
-                .rev()
-                .take(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            format!("set (…{last4}, {} chars)", self.github_token.len())
+        let token_summary = match &self.github_token {
+            None => "unset".to_string(),
+            Some(t) => format!("set (…{}, {} chars)", token_last4(t), t.len()),
         };
 
         format!(
@@ -117,6 +113,44 @@ impl Config {
             self.github_api_base,
             self.timezone.name()
         )
+    }
+}
+
+/// Where the token in use came from.
+///
+/// The distinction is what the settings page needs: an environment-supplied
+/// token cannot be replaced from a browser, because the next boot would read
+/// the environment again and overwrite whatever was saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenSource {
+    Env,
+    Database,
+    Unset,
+}
+
+/// The last four characters of a token — the only part of it any surface
+/// outside the GitHub client is allowed to show.
+pub fn token_last4(token: &str) -> String {
+    token
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+/// Pick the token to run with.
+///
+/// The environment wins. It is the deployment's own statement of intent, it
+/// survives a lost database, and a compose file that sets it would otherwise
+/// silently disagree with a value saved from a browser.
+pub fn resolve_token(env: Option<&str>, stored: Option<String>) -> (Option<String>, TokenSource) {
+    match (env, stored) {
+        (Some(t), _) => (Some(t.to_owned()), TokenSource::Env),
+        (None, Some(t)) => (Some(t), TokenSource::Database),
+        (None, None) => (None, TokenSource::Unset),
     }
 }
 
@@ -202,20 +236,26 @@ mod tests {
         );
     }
 
+    /// Booting without a token is how an install reaches the setup page, so it
+    /// has to be an ordinary state rather than a startup failure.
     #[test]
-    fn missing_token_errors() {
+    fn a_missing_token_is_no_longer_a_config_error() {
         temp_env::with_var("WATCHPOST_GITHUB_TOKEN", None::<&str>, || {
-            assert!(matches!(Config::from_env(), Err(ConfigError::MissingToken)));
+            let c = Config::from_env().expect("boot must survive an unset token");
+            assert_eq!(c.github_token, None);
+            assert!(c.redacted_summary().contains("github_token=unset"));
         });
     }
+
     /// A token of blanks is the shape a quoted `.env` line or an empty secrets
     /// file takes; it is missing, not present.
     #[test]
-    fn blank_token_errors() {
+    fn a_blank_token_reads_as_unset() {
         for raw in ["", "   ", "\n"] {
             temp_env::with_var("WATCHPOST_GITHUB_TOKEN", Some(raw), || {
-                assert!(
-                    matches!(Config::from_env(), Err(ConfigError::MissingToken)),
+                assert_eq!(
+                    Config::from_env().unwrap().github_token,
+                    None,
                     "{raw:?} must not pass as a token"
                 );
             });
@@ -225,8 +265,38 @@ mod tests {
     #[test]
     fn surrounding_whitespace_is_trimmed_off_the_token() {
         temp_env::with_var("WATCHPOST_GITHUB_TOKEN", Some(" ghp_test1234\n"), || {
-            assert_eq!(Config::from_env().unwrap().github_token, "ghp_test1234");
+            assert_eq!(
+                Config::from_env().unwrap().github_token.as_deref(),
+                Some("ghp_test1234")
+            );
         });
+    }
+
+    #[test]
+    fn the_environment_wins_over_a_stored_token() {
+        let (token, source) = resolve_token(Some("ghp_env"), Some("ghp_db".to_owned()));
+        assert_eq!(token.as_deref(), Some("ghp_env"));
+        assert_eq!(source, TokenSource::Env);
+    }
+
+    #[test]
+    fn a_stored_token_is_used_when_the_environment_is_silent() {
+        let (token, source) = resolve_token(None, Some("ghp_db".to_owned()));
+        assert_eq!(token.as_deref(), Some("ghp_db"));
+        assert_eq!(source, TokenSource::Database);
+
+        let (token, source) = resolve_token(None, None);
+        assert_eq!(token, None);
+        assert_eq!(source, TokenSource::Unset);
+    }
+
+    #[test]
+    fn the_hint_is_the_last_four_characters_and_nothing_else() {
+        assert_eq!(token_last4("ghp_abcd1234"), "1234");
+        // Shorter than four characters is not a real token, but it must not
+        // panic or reveal more than it has.
+        assert_eq!(token_last4("ab"), "ab");
+        assert_eq!(token_last4(""), "");
     }
 
     #[test]

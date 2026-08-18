@@ -7,8 +7,76 @@ use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use super::ui::{Notice, empty_state, error_glyph, notice, spinner, table_wrap, timestamp};
-use crate::state::SyncStatus;
+use crate::config::TokenSource;
+use crate::state::{GhSlot, SyncStatus};
 use crate::types::RepoRow;
+
+/// The GitHub token section.
+///
+/// An environment-supplied token gets a statement rather than a field: the
+/// next boot reads `WATCHPOST_GITHUB_TOKEN` again and overwrites whatever a
+/// browser saved, so offering the form would be offering a change that
+/// silently reverts.
+///
+/// Only the last four characters are ever rendered. That is enough to tell two
+/// tokens apart when rotating one, and it is all the page has any use for.
+pub fn token_panel(slot: &GhSlot, msg: Option<(Notice, String)>) -> Markup {
+    html! {
+        div id="token-panel" {
+            @if let Some((kind, text)) = msg {
+                (notice(kind, html! { (text) }))
+            }
+            @match slot.source {
+                TokenSource::Env => p {
+                    "Set by " code { "WATCHPOST_GITHUB_TOKEN" }
+                    @if let Some(hint) = &slot.hint { " (…" (hint) ")" }
+                    ". Change it in the environment and restart."
+                }
+                TokenSource::Database => {
+                    p {
+                        "Saved token"
+                        @if let Some(hint) = &slot.hint { " …" (hint) }
+                        "."
+                    }
+                    (token_form("Replace token"))
+                }
+                TokenSource::Unset => {
+                    p { "No token yet — watchpost cannot reach GitHub until one is saved." }
+                    (token_form("Save token"))
+                }
+            }
+        }
+    }
+}
+
+/// The field itself. Swaps the whole panel, so the notice and the new hint
+/// arrive together.
+fn token_form(label: &str) -> Markup {
+    html! {
+        form hx-post="/settings/token"
+            hx-target="#token-panel"
+            hx-swap="outerHTML"
+            hx-disabled-elt="find button[type=submit]"
+            hx-indicator="#token-spinner" {
+            label for="settings-token" { "Personal access token" }
+            // `type=password` so a screen-shared settings page does not put
+            // the token on display; autocomplete is off because a browser
+            // password manager offering to save it would be storing a
+            // github.com credential against this host.
+            input type="password"
+                id="settings-token"
+                name="token"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="github_pat_… or ghp_…"
+                required;
+            div class="wp-actions" {
+                button type="submit" { (label) }
+                (spinner("token-spinner"))
+            }
+        }
+    }
+}
 
 /// The repo picker. Checkboxes are named `tracked` and carry the repo id, so
 /// a save posts `tracked=<id>&tracked=<id>…` — the unchecked ones are simply
