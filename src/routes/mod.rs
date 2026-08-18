@@ -73,6 +73,7 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/settings", get(settings::settings_page))
         .route("/settings/discover", post(settings::settings_discover))
         .route("/settings/repos", post(settings::settings_save))
+        .route("/settings/token", post(settings::settings_token))
         .route("/sync", post(settings::sync_start))
         .route("/sync/status", get(settings::sync_status))
         .route("/assets/{file}", get(assets::serve_asset))
