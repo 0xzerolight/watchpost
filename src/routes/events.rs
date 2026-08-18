@@ -196,10 +196,11 @@ async fn fetch(state: &AppState, repo_id: i64, event_id: i64) -> Result<Event, A
 /// create was rejected.
 ///
 /// 422 rather than 200 on a rejected submission. htmx's *default* config
-/// discards a 4xx body, so this contract only works because the shell overrides
-/// `htmx.config.responseHandling` to swap 422s — see `base` in `routes::html`.
-/// With that in place the reopened form with its messages lands where the
-/// section was, while the status still says the request did not take effect.
+/// discards a 4xx body, so this contract only works because
+/// `assets/htmx-config.js` overrides `htmx.config.responseHandling` to swap
+/// 422s. With that in place the reopened form with its messages lands where
+/// the section was, while the status still says the request did not take
+/// effect.
 fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>) -> Response {
     let markup = events_section(&EventsView {
         repo_id,
@@ -223,8 +224,9 @@ fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>) -> 
 ///
 /// The Save button's request-side target is `#events-section` (the success
 /// case reorders the table), so this response retargets itself: htmx applies
-/// `HX-Retarget`/`HX-Reswap` from any response it swaps, and the shell's
-/// `responseHandling` override is what makes it swap a 422 at all.
+/// `HX-Retarget`/`HX-Reswap` from any response it swaps, and the
+/// `responseHandling` override in `assets/htmx-config.js` is what makes it swap
+/// a 422 at all.
 fn reject_update(repo_id: i64, event_id: i64, draft: &EventDraft) -> Response {
     (
         StatusCode::UNPROCESSABLE_ENTITY,

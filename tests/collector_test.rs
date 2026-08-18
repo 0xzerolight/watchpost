@@ -171,6 +171,21 @@ async fn repo_field<T: FromSql + Send + 'static>(state: &AppState, id: i64, col:
         .unwrap()
 }
 
+/// Make the next write of `table` fail, the way a constraint, a disk error or
+/// a schema drift would: the statement aborts partway through the batch around
+/// it. `when` is a SQL predicate over `NEW`.
+async fn fail_writes_to(state: &AppState, table: &str, when: &str) {
+    let sql = format!(
+        "CREATE TRIGGER fail_{table} BEFORE INSERT ON {table} WHEN {when}
+         BEGIN SELECT RAISE(ABORT, 'injected write failure'); END"
+    );
+    state
+        .db
+        .call(move |c| c.execute_batch(&sql).map_err(Into::into))
+        .await
+        .unwrap();
+}
+
 /// Ids the picker/dashboard would show, in `known_repos` order (by name).
 async fn known_repo_ids(state: &AppState) -> Vec<i64> {
     state
@@ -351,8 +366,14 @@ async fn repo_404_does_not_block_next_repo() {
     assert!(stars_on(&state, ID_B, &today()).await.is_some());
 
     // A carries the failure bookkeeping.
-    let err = repo_field::<Option<String>>(&state, ID_A, "last_error").await;
-    assert!(err.is_some(), "A should have recorded an error");
+    // Stored for the UI, so it names the category and not the API URL that
+    // produced it.
+    let err = repo_field::<Option<String>>(&state, ID_A, "last_error")
+        .await
+        .expect("A should have recorded an error");
+    assert!(err.contains("no access"), "got {err}");
+    assert!(!err.contains("http"), "api url leaked: {err}");
+    assert!(!err.contains(REPO_A), "repo path leaked: {err}");
     assert_eq!(repo_field::<i64>(&state, ID_A, "error_streak").await, 1);
     let backoff = repo_field::<Option<String>>(&state, ID_A, "backoff_until")
         .await
@@ -448,11 +469,134 @@ async fn partial_failure_lands_partial_data() {
         .await
         .expect("partial sync must record an error");
     assert!(err.contains("partial"), "got {err}");
+    // The failing endpoint's label survives; the URL behind it does not.
     assert!(err.contains("releases"), "got {err}");
+    assert!(err.contains("(500)"), "got {err}");
+    assert!(!err.contains("http"), "api url leaked: {err}");
     // A partial failure must not lock the repo out of the next cycle.
     assert_eq!(
         repo_field::<Option<String>>(&state, ID_A, "backoff_until").await,
         None
+    );
+}
+
+/// A partial sync counts as a sync, not as a strike: it records a timestamp,
+/// leaves the streak alone and stays out of backoff. If it counted, a repo with
+/// one permanently broken endpoint would arrive at its first real failure with
+/// a streak deep enough to back off for a day instead of 30 minutes.
+#[tokio::test]
+async fn partial_sync_does_not_inflate_the_backoff_streak() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    // First cycle only: meta and pulls answer, releases 500 → partial sync.
+    // Everything is unmounted by the second cycle, so that one 404s throughout
+    // and is a total failure.
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_A}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(repo_json(ID_A, REPO_A)))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_A}/pulls")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{}])))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_A}/releases")))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(
+        repo_field::<i64>(&state, ID_A, "error_streak").await,
+        0,
+        "a partial sync must not count as a strike"
+    );
+    assert_eq!(
+        repo_field::<Option<String>>(&state, ID_A, "backoff_until").await,
+        None
+    );
+    assert!(
+        repo_field::<Option<String>>(&state, ID_A, "last_synced_at")
+            .await
+            .is_some(),
+        "data landed, so the repo counts as synced"
+    );
+
+    // Now the repo fails outright: this is the first strike, so the backoff is
+    // the first step (30 minutes), not a later one.
+    run_cycle(state.clone()).await;
+
+    assert_eq!(repo_field::<i64>(&state, ID_A, "error_streak").await, 1);
+    let backoff = repo_field::<Option<String>>(&state, ID_A, "backoff_until")
+        .await
+        .expect("a total failure must back the repo off");
+    let until = chrono::DateTime::parse_from_rfc3339(&backoff)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(until > Utc::now(), "backoff must be in the future");
+    assert!(
+        until < Utc::now() + chrono::Duration::minutes(45),
+        "first failure must back off ~30min, got {backoff}"
+    );
+}
+
+/// The per-repo write batch is one transaction: an endpoint that answered is
+/// only stored if all of them are. Otherwise a repo could end a cycle holding
+/// today's traffic with yesterday's counters beside it.
+#[tokio::test]
+async fn a_failed_write_lands_none_of_the_repo_batch() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    // Release assets are written last, so everything else in the batch has
+    // already been written by the time this aborts.
+    fail_writes_to(&state, "release_assets", "1").await;
+
+    let report = run_cycle(state.clone()).await;
+
+    assert_eq!(report.repos_failed, 1);
+    assert_eq!(report.repos_ok, 0);
+    assert_eq!(count(&state, "release_assets").await, 0);
+    assert_eq!(count(&state, "repo_referrers").await, 0, "referrers landed");
+    assert_eq!(count(&state, "repo_popular_paths").await, 0, "paths landed");
+    assert_eq!(
+        count(&state, "repo_stats").await,
+        0,
+        "stats and traffic landed without the rest of the batch"
+    );
+}
+
+/// Same rule for the discovery batch: a listing is written whole or not at all.
+#[tokio::test]
+async fn a_failed_discovery_write_lands_no_repos() {
+    let server = MockServer::start().await;
+    // A is written first and B fails, so A is what proves the rollback.
+    mount_discovery(
+        &server,
+        vec![repo_json(ID_A, REPO_A), repo_json(ID_B, REPO_B)],
+    )
+    .await;
+
+    let state = state_for(&server);
+    fail_writes_to(&state, "repos", &format!("NEW.name = '{REPO_B}'")).await;
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(
+        count(&state, "repos").await,
+        0,
+        "a half-written listing must roll back"
     );
 }
 

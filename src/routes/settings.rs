@@ -21,8 +21,9 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::AppError;
 use crate::routes::html::settings::{repos_picker, sync_status_fragment};
-use crate::routes::html::{base, get_hx_target};
-use crate::state::{AppState, SyncStatus};
+use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
+use crate::state::{AppState, SyncStatus, lock_recover};
+use crate::types::RepoRow;
 
 /// GET /settings — full page, or just the picker when htmx asks for it.
 pub async fn settings_page(
@@ -38,9 +39,14 @@ pub async fn settings_page(
     let status = current_status(&state);
     Ok(base(
         "Settings",
+        NavItem::Settings,
         &csrf,
         html! {
-            h1 { "Settings" }
+            (page_header(
+                "Settings",
+                Some(html! { "Choose which repos watchpost tracks." }),
+                None,
+            ))
             section {
                 h2 { "Sync" }
                 (sync_status_fragment(&status))
@@ -53,11 +59,32 @@ pub async fn settings_page(
     ))
 }
 
-/// GET /settings/discover — refresh the repo list from GitHub and re-render
-/// the picker. Metadata only: `tracked` is the user's flag and is never
-/// touched here.
-pub async fn settings_discover(State(state): State<Arc<AppState>>) -> Result<Markup, AppError> {
-    let notice = match state.gh.user_repos().await {
+/// POST /settings/discover — refresh the repo list from GitHub and re-render
+/// the picker.
+///
+/// A POST because it writes: it upserts every repo GitHub reports and spends a
+/// request against the token's budget, so it belongs behind CSRF and behind the
+/// rate gate rather than under a "safe" method that both let through.
+///
+/// Metadata only — `tracked` is the user's flag and is never written here.
+/// What *is* honoured is the posted form: the button sends the picker's boxes
+/// along, and every render path below stamps that set onto the rows before
+/// rendering. Without it a refresh would silently drop ticks the user had not
+/// saved yet. Save stays the only writer of `tracked`.
+pub async fn settings_discover(
+    State(state): State<Arc<AppState>>,
+    body: String,
+) -> Result<Markup, AppError> {
+    let checked = checked_ids(&body);
+
+    // A closed gate means the request would fail anyway, so don't spend it.
+    if let Some(until) = state.gate.blocked_until() {
+        let repos = state.db.call(|c| queries::known_repos(c)).await?;
+        let text = format!("Rate limited until {until}; not contacting GitHub");
+        return Ok(picker_as_submitted(repos, &checked, Notice::Info, text));
+    }
+
+    let (kind, text) = match state.gh.user_repos().await {
         Ok(discovered) => {
             let count = discovered.len();
             state
@@ -69,32 +96,65 @@ pub async fn settings_discover(State(state): State<Arc<AppState>>) -> Result<Mar
                     Ok(())
                 })
                 .await?;
-            format!("{count} repos loaded from GitHub")
+            (
+                Notice::Success,
+                format!("{count} repos loaded from GitHub · selections kept"),
+            )
         }
         Err(e) => {
+            // A rate limit is the token's, not this button's: close the gate so
+            // the next click — and the next cycle — knows without asking.
+            if let Some(until) = collector::gate_deadline(&e) {
+                state.gate.block_until(until);
+            }
+            // The notice is what a browser reads, so it carries the category
+            // only; the full error stays in the log line above it.
             warn!(error = %e, "settings discovery failed");
-            format!("Could not load repos from GitHub: {e}")
+            (
+                Notice::Error,
+                format!("Could not load repos from GitHub: {}", e.user_message()),
+            )
         }
     };
     let repos = state.db.call(|c| queries::known_repos(c)).await?;
-    Ok(repos_picker(&repos, Some(&notice)))
+    Ok(picker_as_submitted(repos, &checked, kind, text))
+}
+
+/// Render the picker with `tracked` taken from the submitted form rather than
+/// from the db. The posted set is authoritative because the browser only ever
+/// reaches this handler from the picker itself, so a repo absent from it is a
+/// box the user cleared — not a box nobody has seen.
+fn picker_as_submitted(
+    mut repos: Vec<RepoRow>,
+    checked: &HashSet<i64>,
+    kind: Notice,
+    text: String,
+) -> Markup {
+    for repo in &mut repos {
+        repo.tracked = checked.contains(&repo.id);
+    }
+    repos_picker(&repos, Some((kind, text)))
+}
+
+/// The repo ids a picker form posted. Checkboxes repeat one key
+/// (`tracked=1&tracked=2`), which `serde_urlencoded` cannot collect into a
+/// sequence — hence parsing the body by hand.
+fn checked_ids(body: &str) -> HashSet<i64> {
+    url::form_urlencoded::parse(body.as_bytes())
+        .filter(|(key, _)| key == "tracked")
+        .filter_map(|(_, value)| value.parse().ok())
+        .collect()
 }
 
 /// POST /settings/repos — apply the checkbox state.
 ///
-/// The body is parsed by hand rather than with `Form`: `serde_urlencoded`
-/// cannot collect a repeated key (`tracked=1&tracked=2`) into a sequence, and
-/// that repetition is exactly how a checkbox group posts. Unchecked boxes send
-/// nothing at all, so "absent" means untrack — hence the diff against the db
-/// rather than against the form.
+/// Unchecked boxes send nothing at all, so "absent" means untrack — hence the
+/// diff against the db rather than against the form.
 pub async fn settings_save(
     State(state): State<Arc<AppState>>,
     body: String,
 ) -> Result<Markup, AppError> {
-    let checked: HashSet<i64> = url::form_urlencoded::parse(body.as_bytes())
-        .filter(|(key, _)| key == "tracked")
-        .filter_map(|(_, value)| value.parse().ok())
-        .collect();
+    let checked = checked_ids(&body);
 
     let repos = state
         .db
@@ -110,7 +170,10 @@ pub async fn settings_save(
             Ok(known)
         })
         .await?;
-    Ok(repos_picker(&repos, Some("Saved")))
+    Ok(repos_picker(
+        &repos,
+        Some((Notice::Success, "Saved".to_owned())),
+    ))
 }
 
 /// POST /sync — start a cycle unless one is already in flight.
@@ -154,7 +217,7 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Markup {
 /// Mark a cycle as starting, unless one already is. `Some(started)` means the
 /// caller owns the spawn; the timestamp identifies this exact claim.
 fn claim_cycle(state: &AppState) -> Option<DateTime<Utc>> {
-    let mut status = state.sync.lock().expect("sync status mutex poisoned");
+    let mut status = lock_recover(&state.sync);
     if matches!(*status, SyncStatus::Running { .. }) {
         return None;
     }
@@ -167,18 +230,14 @@ fn claim_cycle(state: &AppState) -> Option<DateTime<Utc>> {
 /// still carrying this claim's timestamp is reset, so a cycle that started in
 /// the meantime keeps its own status.
 fn release_claim(state: &AppState, claim: DateTime<Utc>) {
-    let mut status = state.sync.lock().expect("sync status mutex poisoned");
+    let mut status = lock_recover(&state.sync);
     if matches!(*status, SyncStatus::Running { started } if started == claim) {
         *status = SyncStatus::Idle;
     }
 }
 
 fn current_status(state: &AppState) -> SyncStatus {
-    state
-        .sync
-        .lock()
-        .expect("sync status mutex poisoned")
-        .clone()
+    lock_recover(&state.sync).clone()
 }
 
 /// Whether htmx is asking for `id`. htmx sends the bare element id in

@@ -18,13 +18,10 @@ use watchpost::state::{AppState, SyncStatus};
 async fn main() -> ExitCode {
     dotenvy::dotenv().ok();
 
-    let log_level = std::env::var("WATCHPOST_LOG").unwrap_or_else(|_| "info".to_string());
-    let env_filter = tracing_subscriber::EnvFilter::new(log_level);
-    Registry::default()
-        .with(env_filter)
-        .with(tracing_logfmt::layer())
-        .init();
-
+    // Config first, logging second: the log level is one of the settings, so
+    // reading the environment twice is how the two would drift apart. The only
+    // cost is that a config error has no subscriber to log through — `eprintln`
+    // is the right channel for it anyway.
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -32,6 +29,12 @@ async fn main() -> ExitCode {
             std::process::exit(1);
         }
     };
+
+    Registry::default()
+        .with(tracing_subscriber::EnvFilter::new(&config.log_level))
+        .with(tracing_logfmt::layer())
+        .init();
+
     // One flag, checked before anything is opened or bound: `--doctor` is a
     // diagnostic run that must work on an install whose server path is the
     // thing that is broken. A single flag does not earn a clap dependency.
@@ -69,6 +72,12 @@ async fn main() -> ExitCode {
     // Collect once at boot rather than waiting up to an hour for the first
     // tick. Spawned, so a slow or failing cycle never delays serving — and
     // `run_cycle` records its own failures, so there is nothing to handle here.
+    //
+    // A cycle that *panicked* would take its `SyncStatus::Running` with it and
+    // the dashboard would poll a sync that is never going to finish. Accepted
+    // as-is: the one known panic source on this path was a poisoned sync mutex,
+    // which `lock_recover` now absorbs, and a `catch_unwind` net around a
+    // failure nobody can name would cost more than it protects.
     {
         let state = Arc::clone(&state);
         tokio::spawn(async move {

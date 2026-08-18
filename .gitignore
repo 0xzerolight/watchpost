@@ -1,6 +1,5 @@
 # Data and local state
 data/*.db*
-data/backups/
 *.bak
 
 # Environment variables (may contain API keys)

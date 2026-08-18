@@ -7,15 +7,12 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 
 use crate::errors::DbError;
+use crate::state::lock_recover;
 
-// open_in_memory and call are unused outside tests until Task 3 wires in
-// queries on top of Db::call.
-#[allow(dead_code)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
 }
 
-#[allow(dead_code)]
 impl Db {
     /// Open (creating if missing) the sqlite file at `path`, apply pragmas,
     /// back up if there are pending migrations against an existing db, then
@@ -29,6 +26,7 @@ impl Db {
         let mut conn = Connection::open(path).map_err(map_open_err)?;
         apply_pragmas(&conn)?;
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        migrations::guard_schema_version(v, migrations::MIGRATIONS.len())?;
         if v < migrations::MIGRATIONS.len() as i64 && v > 0 {
             backup_before_migrate(&conn, path, v)?;
         }
@@ -59,7 +57,7 @@ impl Db {
     {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().expect("db mutex poisoned");
+            let mut guard = lock_recover(&conn);
             f(&mut guard)
         })
         .await?
@@ -109,27 +107,52 @@ pub fn backup_before_migrate(
     Ok(Some(backup_path))
 }
 
-/// Keep only the newest `KEEP_BACKUPS` backup files in `dir`. Filenames embed
-/// a zero-padded UTC timestamp, so lexicographic order is chronological
-/// order.
+/// Keep only the newest `KEEP_BACKUPS` backup files in `dir`.
+///
+/// Age comes from the embedded timestamp, not from the whole filename: the
+/// name leads with the schema version it was taken at, and `v10` sorts before
+/// `v2`, so ordering by name would start discarding a v10 database's newest
+/// backups while stale v2 ones survived. A file whose name carries no
+/// timestamp has no knowable age and goes first.
 fn prune_backups(dir: &Path) -> Result<(), DbError> {
-    let mut backups: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut backups: Vec<(Option<String>, String, PathBuf)> = std::fs::read_dir(dir)
         .map_err(|e| DbError::Backup(e.to_string()))?
         .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(BACKUP_PREFIX) && n.ends_with(BACKUP_SUFFIX))
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?.to_owned();
+            if !(name.starts_with(BACKUP_PREFIX) && name.ends_with(BACKUP_SUFFIX)) {
+                return None;
+            }
+            let ts = backup_timestamp(&name).map(str::to_owned);
+            Some((ts, name, path))
         })
         .collect();
+    // `None` sorts before `Some`, so the undatable files are the first to go;
+    // the name breaks ties within a timestamp (two versions migrated in the
+    // same second).
     backups.sort();
     if backups.len() > KEEP_BACKUPS {
-        for old in &backups[..backups.len() - KEEP_BACKUPS] {
+        for (_, _, old) in &backups[..backups.len() - KEEP_BACKUPS] {
             std::fs::remove_file(old).map_err(|e| DbError::Backup(e.to_string()))?;
         }
     }
     Ok(())
+}
+
+/// The `YYYYMMDDTHHMMSSZ` segment of a backup filename, if it has one.
+///
+/// Matched by shape rather than by position, so it keeps working if the name
+/// ever grows another dotted segment.
+fn backup_timestamp(name: &str) -> Option<&str> {
+    name.split('.').find(|seg| {
+        let b = seg.as_bytes();
+        b.len() == 16
+            && b[8] == b'T'
+            && b[15] == b'Z'
+            && b[..8].iter().all(u8::is_ascii_digit)
+            && b[9..15].iter().all(u8::is_ascii_digit)
+    })
 }
 
 #[cfg(test)]
@@ -161,6 +184,56 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
             .collect();
         assert!(backups.is_empty(), "fresh db must not be backed up");
+    }
+
+    /// The other half of `fresh_db_needs_no_backup`: a database with rows in
+    /// it is copied before its schema is touched, so a migration that goes
+    /// wrong is recoverable.
+    #[test]
+    fn an_outdated_database_is_backed_up_before_migrating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watchpost.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            apply_pragmas(&conn).unwrap();
+            migrations::run_migrations(&mut conn, &migrations::MIGRATIONS[..1]).unwrap();
+        }
+
+        Db::open(&path).unwrap();
+
+        let backups: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(BACKUP_SUFFIX))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert!(
+            backups[0].starts_with("watchpost.v1."),
+            "the backup must name the version it was taken at: {backups:?}"
+        );
+    }
+
+    /// A downgraded binary must stop at the door rather than serve a schema it
+    /// does not know.
+    #[test]
+    fn open_refuses_a_database_written_by_a_newer_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watchpost.db");
+        Db::open(&path).unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", 99)
+            .unwrap();
+
+        let err = match Db::open(&path) {
+            Ok(_) => panic!("a newer schema must not open"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, DbError::SchemaTooNew { found: 99, .. }),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -211,5 +284,38 @@ mod tests {
         assert!(!remaining.contains(&fake_names[0].to_string()));
         assert!(!remaining.contains(&fake_names[1].to_string()));
         assert!(remaining.contains(&fake_names[3].to_string()));
+    }
+
+    /// Sorting whole filenames orders `v10` before `v2`, which prunes a
+    /// database's newest backups first the moment the schema reaches v10. The
+    /// embedded timestamp is what decides age.
+    #[test]
+    fn pruning_is_chronological_across_schema_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = [
+            "watchpost.v2.20260101T000000Z.bak",  // oldest
+            "watchpost.v10.20260102T000000Z.bak", // lexicographically first
+            "watchpost.v2.20260103T000000Z.bak",
+            "watchpost.v10.20260104T000000Z.bak", // newest
+            "watchpost.vX.bak",                   // no timestamp: age unknown
+        ];
+        for name in names {
+            std::fs::write(dir.path().join(name), b"fake").unwrap();
+        }
+
+        prune_backups(dir.path()).unwrap();
+
+        let remaining: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(remaining.len(), KEEP_BACKUPS, "{remaining:?}");
+        assert!(!remaining.contains(&names[4].to_string()), "{remaining:?}");
+        assert!(!remaining.contains(&names[0].to_string()), "{remaining:?}");
+        for kept in &names[1..4] {
+            assert!(remaining.contains(&kept.to_string()), "{remaining:?}");
+        }
     }
 }

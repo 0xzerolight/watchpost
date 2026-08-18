@@ -1,6 +1,6 @@
 # Single-arch (host architecture) image. Multi-arch via cargo-zigbuild is a
 # post-v1 follow-up; see README.
-FROM rust:alpine AS builder
+FROM rust:1.90-alpine3.22 AS builder
 
 # musl-dev/gcc: rusqlite is built from bundled C sources.
 RUN apk add --no-cache musl-dev gcc
@@ -10,9 +10,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY assets ./assets
 
-RUN cargo build --release --locked
+# The cache mounts are not part of the image, so the binary has to be copied off
+# /src/target before the mount detaches at the end of this RUN.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked \
+ && cp /src/target/release/watchpost /usr/local/bin/watchpost
 
-FROM alpine:latest
+FROM alpine:3.22
 
 # ca-certificates: the GitHub client speaks TLS. wget ships with busybox and
 # serves the healthcheck.
@@ -25,7 +30,7 @@ RUN addgroup -g 1000 watchpost \
  && mkdir -p /app/data \
  && chown -R watchpost:watchpost /app
 
-COPY --from=builder /src/target/release/watchpost /usr/local/bin/watchpost
+COPY --from=builder /usr/local/bin/watchpost /usr/local/bin/watchpost
 
 USER watchpost
 WORKDIR /app

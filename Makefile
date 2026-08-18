@@ -2,9 +2,9 @@
 
 check:
 	cargo fmt --check
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --all-targets --locked -- -D warnings
 
 test:
-	cargo test
+	cargo test --locked
 
 ci: check test

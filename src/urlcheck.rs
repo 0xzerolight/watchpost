@@ -11,17 +11,25 @@
 //! Revisit this module if link-fetching (previews, favicon scraping, health
 //! checks) is ever added — at that point full SSRF validation becomes required.
 
-use crate::errors::AppError;
+/// Why a submitted link was refused.
+///
+/// Its own error type rather than a variant of `AppError`: this never becomes
+/// a response on its own — the caller turns it into a message on the URL
+/// field, so the form comes back with everything wrong with it at once.
+#[derive(thiserror::Error, Debug)]
+pub enum UrlError {
+    #[error("invalid url: {0}")]
+    Invalid(#[from] url::ParseError),
+    #[error("unsupported url scheme `{0}`: only http and https are allowed")]
+    Scheme(String),
+}
 
 /// Parse `raw` and require an `http`/`https` scheme.
-pub fn validate_event_url(raw: &str) -> Result<url::Url, AppError> {
-    let parsed = url::Url::parse(raw.trim())
-        .map_err(|err| AppError::BadRequest(format!("invalid url: {err}")))?;
+pub fn validate_event_url(raw: &str) -> Result<url::Url, UrlError> {
+    let parsed = url::Url::parse(raw.trim())?;
     match parsed.scheme() {
         "http" | "https" => Ok(parsed),
-        other => Err(AppError::BadRequest(format!(
-            "unsupported url scheme `{other}`: only http and https are allowed"
-        ))),
+        other => Err(UrlError::Scheme(other.to_owned())),
     }
 }
 
@@ -31,8 +39,8 @@ mod tests {
 
     fn err_message(raw: &str) -> String {
         match validate_event_url(raw) {
-            Err(AppError::BadRequest(msg)) => msg,
-            other => panic!("expected BadRequest for {raw:?}, got {other:?}"),
+            Err(err) => err.to_string(),
+            Ok(url) => panic!("expected a rejection for {raw:?}, got {url}"),
         }
     }
 

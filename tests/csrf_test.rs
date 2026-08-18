@@ -14,6 +14,11 @@ use tower::ServiceExt;
 
 use watchpost::csrf::{CsrfToken, csrf_middleware};
 
+/// A well-formed token: 64 lowercase hex chars, the shape the middleware mints.
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+/// A second well-formed token, for proving a mismatch is rejected on its merits.
+const OTHER_TOKEN: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
 fn app() -> Router {
     Router::new()
         .route("/", get(async |CsrfToken(token): CsrfToken| token))
@@ -28,7 +33,7 @@ async fn body_string(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-/// `wp_csrf=<token>; Path=/; SameSite=Lax` → `<token>`.
+/// `wp_csrf=<token>; Path=/; SameSite=Lax; Max-Age=…` → `<token>`.
 fn token_from_set_cookie(header: &str) -> &str {
     header
         .split(';')
@@ -57,8 +62,44 @@ async fn get_sets_cookie() {
     assert!(cookie.starts_with("wp_csrf="), "cookie was {cookie}");
     assert!(cookie.contains("Path=/"), "cookie was {cookie}");
     assert!(cookie.contains("SameSite=Lax"), "cookie was {cookie}");
+    // Thirty days, so the token outlives the browser session that minted it.
+    assert!(cookie.contains("Max-Age=2592000"), "cookie was {cookie}");
+    // No HttpOnly: the page may need to read the token back.
+    assert!(!cookie.contains("HttpOnly"), "cookie was {cookie}");
     // 32 random bytes rendered as hex.
     assert_eq!(token_from_set_cookie(&cookie).len(), 64);
+}
+
+/// GET `/` with the given `x-forwarded-proto`, returning the `set-cookie`.
+async fn minted_cookie(forwarded_proto: Option<&str>) -> String {
+    let mut req = Request::get("/");
+    if let Some(proto) = forwarded_proto {
+        req = req.header("x-forwarded-proto", proto);
+    }
+    let resp = app()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    resp.headers()
+        .get("set-cookie")
+        .expect("first GET must set wp_csrf")
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn secure_flag_tracks_forwarded_proto() {
+    // Plain HTTP — a Secure cookie would simply never come back.
+    for proto in [None, Some("http"), Some("http, https")] {
+        let cookie = minted_cookie(proto).await;
+        assert!(!cookie.contains("Secure"), "{proto:?} gave {cookie}");
+    }
+    // Only the first hop's scheme counts, and it is matched case-insensitively.
+    for proto in [Some("https"), Some("HTTPS"), Some("https, http")] {
+        let cookie = minted_cookie(proto).await;
+        assert!(cookie.contains("; Secure"), "{proto:?} gave {cookie}");
+    }
 }
 
 #[tokio::test]
@@ -66,7 +107,7 @@ async fn get_with_existing_cookie_does_not_reset_it() {
     let resp = app()
         .oneshot(
             Request::get("/")
-                .header("cookie", "other=1; wp_csrf=abc123; another=2")
+                .header("cookie", format!("other=1; wp_csrf={TOKEN}; another=2"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -75,7 +116,55 @@ async fn get_with_existing_cookie_does_not_reset_it() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().get("set-cookie").is_none());
-    assert_eq!(body_string(resp).await, "abc123");
+    assert_eq!(body_string(resp).await, TOKEN);
+}
+
+#[tokio::test]
+async fn malformed_cookie_on_get_is_replaced() {
+    // A truncated or foreign `wp_csrf` is treated as no cookie at all: keeping
+    // it would leave the session unable to POST, with no way back.
+    for junk in ["abc123", "", &TOKEN[..63], &TOKEN.to_uppercase()] {
+        let resp = app()
+            .oneshot(
+                Request::get("/")
+                    .header("cookie", format!("wp_csrf={junk}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cookie = resp
+            .headers()
+            .get("set-cookie")
+            .unwrap_or_else(|| panic!("{junk:?} must be replaced"))
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let minted = token_from_set_cookie(&cookie).to_owned();
+        assert_ne!(minted, junk);
+        // The page renders the replacement, not the junk it was sent.
+        assert_eq!(body_string(resp).await, minted);
+    }
+}
+
+#[tokio::test]
+async fn post_with_malformed_cookie_403() {
+    // Echoing a malformed cookie back in the header must not authorise a POST:
+    // the cookie half has to look like something this server minted.
+    let resp = app()
+        .oneshot(
+            Request::post("/act")
+                .header("cookie", "wp_csrf=abc123")
+                .header("x-csrf-token", "abc123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -83,7 +172,7 @@ async fn post_without_header_403() {
     let resp = app()
         .oneshot(
             Request::post("/act")
-                .header("cookie", "wp_csrf=abc123")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -113,8 +202,8 @@ async fn post_with_matching_token_200() {
     let resp = app()
         .oneshot(
             Request::post("/act")
-                .header("cookie", "wp_csrf=abc123")
-                .header("x-csrf-token", "abc123")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
+                .header("x-csrf-token", TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -130,8 +219,8 @@ async fn post_mismatched_403() {
     let resp = app()
         .oneshot(
             Request::post("/act")
-                .header("cookie", "wp_csrf=abc123")
-                .header("x-csrf-token", "abc124")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
+                .header("x-csrf-token", OTHER_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -147,8 +236,8 @@ async fn post_with_prefix_token_403() {
     let resp = app()
         .oneshot(
             Request::post("/act")
-                .header("cookie", "wp_csrf=abc123")
-                .header("x-csrf-token", "abc")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
+                .header("x-csrf-token", &TOKEN[..32])
                 .body(Body::empty())
                 .unwrap(),
         )

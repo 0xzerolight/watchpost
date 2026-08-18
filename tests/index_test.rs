@@ -274,7 +274,10 @@ async fn untracked_or_hidden_absent() {
     // The hidden repo's stats must not leak either, card or no card.
     assert!(spark_payloads(&body).is_empty(), "body was {body}");
     // With nothing left to show, the page falls back to the empty state.
-    assert!(body.contains("No repos tracked yet"), "body was {body}");
+    assert!(
+        body.contains("No repos tracked yet — stats start collecting on the next sync."),
+        "body was {body}"
+    );
 }
 
 #[tokio::test]
@@ -285,8 +288,14 @@ async fn empty_state_links_settings() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(body.contains("No repos tracked yet"), "body was {body}");
-    assert!(body.contains(r#"href="/settings""#), "body was {body}");
+    assert!(
+        body.contains("No repos tracked yet — stats start collecting on the next sync."),
+        "body was {body}"
+    );
+    assert!(
+        body.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+        "body was {body}"
+    );
     // Nothing chart-shaped is rendered when there is nothing to chart.
     assert!(!body.contains("spark-data"), "body was {body}");
     assert!(!body.contains("<canvas"), "body was {body}");
@@ -322,8 +331,45 @@ async fn last_synced_at_renders_as_relative_time() {
 
     let body = body_string(h.get("/").await).await;
     assert!(body.contains("3h ago"), "body was {body}");
-    // The raw timestamp is not what a dashboard should show.
-    assert!(!body.contains(&at2), "raw rfc3339 leaked: {body}");
+    // The raw timestamp belongs in `datetime=`, where a machine can read it —
+    // never as the text a dashboard asks a human to subtract from.
+    assert!(
+        !body.contains(&format!(">{at2}<")),
+        "raw rfc3339 shown as text: {body}"
+    );
+    assert!(
+        body.contains(&format!(r#"<time datetime="{at2}""#)),
+        "exact instant lost: {body}"
+    );
+}
+
+/// A failing query must produce a styled 500 that says nothing about the
+/// storage behind it — no file path, no engine name, no sqlite message.
+#[tokio::test]
+async fn a_db_failure_is_a_page_not_a_stack_trace() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.state
+        .db
+        .call(|c| {
+            c.execute_batch("DROP TABLE repo_stats")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let resp = h.get("/").await;
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_string(resp).await;
+
+    assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
+    assert!(body.contains("Something went wrong"), "body was {body}");
+    assert!(!body.contains(".db"), "db path leaked: {body}");
+    assert!(
+        !body.to_lowercase().contains("sqlite"),
+        "engine leaked: {body}"
+    );
+    assert!(!body.contains("repo_stats"), "schema leaked: {body}");
 }
 
 /// A repo name is user-controlled enough to be worth pinning: maud escapes it,

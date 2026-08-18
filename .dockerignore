@@ -10,3 +10,6 @@ docs/
 tests/
 .env
 *.md
+# README artwork: `COPY assets` feeds the builder, and nothing in the binary
+# embeds this one, so it would only invalidate that layer whenever it changes.
+assets/screenshot.png

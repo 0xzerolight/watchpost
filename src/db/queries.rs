@@ -1,22 +1,42 @@
-//! Query functions on top of `Db::call`'s `&Connection`. Everything here is
-//! unused outside tests until later tasks wire in the collector and http
-//! handlers.
-#![allow(dead_code)]
+//! Query functions on top of `Db::call`'s `&Connection`.
 
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::errors::DbError;
 use crate::types::{
-    AssetSeriesRow, AssetSnapshot, Event, GhRepo, Metric, NewEvent, PopularDay, PopularItem,
-    PopularKind, RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
+    AssetSnapshot, Event, GhRepo, Metric, NewEvent, PopularDay, PopularItem, PopularKind,
+    RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
 };
+
+/// Builds the NULL-safe last-write-wins `SET` fragment for one nullable
+/// column (substrate rule 1). NULL incoming means "not observed this run",
+/// never "observed as zero", so it keeps the existing value; any non-NULL
+/// value replaces what is stored.
+///
+/// This is the rule for writers that send a **full snapshot** of a counter
+/// GitHub can report lower than before — [`upsert_stats`]. Stars, forks,
+/// watchers, issues and PRs all fall in normal use (unstars, closed issues,
+/// merged PRs), and a MAX rule would pin the day's row to its intraday peak
+/// and silently drop every decrease. Compare [`null_safe_max_clause`].
+fn null_safe_last_clause(col: &str) -> String {
+    format!("{col} = COALESCE(excluded.{col}, t.{col})")
+}
 
 /// Builds the NULL-safe monotonic MAX `SET` fragment for one nullable
 /// counter column (substrate rule 1). Scalar `MAX()` returns NULL if *any*
 /// argument is NULL, which would clobber a previously observed value when a
-/// partial sync brings in NULL for this column. NULL incoming means "not
-/// observed this run" — keep the existing value; otherwise take the larger
-/// of the two (counters only grow).
+/// partial sync brings in NULL for this column, hence the CASE guard.
+///
+/// This is the rule for writers whose value may be a **partial view of the
+/// same quantity** another writer reports in full, so the larger observation
+/// is the more complete one:
+///
+/// - [`insert_star_history`] replays stargazer pages into a running total,
+///   truncated wherever the per-cycle page budget ran out. Last-write-wins
+///   here would overwrite the true count from [`upsert_stats`] with a
+///   fraction of it.
+/// - [`upsert_traffic_days`] rewrites GitHub's rolling 14-day window every
+///   cycle, and the current day is still accumulating when it is read.
 fn null_safe_max_clause(col: &str) -> String {
     format!(
         "{col} = CASE WHEN excluded.{col} IS NULL THEN t.{col} \
@@ -56,6 +76,9 @@ pub fn upsert_repo(conn: &Connection, repo: &GhRepo) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Record one day's counter snapshot. Each column keeps the **last**
+/// observation of the day rather than the day's maximum — see
+/// [`null_safe_last_clause`] for why these counters must be allowed to fall.
 pub fn upsert_stats(
     conn: &Connection,
     repo_id: i64,
@@ -65,7 +88,7 @@ pub fn upsert_stats(
     let cols = ["stars", "forks", "watchers", "issues", "prs"];
     let set_clause = cols
         .iter()
-        .map(|c| null_safe_max_clause(c))
+        .map(|c| null_safe_last_clause(c))
         .collect::<Vec<_>>()
         .join(",\n  ");
     let sql = format!(
@@ -181,6 +204,10 @@ pub fn upsert_release_assets(
     Ok(())
 }
 
+/// Backfill `stars` from replayed stargazer pages. Deliberately keeps the
+/// monotonic MAX rule that [`upsert_stats`] no longer uses: these totals are
+/// truncated wherever the page budget ran out, so the larger of the two
+/// observations is the trustworthy one — see [`null_safe_max_clause`].
 pub fn insert_star_history(
     conn: &Connection,
     repo_id: i64,
@@ -209,13 +236,31 @@ pub fn update_deltas_recent(conn: &Connection, window_days: u32) -> Result<(), D
 }
 
 /// LAG-based delta computation (ghstats' `UPDATE ... FROM` pattern —
-/// substrate rule 3). The LAG CTE computes over ALL rows per
-/// `(repo_id, key)` partition; only the outer `UPDATE`'s `WHERE` is
-/// window-scoped. Window-scoping the CTE instead would give the first
-/// in-window row `LAG = NULL`, so its delta would become the *full* rolling
-/// count — a fake spike at the window edge every cycle. A row with no
-/// predecessor at all (true first observation) gets `delta = count`
-/// (baseline-from-zero), via the `COALESCE`.
+/// substrate rule 3). The outer `UPDATE` rewrites the trailing
+/// `window_days`; the LAG CTE spans **twice** that, so the oldest row being
+/// updated still sees the predecessor it is a diff against. A row with no
+/// visible predecessor gets `delta = count` (baseline-from-zero), via the
+/// `COALESCE`.
+///
+/// Both bounds are load-bearing. Scoping the CTE to `window_days` too would
+/// give the first in-window row `LAG = NULL`, so its delta would become the
+/// *full* rolling count — a fake spike at the window edge every cycle. Not
+/// scoping it at all recomputes `LAG` over every row these tables have ever
+/// held, hourly, for a result the outer `WHERE` then throws away: cost that
+/// grows with history rather than with the window.
+///
+/// Doubling is what makes the two bounds agree: a row at the outer window's
+/// edge keeps its predecessor as long as the gap between the two is at most
+/// `window_days`. While a key is getting traffic that gap is one cycle.
+///
+/// Any observation gap wider than `2 × window_days` drops the predecessor and
+/// the row restarts from baseline. A collector outage does that; so, routinely,
+/// does a long-tail key — GitHub only returns referrers and paths with traffic
+/// in the window, so a key that goes quiet for six weeks and comes back has no
+/// rows in between. `popular_dead_key_keeps_its_first_count_and_stops_there`
+/// models one with a 200-day gap. Baseline-from-zero is the more correct
+/// reading in both cases: `count` is GitHub's rolling 14-day total, so the two
+/// observations cover disjoint periods and the later count is all new traffic.
 fn update_deltas_table(
     conn: &Connection,
     table: &str,
@@ -231,13 +276,15 @@ fn update_deltas_table(
                     count - LAG(count) OVER w AS delta_count,
                     uniques - LAG(uniques) OVER w AS delta_uniques
              FROM {table}
+             WHERE date >= date('now', ?1)
              WINDOW w AS (PARTITION BY repo_id, {key} ORDER BY date)
          ) AS lag_tbl
          WHERE t.repo_id = lag_tbl.repo_id AND t.date = lag_tbl.date AND t.{key} = lag_tbl.k
-           AND t.date >= date('now', ?1)"
+           AND t.date >= date('now', ?2)"
     );
+    let lag_window = format!("-{} day", window_days.saturating_mul(2));
     let window = format!("-{window_days} day");
-    conn.execute(&sql, params![window])?;
+    conn.execute(&sql, params![lag_window, window])?;
     Ok(())
 }
 
@@ -322,6 +369,28 @@ pub fn record_sync_ok(conn: &Connection, repo_id: i64, at: &str) -> Result<(), D
     Ok(())
 }
 
+/// A sync that wrote something but not everything: the repo answered, so it
+/// counts as synced and is taken out of backoff, while `last_error` keeps the
+/// endpoints that failed.
+///
+/// `error_streak` is deliberately left alone. It is the exponent behind
+/// [`record_sync_err`]'s backoff, and data landing means the repo is healthy
+/// enough to try again next cycle — counting partials would walk the streak up
+/// until the first total failure backed off for a day instead of 30 minutes.
+pub fn record_sync_partial(
+    conn: &Connection,
+    repo_id: i64,
+    at: &str,
+    err: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE repos SET last_synced_at = ?2, last_error = ?3, backoff_until = NULL
+         WHERE id = ?1",
+        params![repo_id, at, err],
+    )?;
+    Ok(())
+}
+
 pub fn record_sync_err(
     conn: &Connection,
     repo_id: i64,
@@ -359,22 +428,50 @@ pub fn repos_needing_star_backfill(conn: &Connection) -> Result<Vec<RepoRow>, Db
 // Reads: overview, series, asset series, popular items
 // ---------------------------------------------------------------------------
 
-/// Dashboard projection: one row per tracked, visible repo, joined to its
-/// latest `repo_stats` row and total event count. Uses a
-/// `ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY date DESC)` CTE to pick
-/// the latest row per repo — deliberately not SQLite's
-/// bare-column-with-`MAX()` extension (that only special-cases a single
-/// aggregate column per query and silently picks arbitrary values for the
-/// rest when more than one non-aggregated column is selected).
-pub fn repo_overview(conn: &Connection) -> Result<Vec<RepoOverview>, DbError> {
-    let mut stmt = conn.prepare(
+fn map_overview_row(r: &rusqlite::Row) -> rusqlite::Result<RepoOverview> {
+    Ok(RepoOverview {
+        repo_id: r.get(0)?,
+        name: r.get(1)?,
+        description: r.get(2)?,
+        homepage: r.get(3)?,
+        archived: r.get(4)?,
+        fork: r.get(5)?,
+        last_synced_at: r.get(6)?,
+        last_error: r.get(7)?,
+        error_streak: r.get(8)?,
+        date: r.get(9)?,
+        stars: r.get(10)?,
+        forks: r.get(11)?,
+        watchers: r.get(12)?,
+        issues: r.get(13)?,
+        prs: r.get(14)?,
+        event_count: r.get(15)?,
+    })
+}
+
+/// The overview projection, either for every visible repo or for one.
+///
+/// Both callers share this one statement so the column order can never drift
+/// away from [`map_overview_row`]'s positional reads. `one_repo` splices the
+/// `?1` filter into **both** CTEs, not just the outer `WHERE`: a window
+/// function is an optimization barrier, so an outer-only filter still makes
+/// SQLite number every repo's stats rows and count every repo's events before
+/// discarding all but one. The literal fragments are built here, never from
+/// caller input.
+fn overview_sql(one_repo: bool) -> String {
+    let (scope, outer, order) = if one_repo {
+        ("WHERE repo_id = ?1", "AND r.id = ?1", "")
+    } else {
+        ("", "", "ORDER BY r.name")
+    };
+    format!(
         "WITH latest AS (
              SELECT repo_id, date, stars, forks, watchers, issues, prs,
                     ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY date DESC) AS rn
-             FROM repo_stats
+             FROM repo_stats {scope}
          ),
          ev AS (
-             SELECT repo_id, COUNT(*) AS event_count FROM events GROUP BY repo_id
+             SELECT repo_id, COUNT(*) AS event_count FROM events {scope} GROUP BY repo_id
          )
          SELECT r.id, r.name, r.description, r.homepage, r.archived, r.fork,
                 r.last_synced_at, r.last_error, r.error_streak,
@@ -383,72 +480,36 @@ pub fn repo_overview(conn: &Connection) -> Result<Vec<RepoOverview>, DbError> {
          FROM repos r
          LEFT JOIN latest l ON l.repo_id = r.id AND l.rn = 1
          LEFT JOIN ev ON ev.repo_id = r.id
-         WHERE r.tracked = 1 AND r.hidden = 0
-         ORDER BY r.name",
-    )?;
+         WHERE r.tracked = 1 AND r.hidden = 0 {outer}
+         {order}"
+    )
+}
+
+/// Dashboard projection: one row per tracked, visible repo, joined to its
+/// latest `repo_stats` row and total event count. Uses a
+/// `ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY date DESC)` CTE to pick
+/// the latest row per repo — deliberately not SQLite's
+/// bare-column-with-`MAX()` extension (that only special-cases a single
+/// aggregate column per query and silently picks arbitrary values for the
+/// rest when more than one non-aggregated column is selected).
+pub fn repo_overview(conn: &Connection) -> Result<Vec<RepoOverview>, DbError> {
+    let mut stmt = conn.prepare(&overview_sql(false))?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(RepoOverview {
-                repo_id: r.get(0)?,
-                name: r.get(1)?,
-                description: r.get(2)?,
-                homepage: r.get(3)?,
-                archived: r.get(4)?,
-                fork: r.get(5)?,
-                last_synced_at: r.get(6)?,
-                last_error: r.get(7)?,
-                error_streak: r.get(8)?,
-                date: r.get(9)?,
-                stars: r.get(10)?,
-                forks: r.get(11)?,
-                watchers: r.get(12)?,
-                issues: r.get(13)?,
-                prs: r.get(14)?,
-                event_count: r.get(15)?,
-            })
-        })?
+        .query_map([], map_overview_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
-/// Raw daily values for one metric. Returns only OBSERVED rows (the column
-/// is `NOT NULL`-filtered) — dense-range materialization for chart gaps
-/// happens in later tasks' handlers, not here. `days == 0` means all time.
-pub fn series(
-    conn: &Connection,
-    repo_id: i64,
-    metric: Metric,
-    days: u32,
-) -> Result<Vec<(String, Option<i64>)>, DbError> {
-    let col = metric.column();
-    // Never SUM(uniques) across days: GitHub's weekly uniques deduplicates
-    // visitors across days; a sum is arithmetically wrong. `series()` reads
-    // the raw daily column with no aggregation — this comment guards
-    // against a future rewrite that tries to aggregate uniques metrics here.
-    let mut stmt = if days == 0 {
-        conn.prepare(&format!(
-            "SELECT date, {col} FROM repo_stats
-             WHERE repo_id = ?1 AND {col} IS NOT NULL ORDER BY date"
-        ))?
-    } else {
-        conn.prepare(&format!(
-            "SELECT date, {col} FROM repo_stats
-             WHERE repo_id = ?1 AND {col} IS NOT NULL AND date >= date('now', ?2)
-             ORDER BY date"
-        ))?
-    };
-    let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, Option<i64>)> {
-        Ok((r.get(0)?, r.get(1)?))
-    };
-    let rows = if days == 0 {
-        stmt.query_map(params![repo_id], map_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        let window = format!("-{days} day");
-        stmt.query_map(params![repo_id, window], map_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    Ok(rows)
+/// The same projection for a single repo, for the page that renders one.
+///
+/// `None` means the repo has no page — untracked, hidden upstream, or never
+/// discovered at all — which is exactly [`repo_overview`]'s predicate, so a
+/// repo the dashboard does not link to 404s.
+pub fn repo_overview_one(conn: &Connection, repo_id: i64) -> Result<Option<RepoOverview>, DbError> {
+    let row = conn
+        .query_row(&overview_sql(true), params![repo_id], map_overview_row)
+        .optional()?;
+    Ok(row)
 }
 
 /// One slot per UTC day across the trailing `days` window ending today,
@@ -456,9 +517,9 @@ pub fn series(
 /// series shape — every page that plots `repo_stats` goes through here, so a
 /// gap means the same thing everywhere.
 ///
-/// [`series`] returns observed rows only, which is the right shape for a table
-/// but the wrong one for a chart: a collector that ran on Monday and Thursday
-/// would draw those two points as adjacent, silently compressing the week.
+/// Returning observed rows only would be the wrong shape for a chart: a
+/// collector that ran on Monday and Thursday would draw those two points as
+/// adjacent, silently compressing the week.
 ///
 /// How an unobserved day is filled depends on the metric
 /// ([`Metric::carries_forward`]):
@@ -474,8 +535,8 @@ pub fn series(
 ///   traffic row is unknown activity; repeating the previous day's count would
 ///   fabricate visits.
 ///
-/// `days == 0` is an empty range, not "all time" — unlike [`series`], there is
-/// no unbounded dense window.
+/// `days == 0` is an empty range, not "all time": there is no unbounded dense
+/// window.
 pub fn dense_series(
     conn: &Connection,
     repo_id: i64,
@@ -493,6 +554,10 @@ pub fn dense_series(
     // Observed rows inside the window, keyed by date for O(1) lookup while
     // walking the calendar below. No ORDER BY: the calendar walk supplies the
     // ordering, this is only a lookup table.
+    //
+    // Never SUM(uniques) across days: GitHub's weekly uniques deduplicates
+    // visitors across days, so a sum is arithmetically wrong. This reads the
+    // raw daily column with no aggregation, and must stay that way.
     let mut stmt = conn.prepare(&format!(
         "SELECT date, {col} FROM repo_stats
          WHERE repo_id = ?1 AND {col} IS NOT NULL AND date >= ?2 AND date <= ?3"
@@ -636,27 +701,6 @@ pub fn first_observed_date(conn: &Connection, repo_id: i64) -> Result<Option<Str
         |r| r.get::<_, Option<String>>(0),
     )?;
     Ok(date)
-}
-
-pub fn asset_series(
-    conn: &Connection,
-    repo_id: i64,
-    release_tag: &str,
-    asset_name: &str,
-) -> Result<Vec<AssetSeriesRow>, DbError> {
-    let mut stmt = conn.prepare(
-        "SELECT date, download_count FROM release_assets
-         WHERE repo_id = ?1 AND release_tag = ?2 AND asset_name = ?3 ORDER BY date",
-    )?;
-    let rows = stmt
-        .query_map(params![repo_id, release_tag, asset_name], |r| {
-            Ok(AssetSeriesRow {
-                date: r.get(0)?,
-                download_count: r.get(1)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
 }
 
 /// How many rows [`popular_items`] returns at most. All-time aggregation
@@ -915,12 +959,15 @@ mod tests {
     // ---- Step 1: substrate proofs ------------------------------------------
 
     #[test]
-    fn upsert_is_monotonic_max() {
+    fn upsert_stats_records_last_observation() {
         let c = test_conn();
         seed_repo(&c, 1);
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10))).unwrap();
-        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(7))).unwrap(); // lower — must NOT win
-        assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(10));
+        // Unstars, closed issues and merged PRs all make these counters fall.
+        // A lower snapshot must win, or the row freezes at the intraday peak
+        // and the drop is never recorded.
+        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(7))).unwrap();
+        assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(7));
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(12))).unwrap();
         assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(12));
     }
@@ -941,11 +988,20 @@ mod tests {
         seed_repo(&c, 1);
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10))).unwrap();
         upsert_stats(&c, 1, "2026-08-03", &snap!(stars: Some(11))).unwrap();
-        let s = series(&c, 1, Metric::Stars, 0 /* all */).unwrap();
-        // series returns only observed rows; dense-range materialization
-        // happens in a later task's handler.
-        assert!(!s.iter().any(|(d, _)| d == "2026-08-02"));
-        assert_eq!(s.len(), 2);
+        // The unobserved day gets no row at all, never a row reading zero.
+        let mut stmt = c
+            .prepare(
+                "SELECT date FROM repo_stats
+                 WHERE repo_id = 1 AND stars IS NOT NULL ORDER BY date",
+            )
+            .unwrap();
+        let dates: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(dates, ["2026-08-01", "2026-08-03"]);
+        assert_eq!(get_stars(&c, 1, "2026-08-02"), None);
     }
 
     #[test]
@@ -966,8 +1022,8 @@ mod tests {
 
     #[test]
     fn null_incoming_never_clobbers_observed() {
-        // Substrate rule 1 NULL-safety proof (scalar MAX(x, NULL) = NULL
-        // would destroy data).
+        // Substrate rule 1 NULL-safety proof: NULL means "not observed this
+        // run", never "observed as nothing", so it must not reach the column.
         let c = test_conn();
         seed_repo(&c, 1);
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10), prs: Some(2))).unwrap();
@@ -1130,6 +1186,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(delta, 3);
+    }
+
+    #[test]
+    fn delta_lag_reaches_back_twice_the_window() {
+        // -30d is outside the 21-day update window but inside the LAG CTE's
+        // 42-day reach, so the -1d row is still a diff. This is the gap the
+        // doubled CTE window exists to cover.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let older = days_ago(30);
+        let recent = days_ago(1);
+        upsert_referrers(
+            &c,
+            1,
+            &older,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 100,
+                uniques: 10,
+            }],
+        )
+        .unwrap();
+        upsert_referrers(
+            &c,
+            1,
+            &recent,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 130,
+                uniques: 12,
+            }],
+        )
+        .unwrap();
+        update_deltas_recent(&c, 21).unwrap();
+        let delta: i64 = c
+            .query_row(
+                "SELECT count_delta FROM repo_referrers WHERE date = ?1",
+                [&recent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(delta, 30); // 130 - 100
+    }
+
+    #[test]
+    fn delta_beyond_twice_the_window_restarts_from_zero() {
+        // The predecessor at -50d is outside the CTE's 42-day reach, so the
+        // -1d row has no visible LAG and takes its full count as a fresh
+        // baseline. Documents the deliberate cost of bounding the recompute —
+        // a gap this wide is what a referrer that went quiet and came back
+        // looks like, GitHub having reported no rows for it in between.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let ancient = days_ago(50);
+        let recent = days_ago(1);
+        upsert_referrers(
+            &c,
+            1,
+            &ancient,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 100,
+                uniques: 10,
+            }],
+        )
+        .unwrap();
+        upsert_referrers(
+            &c,
+            1,
+            &recent,
+            &[PopularDay {
+                name: "google".into(),
+                title: None,
+                count: 130,
+                uniques: 12,
+            }],
+        )
+        .unwrap();
+        update_deltas_recent(&c, 21).unwrap();
+        let (count_delta, uniques_delta): (i64, i64) = c
+            .query_row(
+                "SELECT count_delta, uniques_delta FROM repo_referrers WHERE date = ?1",
+                [&recent],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count_delta, 130); // baseline-from-zero, not 130 - 100
+        assert_eq!(uniques_delta, 12);
     }
 
     #[test]
@@ -1347,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn release_assets_upsert_and_series_are_monotonic() {
+    fn release_assets_upsert_is_monotonic() {
         let c = test_conn();
         seed_repo(&c, 1);
         upsert_release_assets(
@@ -1384,19 +1531,21 @@ mod tests {
             }],
         )
         .unwrap();
-        let s = asset_series(&c, 1, "v1", "app.bin").unwrap();
+        let mut stmt = c
+            .prepare(
+                "SELECT date, download_count FROM release_assets
+                 WHERE repo_id = 1 AND release_tag = 'v1' AND asset_name = 'app.bin'
+                 ORDER BY date",
+            )
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(
-            s,
-            vec![
-                AssetSeriesRow {
-                    date: "2026-08-01".into(),
-                    download_count: 10
-                },
-                AssetSeriesRow {
-                    date: "2026-08-02".into(),
-                    download_count: 25
-                },
-            ]
+            rows,
+            [("2026-08-01".to_owned(), 10), ("2026-08-02".to_owned(), 25)]
         );
     }
 
@@ -1407,6 +1556,18 @@ mod tests {
         insert_star_history(&c, 1, &[("2026-08-01".into(), 100)]).unwrap();
         insert_star_history(&c, 1, &[("2026-08-01".into(), 90)]).unwrap(); // lower, must not win
         assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(100));
+    }
+
+    #[test]
+    fn star_backfill_never_clobbers_snapshot_total() {
+        // Why the two writers cannot share one rule: backfill totals are
+        // truncated by the per-cycle page budget, so a blanket last-write-wins
+        // would overwrite the true count with a partial one.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10))).unwrap();
+        insert_star_history(&c, 1, &[("2026-08-01".into(), 3)]).unwrap();
+        assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(10));
     }
 
     #[test]
@@ -1449,6 +1610,23 @@ mod tests {
     }
 
     #[test]
+    fn record_sync_partial_clears_backoff_and_keeps_the_streak() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        set_tracked(&c, 1, true).unwrap();
+        record_sync_err(&c, 1, "boom", Some("2026-08-02T00:00:00Z")).unwrap();
+        record_sync_err(&c, 1, "boom again", Some("2026-08-03T00:00:00Z")).unwrap();
+
+        record_sync_partial(&c, 1, "2026-08-04T00:00:00Z", "partial: releases: down").unwrap();
+
+        let repo = &tracked_repos(&c).unwrap()[0];
+        assert_eq!(repo.last_synced_at.as_deref(), Some("2026-08-04T00:00:00Z"));
+        assert_eq!(repo.last_error.as_deref(), Some("partial: releases: down"));
+        assert_eq!(repo.backoff_until, None, "partial data must not back off");
+        assert_eq!(repo.error_streak, 2, "a partial must not move the streak");
+    }
+
+    #[test]
     fn repo_overview_latest_row_and_event_count() {
         let c = test_conn();
         seed_repo(&c, 1);
@@ -1472,6 +1650,78 @@ mod tests {
         assert_eq!(overview[0].date, Some("2026-08-02".into()));
         assert_eq!(overview[0].stars, Some(12));
         assert_eq!(overview[0].event_count, 1);
+    }
+
+    #[test]
+    fn repo_overview_one_equals_the_all_repos_row() {
+        // The single-repo query filters inside the CTEs rather than after
+        // them; this pins it to the projection the dashboard already renders,
+        // repo by repo, so the two can never drift apart.
+        let c = test_conn();
+        for id in 1..=3 {
+            seed_repo(&c, id);
+            set_tracked(&c, id, true).unwrap();
+        }
+        // Deliberately uneven: repo 1 has history and events, repo 2 has one
+        // stats row and no events, repo 3 has never been synced at all.
+        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10), forks: Some(1))).unwrap();
+        upsert_stats(
+            &c,
+            1,
+            "2026-08-02",
+            &snap!(stars: Some(12), forks: Some(2), watchers: Some(3), issues: Some(4), prs: Some(5)),
+        )
+        .unwrap();
+        upsert_stats(&c, 2, "2026-08-03", &snap!(stars: Some(7))).unwrap();
+        for title in ["a", "b"] {
+            insert_event(
+                &c,
+                &NewEvent {
+                    repo_id: 1,
+                    date: "2026-08-01".into(),
+                    title: title.into(),
+                    notes: "".into(),
+                    url: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let all = repo_overview(&c).unwrap();
+        assert_eq!(all.len(), 3);
+        for row in &all {
+            assert_eq!(
+                repo_overview_one(&c, row.repo_id).unwrap().as_ref(),
+                Some(row)
+            );
+        }
+        // Guard against the comparison passing on three identical blank rows.
+        assert_eq!(all[0].event_count, 2);
+        assert_eq!(all[0].date, Some("2026-08-02".into()));
+        assert_eq!(all[1].stars, Some(7));
+        assert_eq!(all[2].date, None);
+    }
+
+    #[test]
+    fn repo_overview_one_is_none_for_a_repo_with_no_page() {
+        // 404 semantics: the same predicate the all-repos query applies, so a
+        // repo the dashboard does not link to has no page either.
+        let c = test_conn();
+        seed_repo(&c, 1); // untracked
+        seed_repo(&c, 2);
+        set_tracked(&c, 2, true).unwrap();
+        mark_hidden(&c, &[2]).unwrap(); // tracked, but gone upstream
+        seed_repo(&c, 3);
+        set_tracked(&c, 3, true).unwrap();
+
+        assert_eq!(repo_overview_one(&c, 1).unwrap(), None);
+        assert_eq!(repo_overview_one(&c, 2).unwrap(), None);
+        assert_eq!(repo_overview_one(&c, 999).unwrap(), None);
+        assert!(repo_overview_one(&c, 3).unwrap().is_some());
+        let all = repo_overview(&c).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].repo_id, 3);
     }
 
     #[test]
@@ -1529,17 +1779,6 @@ mod tests {
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].title, "a");
         assert_eq!(events_for_repo(&c, 1, None).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn series_days_window_excludes_older_rows() {
-        let c = test_conn();
-        seed_repo(&c, 1);
-        upsert_stats(&c, 1, &days_ago(30), &snap!(stars: Some(1))).unwrap();
-        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(2))).unwrap();
-        let recent = series(&c, 1, Metric::Stars, 7).unwrap();
-        assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].1, Some(2));
     }
 
     // ---- dense_series ------------------------------------------------------

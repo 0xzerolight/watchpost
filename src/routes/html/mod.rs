@@ -1,5 +1,4 @@
-//! Shared HTML rendering helpers. Page templates land here in later tasks;
-//! this module currently holds the document shell (`base`) plus the pieces
+//! Shared HTML rendering helpers: the document shell (`base`) plus the pieces
 //! every template needs, including the two that carry XSS-defence weight
 //! (`json_script`, `render_markdown`).
 
@@ -12,12 +11,9 @@ use crate::routes::assets;
 pub mod index;
 pub mod repo;
 pub mod settings;
+pub mod ui;
 
-/// The `htmx.config.responseHandling` override the shell inlines. Kept as a
-/// named constant so a test can pin the exact string: nothing but a browser
-/// would otherwise notice this config going missing, and without it every 422
-/// validation response is silently dropped instead of swapped.
-const RESPONSE_HANDLING_JS: &str = r#"htmx.config.responseHandling = [{code:"204",swap:false},{code:"[23]..",swap:true},{code:"422",swap:true,error:true},{code:"[45]..",swap:false,error:true}];"#;
+pub use ui::*;
 
 /// The document shell every page renders into.
 ///
@@ -27,9 +23,17 @@ const RESPONSE_HANDLING_JS: &str = r#"htmx.config.responseHandling = [{code:"204
 ///   so no individual form or button has to remember it. The value is built
 ///   with `serde_json` rather than spliced together, so a token that somehow
 ///   contained a quote could not escape the attribute.
-/// * htmx is loaded synchronously so the inline config below runs against a
-///   real `htmx` object, before any element on the page can trigger a swap.
-pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
+/// * htmx and its config are both loaded synchronously, in that order, so the
+///   config runs against a real `htmx` object and lands before any element on
+///   the page can trigger a swap. The config lives in `assets/htmx-config.js`
+///   rather than in an inline block, which is what lets the CSP say
+///   `script-src 'self'`.
+///
+/// There is deliberately no `hx-boost` here. Boosted navigation would swap the
+/// body without re-running the page's chart setup, and `historyCacheSize = 0`
+/// already forces a fresh request on back-nav — so boosting would buy nothing
+/// but a class of dead-canvas bugs.
+pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Markup {
     let hx_headers = serde_json::json!({ CSRF_HEADER: csrf.0 }).to_string();
 
     html! {
@@ -38,38 +42,105 @@ pub fn base(title: &str, csrf: &CsrfToken, inner: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                // Pico ships both themes; without this the browser still
+                // paints UA-owned chrome (form controls, scrollbars) light.
+                meta name="color-scheme" content="light dark";
                 title { (title) " · watchpost" }
                 link rel="icon" type="image/svg+xml" href=(assets::favicon_data_uri());
                 link rel="stylesheet" href=(format!("/assets/{}", assets::PICO_CSS));
                 link rel="stylesheet" href=(assets::asset_href(assets::APP_CSS));
                 script src=(format!("/assets/{}", assets::HTMX_JS)) {}
+                // htmx's configuration, deliberately not deferred: it has to
+                // run against a real `htmx` object (the tag above is
+                // synchronous, so there is one) and before any element can
+                // trigger a swap, which the parser being still in <head>
+                // guarantees. See the file itself for what each setting buys.
+                script src=(assets::asset_href(assets::HTMX_CONFIG_JS)) {}
                 // The charts are only needed once the DOM exists, so both of
                 // these defer; `defer` also keeps them in order, and app.js
                 // depends on Chart.
                 script src=(format!("/assets/{}", assets::CHART_JS)) defer {}
                 script src=(assets::asset_href(assets::APP_JS)) defer {}
-                // htmx's history cache restores a serialized DOM snapshot,
-                // which brings back <canvas> elements with no Chart.js
-                // instance behind them — dead charts on every back button.
-                // Disabling the cache costs a re-request and keeps pages live.
-                script { "htmx.config.historyCacheSize = 0;" }
-                // htmx 2's default responseHandling never swaps a 4xx, so the
-                // 422 bodies the event forms answer with would be discarded —
-                // the user would press Save and watch nothing happen. This
-                // override keeps the defaults and adds one rule that swaps 422
-                // (still flagged as an error). Rules match first-wins, so the
-                // 422 entry MUST sit before the `[45]..` catch-all.
-                script { (PreEscaped(RESPONSE_HANDLING_JS)) }
             }
             body hx-headers=(hx_headers) {
+                // First element in the body, or a keyboard user tabs the nav
+                // on every page before reaching the content.
+                a href="#main" class="wp-skip" { "Skip to content" }
                 nav class="container" {
                     ul { li { a href="/" { strong { "watchpost" } } } }
                     ul {
-                        li { a href="/" { "Home" } }
-                        li { a href="/settings" { "Settings" } }
+                        li {
+                            a href="/" aria-current=[matches!(nav, NavItem::Home).then_some("page")] {
+                                "Repos"
+                            }
+                        }
+                        li {
+                            a href="/settings"
+                                aria-current=[matches!(nav, NavItem::Settings).then_some("page")] {
+                                "Settings"
+                            }
+                        }
                     }
                 }
-                main class="container" { (inner) }
+                // `tabindex="-1"` makes the skip link's target focusable:
+                // without it the jump moves the viewport but not focus, and
+                // the next Tab lands back at the top of the page.
+                main id="main" class="container" tabindex="-1" { (inner) }
+                (toast_region())
+                (confirm_dialog())
+            }
+        }
+    }
+}
+
+/// The single toast slot every page shares.
+///
+/// `role="alert"` with `aria-live="assertive"` because a toast reports the
+/// outcome of something the user just did — announcing it politely means it is
+/// queued behind whatever else is speaking and arrives after the toast has
+/// already faded. The element ships `hidden`; the client unhides it, so a page
+/// with no message renders nothing.
+///
+/// The empty action button is a slot: most messages have nothing to offer, but
+/// an expired session has to be able to say "Reload". Shipping it hidden in the
+/// markup keeps the client filling in text rather than building elements.
+fn toast_region() -> Markup {
+    html! {
+        div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden {
+            span class="wp-toast-text" {}
+            button type="button" class="wp-toast-action" hidden {}
+            button type="button" class="wp-toast-close" aria-label="Dismiss" { "×" }
+        }
+    }
+}
+
+/// The single confirm dialog every destructive action reuses.
+///
+/// A native `<dialog>` rather than `window.confirm` so the prompt can name what
+/// is about to be destroyed, and so the modal traps focus the way the platform
+/// expects. The client fills in the question; the two buttons are keyed by data
+/// attribute rather than by position, so restyling the footer cannot silently
+/// swap Cancel for Confirm.
+///
+/// The heading is a constant rather than another client-filled slot because
+/// `aria-labelledby` names the dialog from it: pointing at an element the client
+/// might not have written yet would leave the modal with no accessible name at
+/// all, which is worse than the generic one. `aria-describedby` points at the
+/// slot the client *does* fill, so the question is announced along with the
+/// name — without it a screenreader opens on "Confirm, dialog" and never reads
+/// what is about to be destroyed. Cancel comes first in the DOM so
+/// `showModal()`'s initial focus lands on the harmless button.
+fn confirm_dialog() -> Markup {
+    html! {
+        dialog id="wp-confirm" aria-labelledby="wp-confirm-title"
+            aria-describedby="wp-confirm-text" {
+            article {
+                h2 id="wp-confirm-title" { "Confirm" }
+                p id="wp-confirm-text" {}
+                footer class="wp-actions wp-actions-end" {
+                    button type="button" class="secondary" data-confirm-cancel { "Cancel" }
+                    button type="button" data-confirm-ok { "Confirm" }
+                }
             }
         }
     }
@@ -318,6 +389,41 @@ mod tests {
             let slot: u32 = class.strip_prefix("wp-kind-").unwrap().parse().unwrap();
             assert!(slot < 8, "{kind:?} → {class}");
         }
+    }
+
+    // The two shared regions are a contract with the client scripts, which
+    // find their parts by id, class and data attribute. Pinning the markup
+    // whole means a rename here fails a test rather than silently turning a
+    // toast into an element nothing ever shows.
+    #[test]
+    fn toast_region_markup_is_the_one_the_client_targets() {
+        assert_eq!(
+            toast_region().into_string(),
+            concat!(
+                r#"<div id="wp-toast" class="wp-toast" role="alert" aria-live="assertive" hidden>"#,
+                r#"<span class="wp-toast-text"></span>"#,
+                r#"<button type="button" class="wp-toast-action" hidden></button>"#,
+                r#"<button type="button" class="wp-toast-close" aria-label="Dismiss">×</button>"#,
+                "</div>"
+            )
+        );
+    }
+
+    #[test]
+    fn confirm_dialog_markup_is_the_one_the_client_targets() {
+        assert_eq!(
+            confirm_dialog().into_string(),
+            concat!(
+                r#"<dialog id="wp-confirm" aria-labelledby="wp-confirm-title" "#,
+                r#"aria-describedby="wp-confirm-text"><article>"#,
+                r#"<h2 id="wp-confirm-title">Confirm</h2>"#,
+                r#"<p id="wp-confirm-text"></p>"#,
+                r#"<footer class="wp-actions wp-actions-end">"#,
+                r#"<button type="button" class="secondary" data-confirm-cancel>Cancel</button>"#,
+                r#"<button type="button" data-confirm-ok>Confirm</button>"#,
+                "</footer></article></dialog>"
+            )
+        );
     }
 
     #[test]

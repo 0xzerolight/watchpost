@@ -7,7 +7,7 @@ use crate::errors::DbError;
 /// `const` array — migrations never need captured state.
 pub type Migration = fn(&rusqlite::Transaction) -> Result<(), DbError>;
 
-pub const MIGRATIONS: &[Migration] = &[migrate_v1];
+pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2];
 
 /// Run all pending migrations against `conn`, bringing `PRAGMA user_version`
 /// up to `MIGRATIONS.len()`.
@@ -20,6 +20,7 @@ pub(crate) fn run_migrations(
     migrations: &[Migration],
 ) -> Result<(), DbError> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    guard_schema_version(version, migrations.len())?;
     for (idx, m) in migrations.iter().enumerate() {
         let target = idx as i64 + 1;
         if version < target {
@@ -32,6 +33,26 @@ pub(crate) fn run_migrations(
             tx.pragma_update(None, "user_version", target)?;
             tx.commit()?; // DDL + version bump atomic
         }
+    }
+    Ok(())
+}
+
+/// Refuse a database a newer build wrote.
+///
+/// Migrations only run forward, so an older binary meeting a newer schema
+/// would find nothing to do and then serve queries against a shape it does not
+/// know — a silent half-working install, and one that keeps writing to a file
+/// the newer build still considers current. Refusing to open is the only
+/// honest answer, and the message names the fix.
+///
+/// Checked by `Db::open` before it touches the file and here, which is what
+/// the in-memory and test paths go through.
+pub(crate) fn guard_schema_version(found: i64, supported: usize) -> Result<(), DbError> {
+    if found > supported as i64 {
+        return Err(DbError::SchemaTooNew {
+            found,
+            supported: supported as i64,
+        });
     }
     Ok(())
 }
@@ -99,9 +120,41 @@ CREATE INDEX idx_repos_tracked       ON repos(tracked, hidden);",
     Ok(())
 }
 
+/// v2 — index the traffic tables the way they are actually read.
+///
+/// `idx_repo_stats_date` indexed `date` alone and served nothing: every read of
+/// `repo_stats` leads with `repo_id`, which the `(repo_id, date)` primary key
+/// already covers. It only cost the collector a write per row per cycle.
+///
+/// What replaces it is keyed `(repo_id, key, date)`, the order the two hottest
+/// traffic queries want it in: `popular_items` groups by the key within one
+/// repo, and the delta `UPDATE`'s `LAG` partitions by `(repo_id, key)` ordered
+/// by `date`. The existing `(repo_id, date)` indexes stay — that `UPDATE`'s
+/// outer half still filters a trailing date window per repo.
+fn migrate_v2(tx: &rusqlite::Transaction) -> Result<(), DbError> {
+    tx.execute_batch(
+        "DROP INDEX IF EXISTS idx_repo_stats_date;
+
+CREATE INDEX IF NOT EXISTS idx_referrers_repo_key_date ON repo_referrers(repo_id, referrer, date);
+CREATE INDEX IF NOT EXISTS idx_paths_repo_key_date     ON repo_popular_paths(repo_id, path, date);",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn index_names(c: &Connection) -> Vec<String> {
+        let mut stmt = c
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
     #[test]
     fn fresh_db_migrates_to_current() {
         let mut c = rusqlite::Connection::open_in_memory().unwrap();
@@ -120,6 +173,81 @@ mod tests {
         migrate(&mut c).unwrap();
         migrate(&mut c).unwrap(); // must not error (CREATE TABLE would collide if re-run)
     }
+    /// The upgrade path, which is the one that can go wrong: a v1 database
+    /// keeps its rows, loses the index that served nothing, and gains the two
+    /// the traffic queries read through.
+    #[test]
+    fn v2_swaps_the_indexes_on_a_v1_database() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        run_migrations(&mut c, &MIGRATIONS[..1]).unwrap();
+        c.execute("INSERT INTO repos (id, name) VALUES (1, 'o/r')", [])
+            .unwrap();
+        assert!(index_names(&c).iter().any(|n| n == "idx_repo_stats_date"));
+
+        migrate(&mut c).unwrap();
+
+        let names = index_names(&c);
+        assert!(
+            !names.iter().any(|n| n == "idx_repo_stats_date"),
+            "the unused index survived: {names:?}"
+        );
+        for wanted in [
+            "idx_referrers_repo_key_date",
+            "idx_paths_repo_key_date",
+            // Kept: the delta UPDATE still filters a date window per repo.
+            "idx_referrers_repo_date",
+            "idx_paths_repo_date",
+        ] {
+            assert!(
+                names.iter().any(|n| n == wanted),
+                "{wanted} missing: {names:?}"
+            );
+        }
+
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        let repos: i64 = c
+            .query_row("SELECT COUNT(*) FROM repos", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(repos, 1, "the upgrade dropped data");
+    }
+
+    #[test]
+    fn a_fresh_database_gets_the_v2_indexes_too() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&mut c).unwrap();
+
+        let names = index_names(&c);
+        assert!(
+            !names.iter().any(|n| n == "idx_repo_stats_date"),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "idx_referrers_repo_key_date"),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "idx_paths_repo_key_date"),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn a_schema_from_a_newer_build_is_refused() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "user_version", 99).unwrap();
+
+        let err = migrate(&mut c).unwrap_err();
+        assert!(
+            matches!(err, DbError::SchemaTooNew { found: 99, supported }
+                if supported == MIGRATIONS.len() as i64),
+            "{err}"
+        );
+        assert!(err.to_string().contains("upgrade watchpost"), "{err}");
+    }
+
     #[test]
     fn failed_migration_rolls_back() {
         let mut c = rusqlite::Connection::open_in_memory().unwrap();

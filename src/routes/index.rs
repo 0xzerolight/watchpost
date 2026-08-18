@@ -11,8 +11,8 @@ use maud::Markup;
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
-use crate::routes::html::base;
 use crate::routes::html::index::{Card, SPARK_DAYS, index_body};
+use crate::routes::html::{NavItem, base};
 use crate::state::AppState;
 use crate::types::Metric;
 
@@ -42,5 +42,5 @@ pub async fn index_page(
         })
         .await?;
 
-    Ok(base("Home", &csrf, index_body(&cards)))
+    Ok(base("Repos", NavItem::Home, &csrf, index_body(&cards)))
 }
