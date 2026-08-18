@@ -24,11 +24,17 @@ chart, the top referrers and paths, and the event list underneath.](assets/scree
 You need a GitHub personal access token. A fine-grained token is the better choice; under
 **Repository permissions** grant:
 
-- **Metadata: read** — the repository list and the basic counts
+- **Metadata: read** — the repository list and the basic counts; selected for you, cannot be removed
 - **Administration: read** — the traffic endpoints (views, clones, referrers, paths)
+- **Contents: read** — releases and asset download counts
+- **Pull requests: read** — the open pull request count
 
-Without *Administration: read* the token authenticates fine and every traffic call returns 403, so
-the charts stay empty. A classic token with the `repo` scope also works.
+A missing permission costs that one part of a collection pass, not the pass: without
+*Administration: read* the token authenticates fine, every traffic call returns 403 and those
+charts stay empty while the rest of the data still lands. A classic token with the `repo` scope
+also works.
+
+Traffic is only served for repositories you own or administer, whatever the token says.
 
 Then:
 

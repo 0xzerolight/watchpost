@@ -32,8 +32,10 @@ const TABLES: &[&str] = &[
 const ERROR_CAP: usize = 60;
 
 const SCOPE_HINT: &str = "  hint: watchpost needs a fine-grained PAT with Repository permissions \
-     Metadata: read (repo list) and Administration: read (traffic views/clones/referrers/paths).\n  \
-     A token that lacks Administration: read authenticates fine but returns 403 on every traffic call.";
+     Metadata: read (repo list), Administration: read (traffic views/clones/referrers/paths), \
+     Contents: read (releases) and Pull requests: read (open PR count).\n  \
+     A token missing one of these authenticates fine but returns 403 on that call alone — without \
+     Administration: read, every traffic call 403s and the rest of the pass still lands.";
 
 /// What `--doctor` could learn about the database.
 #[derive(Debug, Clone)]
