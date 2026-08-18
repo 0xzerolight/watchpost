@@ -396,11 +396,19 @@ fn charts_section(view: &RepoView) -> Markup {
 /// a window is too long to plot a column per day, to say how wide the buckets
 /// are; it renders either way, so the heading never reflows when the note
 /// arrives.
+///
+/// The canvas is labelled as one graphic: a bare `<canvas>` has no role, so a
+/// screenreader walks into an element with nothing inside it and announces
+/// nothing at all. `role="img"` plus the label makes it a single object with a
+/// name, which is the honest description — the plotted values themselves are
+/// not exposed here, and no `aria-label` could carry them.
 fn chart_card(title: &str, canvas_id: &str) -> Markup {
     html! {
         article class="wp-card" {
             h3 class="wp-card-title" { (title) span class="wp-card-note" {} }
-            div class="chart-box" { canvas id=(canvas_id) {} }
+            div class="chart-box" {
+                canvas id=(canvas_id) role="img" aria-label=(format!("{title} over time")) {}
+            }
         }
     }
 }
@@ -1160,6 +1168,26 @@ mod tests {
         );
         // One note slot per card, rendered whether or not it has content yet.
         assert_eq!(out.matches("wp-card-note").count(), 4, "out was {out}");
+    }
+
+    #[test]
+    fn each_canvas_is_a_named_graphic() {
+        // A bare <canvas> is an unnamed element with no role: without these two
+        // attributes a screenreader announces nothing for a whole panel.
+        let payload = payload(-1, Some(3));
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        assert_eq!(out.matches(r#"role="img""#).count(), 4, "out was {out}");
+        assert!(
+            out.contains(
+                r#"<canvas id="chart_stars" role="img" aria-label="Stars over time"></canvas>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"aria-label="Downloads over time""#),
+            "out was {out}"
+        );
     }
 
     #[test]

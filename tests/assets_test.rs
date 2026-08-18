@@ -162,6 +162,10 @@ async fn app_js_defines_the_watchpost_namespace() {
         // stomps the period out of the address bar.
         "data-sort-link",
         "updateSortLinks",
+        // The only motion this file starts itself. app.css opts every animation
+        // out of reduced motion, but a smooth `scrollIntoView` is JavaScript's
+        // and no stylesheet can cancel it.
+        "(prefers-reduced-motion: reduce)",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

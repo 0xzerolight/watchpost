@@ -263,6 +263,15 @@
 }
 
 /*
+ * The kind chip inside a tip, beside the date. `.wp-chip` zeroes its own
+ * margins, so the gap is put back here rather than from JavaScript — the rule
+ * has to sit after `.wp-chip` to win, both being a single class.
+ */
+.wp-tip-kind {
+  margin-left: var(--wp-space-2);
+}
+
+/*
  * Per-row edit/delete controls. Pico sizes buttons for forms, which makes a
  * pair of them in a table cell as tall as the row they belong to; these stay
  * out of the way until they are wanted.

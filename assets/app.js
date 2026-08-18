@@ -371,7 +371,18 @@ htmx.config.includeIndicatorStyles = false;
   // The event-marker plugin
   // -------------------------------------------------------------------------
 
-  var HIT_PX = 5;
+  /*
+   * How near the pointer has to be to a marker's column, in pixels, for its tip
+   * to open. Wider than the line it targets: a marker is a stroke on a canvas
+   * with no DOM node behind it, so this slack is the entire hit area, and 5px
+   * asked for a precision a trackpad does not have.
+   *
+   * Markers are a mouse enhancement, not a way to reach an event. There is
+   * nothing here to focus and nothing to announce — the events table under the
+   * charts lists the same events as real rows, with the real links, and that is
+   * the accessible equivalent this widget defers to.
+   */
+  var HIT_PX = 8;
   var tipEl = null;
 
   function markerTip() {
@@ -399,6 +410,20 @@ htmx.config.includeIndicatorStyles = false;
   }
 
   /*
+   * The host of an event's URL, for the tip's one line about where it points.
+   * Every stored URL came through `validate_event_url` and is an absolute
+   * http(s) one, so the fallback is for a row that predates that check rather
+   * than for anything routine: showing the raw string beats dropping the line.
+   */
+  function urlHost(url) {
+    try {
+      return new URL(url).host || url;
+    } catch (err) {
+      return url;
+    }
+  }
+
+  /*
    * Fill the tip from `events`. Built node by node with `textContent` — event
    * titles and kinds are user input, and this is the one place in the client
    * where they reach the DOM.
@@ -414,8 +439,7 @@ htmx.config.includeIndicatorStyles = false;
       head.appendChild(when);
       if (ev.kind) {
         var kind = document.createElement("span");
-        kind.className = "wp-chip wp-kind-" + kindSlot(ev.kind);
-        kind.style.marginLeft = "0.4rem";
+        kind.className = "wp-chip wp-tip-kind wp-kind-" + kindSlot(ev.kind);
         kind.textContent = ev.kind;
         head.appendChild(kind);
       }
@@ -426,17 +450,16 @@ htmx.config.includeIndicatorStyles = false;
       block.appendChild(title);
 
       if (ev.url) {
-        var link = document.createElement("div");
-        var anchor = document.createElement("a");
-        // The server already scheme-allowlisted this on the write path
-        // (`validate_event_url`); the tip is `pointer-events: none` besides, so
-        // the anchor is a visual affordance pointing at the row's real link.
-        anchor.href = ev.url;
-        anchor.rel = "noopener noreferrer";
-        anchor.className = "wp-small";
-        anchor.textContent = ev.url;
-        link.appendChild(anchor);
-        block.appendChild(link);
+        var where = document.createElement("div");
+        // Not an `<a>`: the tip is `pointer-events: none`, so a link in it can
+        // never be clicked, and one that looks clickable and is not costs the
+        // reader an attempt. The host says where the event points; the row in
+        // the events table carries the link that actually works.
+        var host = document.createElement("span");
+        host.className = "wp-small wp-muted";
+        host.textContent = urlHost(ev.url);
+        where.appendChild(host);
+        block.appendChild(where);
       }
 
       tip.appendChild(block);
@@ -448,11 +471,24 @@ htmx.config.includeIndicatorStyles = false;
     fillTip(tip, events);
     tip.classList.add("wp-visible");
 
+    // Both measurements are taken after the fill and the unhide: a hidden
+    // element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
+    // any earlier would decide it fits everywhere.
     var x = native.pageX + 14;
     var y = native.pageY + 14;
     var maxX = window.scrollX + document.documentElement.clientWidth - 8;
     if (x + tip.offsetWidth > maxX) {
       x = Math.max(window.scrollX + 8, native.pageX - tip.offsetWidth - 14);
+    }
+    // The same flip vertically. Without it a marker near the foot of the window
+    // opened its tip below the fold — the tip is positioned in page
+    // coordinates, so nothing scrolls it back into view. Flipping above the
+    // cursor keeps it beside the marker it belongs to; the `Math.max` pins a
+    // tip taller than the viewport to the top edge, losing its last line rather
+    // than its first.
+    var maxY = window.scrollY + document.documentElement.clientHeight - 8;
+    if (y + tip.offsetHeight > maxY) {
+      y = Math.max(window.scrollY + 8, native.pageY - tip.offsetHeight - 14);
     }
     tip.style.left = x + "px";
     tip.style.top = y + "px";
@@ -467,7 +503,16 @@ htmx.config.includeIndicatorStyles = false;
     if (!row) {
       return;
     }
-    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    // Asked at click time rather than cached: the preference can change
+    // mid-session, and a reader who has asked for less motion gets the jump —
+    // app.css already cancels the flash below for them.
+    var reduced =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    row.scrollIntoView({
+      block: "center",
+      behavior: reduced ? "auto" : "smooth",
+    });
     // Removing and forcing a reflow before re-adding restarts the animation on
     // a second click of the same marker; without it the class is already there
     // and nothing visible happens.
