@@ -90,10 +90,11 @@ impl axum::response::IntoResponse for AppError {
     /// variant — never on `self.to_string()`, which is the operator's text.
     ///
     /// The full page is returned to htmx requests too. htmx's
-    /// `responseHandling` never swaps a 4xx/5xx (see the shell's config), so
-    /// the body is discarded and the client's error toast is what the user
-    /// sees; `IntoResponse` cannot read request headers, so distinguishing the
-    /// two would mean threading `HX-Request` through every handler for a few
+    /// `responseHandling` never swaps a 4xx/5xx other than the 422 the event
+    /// forms answer with (see `assets/htmx-config.js`), so the body is
+    /// discarded and the client's error toast is what the user sees;
+    /// `IntoResponse` cannot read request headers, so distinguishing the two
+    /// would mean threading `HX-Request` through every handler for a few
     /// hundred wasted bytes on a path that is already an error.
     fn into_response(self) -> axum::response::Response {
         use axum::http::StatusCode as S;

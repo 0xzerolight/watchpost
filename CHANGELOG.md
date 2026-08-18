@@ -69,5 +69,9 @@ never tagged.
   arrived over HTTPS plus a 30-day `Max-Age` so it outlives the browser session.
 - Repo discovery is a CSRF-gated POST; it used to be a GET that spent API calls as a side effect.
 - Error responses carry no internal detail — no paths, no SQL, no upstream error strings.
+- There is no authentication, and the README now says so outright: anyone who can reach the port
+  has full read and write. Bind it to the loopback or put it behind a proxy that authenticates.
+- `compose.yml` publishes to `127.0.0.1:8080` rather than every interface, so the default deployment
+  is not reachable from the network.
 
 [1.0.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.0.0
