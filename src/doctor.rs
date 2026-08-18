@@ -27,6 +27,7 @@ const TABLES: &[&str] = &[
     "repo_popular_paths",
     "release_assets",
     "events",
+    "settings",
 ];
 
 /// How much of a stored `last_error` the per-repo table shows. Long GitHub

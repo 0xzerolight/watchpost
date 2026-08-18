@@ -7,7 +7,7 @@ use crate::errors::DbError;
 /// `const` array — migrations never need captured state.
 pub type Migration = fn(&rusqlite::Transaction) -> Result<(), DbError>;
 
-pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2];
+pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2, migrate_v3];
 
 /// Run all pending migrations against `conn`, bringing `PRAGMA user_version`
 /// up to `MIGRATIONS.len()`.
@@ -141,6 +141,22 @@ CREATE INDEX IF NOT EXISTS idx_paths_repo_key_date     ON repo_popular_paths(rep
     Ok(())
 }
 
+/// v3 — key/value settings the running app writes for itself.
+///
+/// The GitHub token is the only key today. It has to live somewhere the next
+/// boot reads back, and the container cannot write the bind-mounted `.env` it
+/// was started with, so the database is the only durable surface the setup
+/// page has. Generic on purpose: a second runtime setting should not cost a
+/// second migration.
+fn migrate_v3(tx: &rusqlite::Transaction) -> Result<(), DbError> {
+    tx.execute_batch(
+        "CREATE TABLE settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL);",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,10 +220,12 @@ mod tests {
             );
         }
 
+        // Every pending migration ran, not just v2: this test opens a v1
+        // database and `migrate` always brings one all the way forward.
         let v: i64 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, MIGRATIONS.len() as i64);
         let repos: i64 = c
             .query_row("SELECT COUNT(*) FROM repos", [], |r| r.get(0))
             .unwrap();
@@ -246,6 +264,14 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("upgrade watchpost"), "{err}");
+    }
+
+    #[test]
+    fn v3_adds_the_settings_table() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&mut c).unwrap();
+        c.execute("INSERT INTO settings (key, value) VALUES ('k', 'v')", [])
+            .unwrap();
     }
 
     #[test]
