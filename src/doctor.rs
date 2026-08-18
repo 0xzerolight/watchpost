@@ -147,11 +147,14 @@ pub fn doctor_report(
         // rather than describing a failure.
         None => {
             out.push_str("  no token configured\n");
-            out.push_str(&format!(
-                "  hint: open http://{}:{}/setup in a browser and paste a personal access \
-                 token,\n        or set WATCHPOST_GITHUB_TOKEN in the environment.\n",
-                cfg.host, cfg.port
-            ));
+            // The bind address is deliberately not interpolated here. In the
+            // image it is 0.0.0.0, which is where the server listens and not
+            // an address anybody can open — printing it as a URL would send
+            // the reader somewhere that does not resolve.
+            out.push_str(
+                "  hint: open watchpost in a browser and paste a personal access token on the\n  \
+                 /setup page, or set WATCHPOST_GITHUB_TOKEN in the environment.\n",
+            );
             false
         }
         Some(Ok(rl)) => {
