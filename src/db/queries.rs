@@ -252,14 +252,18 @@ pub fn update_deltas_recent(conn: &Connection, window_days: u32) -> Result<(), D
 /// held, hourly, for a result the outer `WHERE` then throws away: cost that
 /// grows with history rather than with the window.
 ///
-/// Doubling is what makes the two bounds agree. A row at the outer window's
+/// Doubling is what makes the two bounds agree: a row at the outer window's
 /// edge keeps its predecessor as long as the gap between the two is at most
-/// `window_days`, which hourly collection always satisfies. Only an
-/// observation gap wider than `2 × window_days` — a collector down for six
-/// weeks at the default 21 — drops a predecessor, and the row restarts from
-/// baseline. That is arguably the more correct reading anyway: `count` is
-/// GitHub's rolling 14-day total, so a diff across a gap that long measures
-/// nothing.
+/// `window_days`. While a key is getting traffic that gap is one cycle.
+///
+/// Any observation gap wider than `2 × window_days` drops the predecessor and
+/// the row restarts from baseline. A collector outage does that; so, routinely,
+/// does a long-tail key — GitHub only returns referrers and paths with traffic
+/// in the window, so a key that goes quiet for six weeks and comes back has no
+/// rows in between. `popular_dead_key_keeps_its_first_count_and_stops_there`
+/// models one with a 200-day gap. Baseline-from-zero is the more correct
+/// reading in both cases: `count` is GitHub's rolling 14-day total, so the two
+/// observations cover disjoint periods and the later count is all new traffic.
 fn update_deltas_table(
     conn: &Connection,
     table: &str,
@@ -1283,9 +1287,9 @@ mod tests {
     fn delta_beyond_twice_the_window_restarts_from_zero() {
         // The predecessor at -50d is outside the CTE's 42-day reach, so the
         // -1d row has no visible LAG and takes its full count as a fresh
-        // baseline. Documents the deliberate cost of bounding the recompute:
-        // reachable only through an observation gap of more than twice the
-        // window, which hourly collection never produces.
+        // baseline. Documents the deliberate cost of bounding the recompute —
+        // a gap this wide is what a referrer that went quiet and came back
+        // looks like, GitHub having reported no rows for it in between.
         let c = test_conn();
         seed_repo(&c, 1);
         let ancient = days_ago(50);
