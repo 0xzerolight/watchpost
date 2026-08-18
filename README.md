@@ -1,189 +1,178 @@
-# watchpost
+<h1 align="center">watchpost</h1>
 
-Self-hosted tracking for your own GitHub repositories: one page per repo that puts the metrics
-GitHub only keeps for 14 days — views, clones, referrers, popular paths — next to a timeline of
-what you did to earn them. Post a release on Hacker News, add it as an event, and the spike lands
-under a marker on the chart instead of being a spike you no longer remember the cause of.
+<p align="center">
+  <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL v3"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88+-blue.svg" alt="Rust 1.88+"></a>
+  <a href="https://github.com/0xzerolight/watchpost/releases"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2F0xzerolight%2Fwatchpost%2Fmain%2FCargo.toml&query=%24.package.version&label=release&prefix=v&color=blue" alt="Latest release"></a>
+  <a href="https://github.com/0xzerolight/watchpost/stargazers"><img src="https://img.shields.io/github/stars/0xzerolight/watchpost?style=social" alt="GitHub stars"></a>
+</p>
 
-It collects hourly into a local SQLite file, serves a small server-rendered dashboard, and talks to
-nothing but the GitHub API.
+<p align="center">
+Self-hosted GitHub repo metrics that outlive GitHub's 14-day traffic window.
+</p>
 
-![The repo page: stars, views, clones and downloads over 90 days, with event markers on every
-chart, the top referrers and paths, and the event list underneath.](assets/screenshot.png)
+<p align="center">
+Please leave a ⭐ star if watchpost is useful - it helps others find it :).
+</p>
 
-## What it records
+<h3 align="center">Demo</h3>
 
-- Stars, forks, watchers, open issues and open PRs, sampled daily
-- Traffic views and clones (count and uniques), referrers, popular paths
-- Release asset download counts per tag
-- Your own events — a post, a talk, a release announcement — with a date, title, URL, kind and
-  notes, rendered as markers on every chart for that repo
+<p align="center">
+  <img src="assets/screenshot.png" alt="A watchpost repo page in dark mode: stars, views, clones and downloads over 90 days, each chart marked with the promo events behind the spikes." width="720">
+</p>
 
-## Quickstart
+<p align="center">
+One page per repo - the metrics on top, the events that caused them marked on every chart.
+</p>
 
-You need a GitHub personal access token. A fine-grained token is the better choice; under
-**Repository permissions** grant:
+GitHub throws your traffic data away after 14 days. watchpost samples it hourly into a local SQLite file and keeps it, next to a timeline of what you did to earn it: post a release to Hacker News, add it as an event, and the spike lands under a marker instead of being a spike you no longer remember the cause of. It talks to nothing but the GitHub API.
 
-- **Metadata: read** — the repository list and the basic counts; selected for you, cannot be removed
-- **Administration: read** — the traffic endpoints (views, clones, referrers, paths)
-- **Contents: read** — releases and asset download counts
-- **Pull requests: read** — the open pull request count
+## Install
 
-A missing permission costs that one part of a collection pass, not the pass: without
-*Administration: read* the token authenticates fine, every traffic call returns 403 and those
-charts stay empty while the rest of the data still lands. A classic token with the `repo` scope
-also works.
+### 1. Install Docker
 
-Traffic is only served for repositories you own or administer, whatever the token says.
+watchpost runs in Docker. Get it at [get.docker.com](https://get.docker.com), or install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on macOS/Windows. Make sure it's running before you continue.
 
-Then:
+### 2. Create a GitHub token
 
-```sh
-git clone https://github.com/YOUR/watchpost.git
+Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) and grant these **Repository permissions**:
+
+| Permission | What it buys you |
+|------------|------------------|
+| **Metadata: read** | The repository list and the basic counts. Selected for you, cannot be removed |
+| **Administration: read** | Traffic - views, clones, referrers, popular paths |
+| **Contents: read** | Releases and asset download counts |
+| **Pull requests: read** | The open pull request count |
+
+A classic token with the `repo` scope also works. A missing permission only costs that one part of a sync, not the whole sync - without *Administration: read* the traffic charts stay empty while everything else still lands. Traffic is only served for repositories you own or administer, whatever the token says.
+
+### 3. Run watchpost
+
+```bash
+git clone https://github.com/0xzerolight/watchpost.git
 cd watchpost
-cp .env.example .env       # paste the token into WATCHPOST_GITHUB_TOKEN
-mkdir -p data              # bind-mounted at /app/data
+cp .env.example .env    # paste your token into WATCHPOST_GITHUB_TOKEN
+mkdir -p data
 docker compose up -d
 ```
 
-Open <http://127.0.0.1:8080>. The first collection runs at startup, so the repo list appears within
-a minute; traffic data follows on the same pass. Pick which repos to track on the settings page —
-nothing is tracked until you say so.
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080) and pick which repositories to track on the **Settings** page - nothing is tracked until you say so. The first sync runs at startup, so the list fills in within a minute.
 
-The container runs as uid 1000. If your host user has a different uid, `chown -R <uid> data` after
-creating the directory, or the database cannot be created.
+The container runs as uid 1000. If your host user has a different uid, `chown -R <uid> data` after creating the directory, or the database cannot be created.
 
-## Configuration
+<details>
+<summary><strong>Build from source (no Docker)</strong></summary>
 
-All settings are environment variables; the image reads them from `.env` via compose.
+Rust 1.88 or newer, no system dependencies beyond a C toolchain - SQLite is compiled in.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `WATCHPOST_GITHUB_TOKEN` | *(required)* | PAT used for every API call |
-| `WATCHPOST_CRON` | `0 5 * * * *` | Collection schedule, six fields (seconds first), UTC. An unparseable value falls back to the default |
-| `WATCHPOST_DB_PATH` | `./data/watchpost.db` | SQLite file; `/app/data/watchpost.db` in the image |
-| `WATCHPOST_HOST` | `127.0.0.1` | Bind address; the image sets `0.0.0.0` |
-| `WATCHPOST_PORT` | `8080` | Bind port |
-| `WATCHPOST_LOG` | `info` | `tracing` filter, e.g. `watchpost=debug` |
-| `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise or tests; must be `http`/`https`, and a missing trailing slash is added (`…/api/v3` → `…/api/v3/`) |
-| `WATCHPOST_TZ` | `UTC` | IANA zone name (e.g. `Europe/Madrid`) the UI displays times in. An unknown name is a startup error, not a silent fall back to UTC |
-
-## Security and operations
-
-**There is no authentication.** No login, no users, no API key: anyone who can reach the port gets
-the whole app — every metric, plus write access to events, to the tracked-repo list and to the
-sync button. Syncing spends the token's GitHub rate budget, so an open instance is also a way for
-a stranger to exhaust it. The token itself is never rendered (`--doctor` prints its last 4
-characters and length, nothing else), but everything it can read is on the page.
-
-So both defaults keep the port private. Outside Docker `WATCHPOST_HOST` is `127.0.0.1`, and
-`compose.yml` publishes to `127.0.0.1:8080`. The container itself listens on `0.0.0.0` — that is
-what makes publishing work at all — but the host offers the port to the loopback and nowhere else,
-so as shipped nothing on your network can reach it.
-
-Widening that is one line, and worth a moment's thought first:
-
-```yaml
-ports:
-  - "8080:8080"      # every interface on the host
-```
-
-Do that only behind a reverse proxy that does the authenticating. Otherwise leave it on the
-loopback and reach it through an SSH tunnel. Do not expose it directly.
-
-**Behind a TLS-terminating proxy, forward `X-Forwarded-Proto: https`.** The CSRF cookie is marked
-`Secure` only when that header says the browser spoke HTTPS; setting it unconditionally would make
-the cookie invisible to a plain-HTTP deployment and 403 every POST there. Only the first hop's
-value is read.
-
-**Backups are taken on migration, not on a schedule.** Before a schema upgrade the database is
-copied to `data/watchpost.v{schema}.{timestamp}.bak` and the newest three are kept. That copy goes
-through SQLite's backup API, so it is consistent even if a write is in flight.
-
-For backups of your own, copying `data/watchpost.db` is not enough. WAL mode means committed data
-can still be sitting in the `watchpost.db-wal` sidecar, so a copy of the main file alone is stale at
-best and torn at worst. Either stop the container first, or let SQLite take the snapshot while it
-runs:
-
-```sh
-sqlite3 data/watchpost.db ".backup data/snapshot.db"
-```
-
-## Reading the data
-
-A few things about GitHub's numbers are worth knowing before you draw conclusions from them.
-
-**The 14-day window.** GitHub's traffic API only returns the last 14 days, which is the reason this
-app exists: it samples hourly and keeps every day it has seen, so history accumulates past the
-window. Days before your first run are gone for good — GitHub will not backfill them.
-
-**Uniques are never summed.** A unique visitor on Monday may be the same person on Tuesday, so
-adding daily uniques would overcount. Wherever a range covers more than one day — a chart zoomed
-out to weeks or months, or the all-time referrer and path tables — the uniques figure shown is the
-peak daily value in that range, not a total. Counts (non-unique views and clones) are summed,
-because those are events.
-
-**The period selector is a zoom, not a query.** A repo page opens on its whole history and ships
-every day of it to the browser, so switching to 7, 30, 90 days or a year is instant and offline;
-the `?days=` in the address bar is only a starting zoom, and the referrer and path tables ignore it
-entirely (they are always all-time).
-
-**Gaps mean "not observed".** If the app was down for a day, that day has no row, and rate metrics
-(views, clones) render as a gap rather than as zero — an honest hole beats an invented zero.
-Cumulative series (stars, download counts) carry the last known value forward across the gap,
-because a total does not stop existing when nobody is watching.
-
-**Stars are backfilled once.** On first sync of a repo, watchpost walks the stargazers API to
-reconstruct the star history from before it was installed. GitHub stops paginating that endpoint at
-40,000 stars, so for larger repos only the first 40,000 stargazers — the oldest ones — can be
-reconstructed. The history between there and today is missing: the curve covers the early growth,
-then jumps to the current total, and daily sampling takes over from the first sync onwards.
-
-**Times display in `WATCHPOST_TZ`; days are UTC.** Timestamps you read — "last synced", the
-`--doctor` rate-limit reset, and the day a new event defaults to — render in the zone you
-configure, with that zone's abbreviation. Everything that groups by day does not: `WATCHPOST_CRON`,
-the dates stored in the database, and the chart columns are all UTC, because GitHub returns traffic
-already summed per UTC day and those buckets cannot be re-cut. A collection also runs at startup,
-so restarting is a way to force a refresh.
-
-## Diagnostics
-
-```sh
-docker compose exec watchpost watchpost --doctor
-```
-
-`--doctor` prints the effective configuration (the token as last-4 and length only, never the value),
-the database path, schema version and per-table row counts, the current GitHub rate limit budget,
-and a per-repo table of last sync time, error streak, backoff and last error. It exits non-zero if
-the database is unwritable or the API is unreachable, which makes it usable as a post-deploy check.
-
-## Building from source
-
-```sh
+```bash
+git clone https://github.com/0xzerolight/watchpost.git
+cd watchpost
+cp .env.example .env    # paste your token into WATCHPOST_GITHUB_TOKEN
 cargo build --release
 ./target/release/watchpost
 ```
 
-Rust 1.88 or newer, no system dependencies beyond a C toolchain (SQLite is compiled in). `make ci`
-runs the main gate — `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`,
-`cargo test --locked` — which CI runs too, alongside a 1.88 build, a Docker build and an advisory
-audit.
+The release profile uses fat LTO and a single codegen unit, so the first build takes a couple of minutes.
 
-The Docker image is single-arch — it builds for the host architecture. Cross-building a multi-arch
-image (cargo-zigbuild or buildx with a musl cross toolchain) is a follow-up, not a v1 concern.
+</details>
 
-## Architecture
+<details>
+<summary><strong>Updating</strong></summary>
 
-An axum server rendering [maud](https://maud.lambda.xyz) templates, with htmx for the interactive
-bits (event editing, filters) and Chart.js for the charts. Everything the browser loads —
-Chart.js, htmx, Pico CSS, the app's own CSS and JS — is vendored and embedded in the binary with
-`include_bytes!`, so there is no CDN, no asset directory and no network fetch at page load. Storage
-is SQLite through rusqlite in WAL mode, accessed from async code via a blocking pool so collection
-never stalls request serving. The result is one static binary and one data directory: the SQLite
-file, the WAL sidecars beside it, and whatever pre-migration backups it has taken.
+```bash
+cd watchpost
+git pull
+docker compose up -d --build
+```
+
+The database is backed up automatically before any schema migration, and the newest three backups are kept.
+
+</details>
+
+<details>
+<summary><strong>Configuration</strong></summary>
+
+All settings are environment variables, read from `.env` by compose. See [`.env.example`](.env.example).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WATCHPOST_GITHUB_TOKEN` | *(required)* | Token used for every API call |
+| `WATCHPOST_CRON` | `0 5 * * * *` | Collection schedule, six fields (seconds first), UTC. An unparseable value falls back to the default |
+| `WATCHPOST_DB_PATH` | `./data/watchpost.db` | SQLite file. `/app/data/watchpost.db` in the image |
+| `WATCHPOST_HOST` | `127.0.0.1` | Bind address. The image sets `0.0.0.0` |
+| `WATCHPOST_PORT` | `8080` | Bind port |
+| `WATCHPOST_LOG` | `info` | `tracing` filter, e.g. `watchpost=debug` |
+| `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise. Must be `http`/`https`; a missing trailing slash is added |
+| `WATCHPOST_TZ` | `UTC` | IANA zone name (e.g. `Europe/Madrid`) the UI displays times in. An unknown name is a startup error, not a silent fall back to UTC |
+
+</details>
+
+## Features
+
+- **Outlives the 14-day window** - views, clones, referrers and popular paths sampled hourly and kept forever, long after GitHub has forgotten them
+- **Promo event timeline** - add a post, a talk or a release announcement and it renders as a marker on every chart for that repo, so spikes have causes
+- **Stars, forks, watchers, issues and open PRs** sampled daily, with star history backfilled from the stargazers API on the first sync
+- **Release asset download counts** per tag
+- **One SQLite file, one static binary** - no database server, no CDN, no JavaScript build step. Outbound traffic goes to the GitHub API and nowhere else
+- **Instant period switching** - 7, 30, 90, 365 days or all time. The whole history ships with the page, so zooming never hits the server
+- **Honest numbers** - missing days render as gaps rather than invented zeros, and uniques are never summed across days
+
+<details>
+<summary><strong>More features</strong></summary>
+
+- Sortable all-time referrer and popular-path tables
+- Freeform event kinds with markdown notes, each kind auto-assigned a colour shared by its badge and its chart markers
+- Manual **Sync now** with a live status banner, plus per-repo error and backoff state on the Settings page
+- Dark mode following your OS, reduced-motion support, and WCAG AA contrast throughout
+- `watchpost --doctor` prints a secret-safe diagnostic snapshot - config, schema version, row counts, rate-limit budget and per-repo sync state
+- Pre-migration database backups taken through SQLite's own backup API, so they are consistent even mid-write
+
+</details>
+
+<details>
+<summary><strong>How It Works</strong></summary>
+
+1. Every hour, and once at startup, watchpost calls the GitHub API for each tracked repository.
+2. Results are written to a local SQLite file, one row per repo per UTC day. Writes are idempotent, so a repeated pass overwrites rather than double-counts.
+3. Traffic days GitHub is about to forget are already stored, so history accumulates past the 14-day window.
+4. Your events are drawn as vertical markers on every chart for that repo, lining spikes up with whatever caused them.
+
+More detail, and the caveats worth knowing before you draw conclusions from the numbers, in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+</details>
+
+## Security
+
+**No built-in authentication** by design (single-user tool). Anyone who can reach the port gets the whole app, including write access to your events and the sync button. Both defaults keep it private: `WATCHPOST_HOST` is `127.0.0.1` and `compose.yml` publishes to `127.0.0.1:8080` only. For remote access, put it behind a reverse proxy that does the authenticating ([Authelia](https://www.authelia.com/), [Authentik](https://goauthentik.io/), Caddy `basicauth`) and forward `X-Forwarded-Proto: https`. See [SECURITY.md](SECURITY.md).
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| **No repositories listed** | Open **Settings**, press **Refresh from GitHub**, tick the repos you want and **Save**. Nothing is tracked by default. |
+| **Views and clones charts are empty** | The token is missing *Administration: read*, or the repo is not one you own or administer. `--doctor` shows the per-repo last error. |
+| **Container exits, or "unable to open database"** | `data/` is not writable by uid 1000. `chown -R 1000:1000 data`. |
+| **Syncs stop and nothing updates** | You are rate limited. `--doctor` prints the remaining budget and the reset time. Collection resumes on its own. |
+| **"database was written by a newer build"** | You downgraded. Reinstall the newer version, or restore one of the `data/watchpost.v*.bak` files. |
+| **Startup fails with a timezone error** | `WATCHPOST_TZ` must be an IANA zone name such as `Europe/Madrid`, not an abbreviation or an offset. |
+| **Times look shifted** | Displayed timestamps follow `WATCHPOST_TZ`, but day buckets are always UTC - GitHub returns traffic already summed per UTC day and those buckets cannot be re-cut. |
+
+Still stuck? Run `docker compose exec watchpost watchpost --doctor` for a secret-safe diagnostic snapshot - effective config (the token as last-4 and length only), database path, schema version, row counts, rate-limit budget and per-repo sync state - and paste it into a bug report. Logs: `docker compose logs -f`.
+
+## Contributing
+
+Contributions of any kind are welcome.
+
+- New here? Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md).
+- Security: [SECURITY.md](SECURITY.md).
+
+Bug reports and feature requests -> [Issues](https://github.com/0xzerolight/watchpost/issues).
+Questions and discussion -> [Discussions](https://github.com/0xzerolight/watchpost/discussions).
 
 ## License
 
-AGPL-3.0-or-later — see [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
 
 Copyright © 2026 0xzerolight.
