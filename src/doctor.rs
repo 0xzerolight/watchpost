@@ -10,6 +10,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use chrono_tz::Tz;
+
 use crate::config::Config;
 use crate::db::Db;
 use crate::db::queries;
@@ -135,7 +137,7 @@ pub fn doctor_report(
                 "  rate limit (core): {} of {} remaining, resets {}\n",
                 rl.remaining,
                 rl.limit,
-                format_reset(rl.reset)
+                format_reset(rl.reset, cfg.timezone)
             ));
             if rl.remaining == 0 {
                 out.push_str("  note: quota exhausted; collection will back off until reset.\n");
@@ -247,9 +249,16 @@ fn truncate(s: &str) -> String {
     format!("{head}…")
 }
 
-fn format_reset(epoch_secs: i64) -> String {
+/// A rate-limit reset instant, in the zone the operator reads clocks in.
+///
+/// `%Z` names that zone, replacing the old literal `Z` suffix: the digits are
+/// no longer UTC's, so a marker claiming they are would be a lie.
+fn format_reset(epoch_secs: i64, tz: Tz) -> String {
     match chrono::DateTime::<chrono::Utc>::from_timestamp(epoch_secs, 0) {
-        Some(t) => t.format("%Y-%m-%d %H:%M:%SZ").to_string(),
+        Some(t) => t
+            .with_timezone(&tz)
+            .format("%Y-%m-%d %H:%M:%S %Z")
+            .to_string(),
         None => format!("unix {epoch_secs}"),
     }
 }
@@ -282,7 +291,23 @@ mod tests {
     }
 
     #[test]
-    fn reset_formats_as_utc() {
-        assert_eq!(format_reset(0), "1970-01-01 00:00:00Z");
+    fn reset_formats_in_the_display_zone() {
+        let epoch = chrono::DateTime::parse_from_rfc3339("2026-08-17T09:05:00Z")
+            .unwrap()
+            .timestamp();
+        assert_eq!(format_reset(epoch, Tz::UTC), "2026-08-17 09:05:00 UTC");
+        assert_eq!(
+            format_reset(epoch, Tz::Europe__Madrid),
+            "2026-08-17 11:05:00 CEST"
+        );
+        assert_eq!(format_reset(0, Tz::UTC), "1970-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn reset_falls_back_on_an_unrepresentable_epoch() {
+        assert_eq!(
+            format_reset(i64::MAX, Tz::UTC),
+            format!("unix {}", i64::MAX)
+        );
     }
 }

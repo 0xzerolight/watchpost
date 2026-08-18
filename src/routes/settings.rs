@@ -13,6 +13,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use maud::{Markup, html};
 use tracing::warn;
 
@@ -32,7 +33,7 @@ pub async fn settings_page(
     headers: HeaderMap,
 ) -> Result<Markup, AppError> {
     let repos = state.db.call(|c| queries::known_repos(c)).await?;
-    let picker = repos_picker(&repos, None);
+    let picker = repos_picker(&repos, None, state.cfg.timezone);
     if targets(&headers, "repos-picker") {
         return Ok(picker);
     }
@@ -49,7 +50,7 @@ pub async fn settings_page(
             ))
             section {
                 h2 { "Sync" }
-                (sync_status_fragment(&status))
+                (sync_status_fragment(&status, state.cfg.timezone))
             }
             section {
                 h2 { "Repos" }
@@ -81,7 +82,13 @@ pub async fn settings_discover(
     if let Some(until) = state.gate.blocked_until() {
         let repos = state.db.call(|c| queries::known_repos(c)).await?;
         let text = format!("Rate limited until {until}; not contacting GitHub");
-        return Ok(picker_as_submitted(repos, &checked, Notice::Info, text));
+        return Ok(picker_as_submitted(
+            repos,
+            &checked,
+            Notice::Info,
+            text,
+            state.cfg.timezone,
+        ));
     }
 
     let (kind, text) = match state.gh.user_repos().await {
@@ -117,7 +124,13 @@ pub async fn settings_discover(
         }
     };
     let repos = state.db.call(|c| queries::known_repos(c)).await?;
-    Ok(picker_as_submitted(repos, &checked, kind, text))
+    Ok(picker_as_submitted(
+        repos,
+        &checked,
+        kind,
+        text,
+        state.cfg.timezone,
+    ))
 }
 
 /// Render the picker with `tracked` taken from the submitted form rather than
@@ -129,11 +142,12 @@ fn picker_as_submitted(
     checked: &HashSet<i64>,
     kind: Notice,
     text: String,
+    tz: Tz,
 ) -> Markup {
     for repo in &mut repos {
         repo.tracked = checked.contains(&repo.id);
     }
-    repos_picker(&repos, Some((kind, text)))
+    repos_picker(&repos, Some((kind, text)), tz)
 }
 
 /// The repo ids a picker form posted. Checkboxes repeat one key
@@ -173,6 +187,7 @@ pub async fn settings_save(
     Ok(repos_picker(
         &repos,
         Some((Notice::Success, "Saved".to_owned())),
+        state.cfg.timezone,
     ))
 }
 
@@ -206,12 +221,12 @@ pub async fn sync_start(State(state): State<Arc<AppState>>) -> Markup {
             }
         });
     }
-    sync_status_fragment(&current_status(&state))
+    sync_status_fragment(&current_status(&state), state.cfg.timezone)
 }
 
 /// GET /sync/status — the fragment the polling trigger fetches.
 pub async fn sync_status(State(state): State<Arc<AppState>>) -> Markup {
-    sync_status_fragment(&current_status(&state))
+    sync_status_fragment(&current_status(&state), state.cfg.timezone)
 }
 
 /// Mark a cycle as starting, unless one already is. `Some(started)` means the

@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
+use chrono_tz::Tz;
 use url::Url;
 
 use crate::errors::ConfigError;
@@ -12,6 +13,9 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_LOG: &str = "info";
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
+/// Display zone for user-facing instants. UTC keeps an install that sets
+/// nothing rendering exactly as it did before this setting existed.
+const DEFAULT_TZ: &str = "UTC";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -22,9 +26,14 @@ pub struct Config {
     pub port: u16,
     pub log_level: String,
     pub github_api_base: Url,
+    /// Zone the UI formats instants in. Collection, the stored day keys and the
+    /// cron schedule are deliberately not affected — GitHub aggregates traffic
+    /// per UTC day, so those buckets have to stay UTC to mean anything.
+    pub timezone: Tz,
 }
 
 const API_BASE_VAR: &str = "WATCHPOST_GITHUB_API_BASE";
+const TZ_VAR: &str = "WATCHPOST_TZ";
 
 impl Config {
     pub fn from_env() -> Result<Config, ConfigError> {
@@ -59,6 +68,17 @@ impl Config {
             &env::var(API_BASE_VAR).unwrap_or_else(|_| DEFAULT_GITHUB_API_BASE.to_string()),
         )?;
 
+        // Fatal rather than a fallback, unlike WATCHPOST_CRON: a cron typo is
+        // visible as "collection never ran", but a timezone typo silently
+        // renders UTC — indistinguishable from the setting working.
+        let timezone = env::var(TZ_VAR)
+            .unwrap_or_else(|_| DEFAULT_TZ.to_string())
+            .parse::<Tz>()
+            .map_err(|e| ConfigError::BadValue {
+                var: TZ_VAR.to_string(),
+                msg: e.to_string(),
+            })?;
+
         Ok(Config {
             github_token,
             cron_schedule,
@@ -67,6 +87,7 @@ impl Config {
             port,
             log_level,
             github_api_base,
+            timezone,
         })
     }
 
@@ -87,13 +108,14 @@ impl Config {
         };
 
         format!(
-            "github_token={token_summary} cron_schedule={} db_path={} host={} port={} log_level={} github_api_base={}",
+            "github_token={token_summary} cron_schedule={} db_path={} host={} port={} log_level={} github_api_base={} timezone={}",
             self.cron_schedule,
             self.db_path.display(),
             self.host,
             self.port,
             self.log_level,
-            self.github_api_base
+            self.github_api_base,
+            self.timezone.name()
         )
     }
 }
@@ -136,8 +158,50 @@ mod tests {
             assert_eq!(c.db_path, PathBuf::from("./data/watchpost.db"));
             assert_eq!(c.cron_schedule, "0 5 * * * *");
             assert_eq!(c.github_api_base.as_str(), "https://api.github.com/");
+            assert_eq!(c.timezone, Tz::UTC);
         });
     }
+    #[test]
+    fn timezone_defaults_to_utc() {
+        temp_env::with_vars(base_env(), || {
+            assert_eq!(Config::from_env().unwrap().timezone, Tz::UTC);
+        });
+    }
+
+    #[test]
+    fn timezone_accepts_an_iana_name() {
+        temp_env::with_vars(
+            [
+                ("WATCHPOST_GITHUB_TOKEN", Some("ghp_test1234")),
+                ("WATCHPOST_TZ", Some("Europe/Madrid")),
+            ],
+            || {
+                let c = Config::from_env().unwrap();
+                assert_eq!(c.timezone, Tz::Europe__Madrid);
+                assert!(c.redacted_summary().contains("timezone=Europe/Madrid"));
+            },
+        );
+    }
+
+    /// A typo must not silently fall back to UTC — that is the bug this whole
+    /// setting exists to fix, and a quiet fallback reproduces it exactly.
+    #[test]
+    fn a_bad_timezone_is_fatal_rather_than_silently_utc() {
+        temp_env::with_vars(
+            [
+                ("WATCHPOST_GITHUB_TOKEN", Some("ghp_test1234")),
+                ("WATCHPOST_TZ", Some("Europe/Madrid/Nope")),
+            ],
+            || {
+                let err = Config::from_env().expect_err("not an IANA zone");
+                assert!(
+                    matches!(&err, ConfigError::BadValue { var, .. } if var == TZ_VAR),
+                    "{err}"
+                );
+            },
+        );
+    }
+
     #[test]
     fn missing_token_errors() {
         temp_env::with_var("WATCHPOST_GITHUB_TOKEN", None::<&str>, || {

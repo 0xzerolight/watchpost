@@ -20,6 +20,12 @@ tokio-cron-scheduler = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+# The IANA database compiled into the binary. Deliberately not `chrono::Local`:
+# the runtime image is alpine without tzdata, where reading /etc/localtime
+# resolves to UTC — the exact failure WATCHPOST_TZ exists to fix. No
+# `filter-by-regex`: it fixes the zone set at build time, which would defeat a
+# runtime setting.
+chrono-tz = "0.10"
 tower-http = { version = "0.6", features = ["catch-panic", "compression-gzip", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -15,6 +15,7 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 use url::Url;
 
+use chrono_tz::Tz;
 use watchpost::config::Config;
 use watchpost::db::Db;
 use watchpost::gh_client::GhClient;
@@ -36,6 +37,7 @@ fn app() -> Router {
         port: 8080,
         log_level: "info".into(),
         github_api_base: base.clone(),
+        timezone: Tz::UTC,
     };
     router(Arc::new(AppState {
         db: Db::open_in_memory().unwrap(),

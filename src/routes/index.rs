@@ -42,5 +42,10 @@ pub async fn index_page(
         })
         .await?;
 
-    Ok(base("Repos", NavItem::Home, &csrf, index_body(&cards)))
+    Ok(base(
+        "Repos",
+        NavItem::Home,
+        &csrf,
+        index_body(&cards, state.cfg.timezone),
+    ))
 }
