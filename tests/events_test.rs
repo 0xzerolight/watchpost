@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use url::Url;
 
+use chrono_tz::Tz;
 use watchpost::config::Config;
 use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
@@ -58,6 +59,7 @@ fn harness() -> Harness {
         port: 8080,
         log_level: "info".into(),
         github_api_base: base.clone(),
+        timezone: Tz::UTC,
     };
     let state = Arc::new(AppState {
         db: Db::open_in_memory().unwrap(),

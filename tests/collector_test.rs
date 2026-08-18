@@ -13,6 +13,7 @@ use url::Url;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use chrono_tz::Tz;
 use watchpost::collector::{CycleReport, backfill_stars_with_budget, run_cycle, try_run_cycle};
 use watchpost::config::Config;
 use watchpost::db::{Db, queries};
@@ -61,6 +62,7 @@ fn state_for(server: &MockServer) -> Arc<AppState> {
         port: 8080,
         log_level: "info".into(),
         github_api_base: base.clone(),
+        timezone: Tz::UTC,
     };
     Arc::new(AppState {
         db: Db::open_in_memory().unwrap(),

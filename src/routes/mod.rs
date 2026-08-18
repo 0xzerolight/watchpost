@@ -112,6 +112,7 @@ mod tests {
                 port: 8080,
                 log_level: "info".into(),
                 github_api_base: base,
+                timezone: chrono_tz::Tz::UTC,
             },
             gate: RateGate::new(),
             sync: Mutex::new(SyncStatus::Idle),

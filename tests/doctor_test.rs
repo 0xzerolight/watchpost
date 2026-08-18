@@ -8,6 +8,7 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use chrono_tz::Tz;
 use watchpost::config::Config;
 use watchpost::db::Db;
 use watchpost::db::queries;
@@ -28,6 +29,7 @@ fn config_for(api_base: &str) -> Config {
         port: 8080,
         log_level: "info".to_string(),
         github_api_base: api_base.parse().unwrap(),
+        timezone: Tz::UTC,
     }
 }
 
