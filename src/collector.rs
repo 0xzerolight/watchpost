@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use crate::db::queries;
 use crate::errors::{AppError, GhError};
-use crate::gh_client::GhStar;
+use crate::gh_client::{GhClient, GhStar};
 use crate::ratelimit::repo_backoff;
 use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::{AssetSnapshot, PopularDay, RepoRow, StatSnapshot, TrafficKind};
@@ -60,6 +60,14 @@ pub async fn try_run_cycle(state: Arc<AppState>) -> Option<CycleReport> {
 /// Unguarded — [`try_run_cycle`] owns [`AppState::sync_guard`]. Call this
 /// directly only where cycles are already known to be serialized (tests).
 pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
+    // Nothing to collect from yet. Returning before the status is touched
+    // keeps the dashboard's sync banner idle rather than showing a cycle that
+    // did nothing.
+    let Some(gh) = state.gh() else {
+        debug!("no GitHub token configured; skipping this cycle");
+        return CycleReport::default();
+    };
+
     set_status(
         &state,
         SyncStatus::Running {
@@ -77,7 +85,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
         return report;
     }
 
-    discover(&state).await;
+    discover(&state, &gh).await;
 
     let tracked = match state.db.call(|c| queries::tracked_repos(c)).await {
         Ok(repos) => repos,
@@ -97,7 +105,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
         // Read per repo, not once per cycle: a long cycle can cross midnight,
         // and the repos after the crossing belong on the new day.
         let today = Utc::now().format("%Y-%m-%d").to_string();
-        match sync_one_repo(&state, &repo, &today).await {
+        match sync_one_repo(&state, &gh, &repo, &today).await {
             Ok(None) => {
                 let (id, now) = (repo.id, Utc::now().to_rfc3339());
                 if let Err(e) = state
@@ -188,8 +196,8 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
 /// as untrustworthy and hides nothing. Narrower glitches are self-healing:
 /// [`queries::upsert_repo`] clears `hidden`, so a repo the next listing does
 /// include comes straight back.
-async fn discover(state: &AppState) {
-    let discovered = match state.gh.user_repos().await {
+async fn discover(state: &AppState, gh: &GhClient) {
+    let discovered = match gh.user_repos().await {
         Ok(repos) => repos,
         Err(e) => {
             warn!(error = %e, "repo discovery failed; keeping the current repo list");
@@ -245,6 +253,7 @@ async fn discover(state: &AppState) {
 /// * `Err(_)` — nothing usable came back (or the write failed).
 async fn sync_one_repo(
     state: &AppState,
+    gh: &GhClient,
     repo: &RepoRow,
     today: &str,
 ) -> Result<Option<String>, AppError> {
@@ -270,13 +279,13 @@ async fn sync_one_repo(
 
     // Always per-repo: the discovery listing omits `subscribers_count`, so
     // this is the single source of the metadata snapshot.
-    let meta = fetch!("meta", state.gh.repo(name));
-    let pulls = fetch!("pulls", state.gh.open_pull_count(name));
-    let views = fetch!("views", state.gh.traffic_views(name));
-    let clones = fetch!("clones", state.gh.traffic_clones(name));
-    let referrers = fetch!("referrers", state.gh.traffic_referrers(name));
-    let paths = fetch!("paths", state.gh.traffic_paths(name));
-    let releases = fetch!("releases", state.gh.releases(name));
+    let meta = fetch!("meta", gh.repo(name));
+    let pulls = fetch!("pulls", gh.open_pull_count(name));
+    let views = fetch!("views", gh.traffic_views(name));
+    let clones = fetch!("clones", gh.traffic_clones(name));
+    let referrers = fetch!("referrers", gh.traffic_referrers(name));
+    let paths = fetch!("paths", gh.traffic_paths(name));
+    let releases = fetch!("releases", gh.releases(name));
 
     // Nothing at all came back — the repo is gone, renamed, or unreadable.
     if errs.len() == attempted {
@@ -410,6 +419,13 @@ pub async fn backfill_stars(state: &AppState) -> Result<(), GhError> {
 /// synced: it restarts from page 1 next cycle, which is idempotent because the
 /// star upsert keeps the larger value per day.
 pub async fn backfill_stars_with_budget(state: &AppState, budget: u32) -> Result<(), GhError> {
+    // Reached directly from the tests as well as from a cycle, so it resolves
+    // the client itself rather than taking one: an unconfigured install has
+    // nothing to backfill from and nothing to report about it.
+    let Some(gh) = state.gh() else {
+        return Ok(());
+    };
+
     let repos = match state
         .db
         .call(|c| queries::repos_needing_star_backfill(c))
@@ -441,7 +457,7 @@ pub async fn backfill_stars_with_budget(state: &AppState, budget: u32) -> Result
                 break;
             }
 
-            let fetched = state.gh.stargazer_pages(&repo.name, page, 1).await;
+            let fetched = gh.stargazer_pages(&repo.name, page, 1).await;
             remaining -= 1;
             match fetched {
                 Ok((stars, more)) => {

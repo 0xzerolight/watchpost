@@ -85,7 +85,6 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::Mutex;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -93,31 +92,29 @@ mod tests {
     use url::Url;
 
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, TokenSource};
     use crate::db::Db;
     use crate::gh_client::GhClient;
-    use crate::ratelimit::RateGate;
-    use crate::state::SyncStatus;
 
     fn state() -> Arc<AppState> {
         let base: Url = "http://127.0.0.1:1/".parse().unwrap();
-        Arc::new(AppState {
-            db: Db::open_in_memory().unwrap(),
-            gh: GhClient::new("t", base.clone()).unwrap(),
-            cfg: Config {
-                github_token: "t".into(),
-                cron_schedule: "0 5 * * * *".into(),
-                db_path: PathBuf::from(":memory:"),
-                host: "127.0.0.1".into(),
-                port: 8080,
-                log_level: "info".into(),
-                github_api_base: base,
-                timezone: chrono_tz::Tz::UTC,
-            },
-            gate: RateGate::new(),
-            sync: Mutex::new(SyncStatus::Idle),
-            sync_guard: Arc::new(tokio::sync::Mutex::new(())),
-        })
+        let cfg = Config {
+            github_token: Some("t".into()),
+            cron_schedule: "0 5 * * * *".into(),
+            db_path: PathBuf::from(":memory:"),
+            host: "127.0.0.1".into(),
+            port: 8080,
+            log_level: "info".into(),
+            github_api_base: base.clone(),
+            timezone: chrono_tz::Tz::UTC,
+        };
+        Arc::new(AppState::new(
+            Db::open_in_memory().unwrap(),
+            cfg,
+            Some(GhClient::new("t", base).unwrap()),
+            Some("t"),
+            TokenSource::Env,
+        ))
     }
 
     /// A handler panic must not take the process — or any later request —

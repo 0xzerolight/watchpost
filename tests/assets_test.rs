@@ -7,7 +7,7 @@
 //! Both failures are invisible to a smoke test, so they are pinned here.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
@@ -16,13 +16,12 @@ use tower::ServiceExt;
 use url::Url;
 
 use chrono_tz::Tz;
-use watchpost::config::Config;
+use watchpost::config::{Config, TokenSource};
 use watchpost::db::Db;
 use watchpost::gh_client::GhClient;
-use watchpost::ratelimit::RateGate;
 use watchpost::routes::assets::asset_href;
 use watchpost::routes::router;
-use watchpost::state::{AppState, SyncStatus};
+use watchpost::state::AppState;
 
 /// A well-formed token: 64 lowercase hex chars, the shape the middleware mints.
 /// Anything else is rejected as malformed and replaced.
@@ -31,7 +30,7 @@ const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 fn app() -> Router {
     let base: Url = "http://127.0.0.1:1/".parse().unwrap();
     let cfg = Config {
-        github_token: "t".into(),
+        github_token: Some("t".into()),
         cron_schedule: "0 5 * * * *".into(),
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
@@ -40,14 +39,13 @@ fn app() -> Router {
         github_api_base: base.clone(),
         timezone: Tz::UTC,
     };
-    router(Arc::new(AppState {
-        db: Db::open_in_memory().unwrap(),
-        gh: GhClient::new("t", base).unwrap(),
+    router(Arc::new(AppState::new(
+        Db::open_in_memory().unwrap(),
         cfg,
-        gate: RateGate::new(),
-        sync: Mutex::new(SyncStatus::Idle),
-        sync_guard: Arc::new(tokio::sync::Mutex::new(())),
-    }))
+        Some(GhClient::new("t", base).unwrap()),
+        Some("t"),
+        TokenSource::Env,
+    )))
 }
 
 async fn get(uri: &str) -> axum::response::Response {

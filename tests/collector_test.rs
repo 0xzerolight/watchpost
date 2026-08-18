@@ -4,7 +4,7 @@
 //! cycle rather than burning the remaining budget.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use chrono::Utc;
 use rusqlite::types::FromSql;
@@ -15,10 +15,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use chrono_tz::Tz;
 use watchpost::collector::{CycleReport, backfill_stars_with_budget, run_cycle, try_run_cycle};
-use watchpost::config::Config;
+use watchpost::config::{Config, TokenSource};
 use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
-use watchpost::ratelimit::RateGate;
 use watchpost::state::{AppState, SyncStatus};
 use watchpost::types::GhRepo;
 
@@ -55,7 +54,7 @@ fn gh_repo(id: i64, name: &str) -> GhRepo {
 fn state_for(server: &MockServer) -> Arc<AppState> {
     let base: Url = server.uri().parse().unwrap();
     let cfg = Config {
-        github_token: "t".into(),
+        github_token: Some("t".into()),
         cron_schedule: "0 5 * * * *".into(),
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
@@ -64,14 +63,35 @@ fn state_for(server: &MockServer) -> Arc<AppState> {
         github_api_base: base.clone(),
         timezone: Tz::UTC,
     };
-    Arc::new(AppState {
-        db: Db::open_in_memory().unwrap(),
-        gh: GhClient::new("t", base).unwrap(),
+    Arc::new(AppState::new(
+        Db::open_in_memory().unwrap(),
         cfg,
-        gate: RateGate::new(),
-        sync: Mutex::new(SyncStatus::Idle),
-        sync_guard: Arc::new(tokio::sync::Mutex::new(())),
-    })
+        Some(GhClient::new("t", base).unwrap()),
+        Some("t"),
+        TokenSource::Env,
+    ))
+}
+
+/// The same harness with no token, for the install that has not been set up.
+fn state_without_a_token() -> Arc<AppState> {
+    let base: Url = "http://127.0.0.1:1/".parse().unwrap();
+    let cfg = Config {
+        github_token: None,
+        cron_schedule: "0 5 * * * *".into(),
+        db_path: PathBuf::from(":memory:"),
+        host: "127.0.0.1".into(),
+        port: 8080,
+        log_level: "info".into(),
+        github_api_base: base,
+        timezone: Tz::UTC,
+    };
+    Arc::new(AppState::new(
+        Db::open_in_memory().unwrap(),
+        cfg,
+        None,
+        None,
+        TokenSource::Unset,
+    ))
 }
 
 async fn seed_tracked(state: &AppState, id: i64, name: &str) {
@@ -966,4 +986,30 @@ async fn try_run_cycle_runs_when_guard_free() {
     assert_eq!(report, Some(CycleReport::default()));
     // The guard is released again, so the next tick is not skipped.
     assert!(state.sync_guard.try_lock().is_ok());
+}
+
+/// The startup collection and the cron tick both fire on an install that has
+/// not been set up yet. Neither may leave the dashboard showing a sync that
+/// did nothing — the status has to stay untouched.
+#[tokio::test]
+async fn a_cycle_without_a_token_does_nothing_and_leaves_the_status_idle() {
+    let state = state_without_a_token();
+
+    let report = run_cycle(Arc::clone(&state)).await;
+
+    assert_eq!(report, CycleReport::default());
+    assert!(matches!(
+        *watchpost::state::lock_recover(&state.sync),
+        SyncStatus::Idle
+    ));
+}
+
+/// The star backfill is reached on its own, so it needs the same guard: an
+/// unconfigured install has nothing to backfill from.
+#[tokio::test]
+async fn the_star_backfill_without_a_token_is_a_no_op() {
+    let state = state_without_a_token();
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    assert!(backfill_stars_with_budget(&state, 10).await.is_ok());
 }

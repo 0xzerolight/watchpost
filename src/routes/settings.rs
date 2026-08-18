@@ -87,7 +87,20 @@ pub async fn settings_discover(
         ));
     }
 
-    let (kind, text) = match state.gh.user_repos().await {
+    // Nothing to discover with yet. The picker still renders, so the notice
+    // lands next to the token form rather than on an error page.
+    let Some(gh) = state.gh() else {
+        let repos = state.db.call(|c| queries::known_repos(c)).await?;
+        return Ok(picker_as_submitted(
+            repos,
+            &checked,
+            Notice::Info,
+            "No GitHub token yet — add one below.".to_owned(),
+            state.cfg.timezone,
+        ));
+    };
+
+    let (kind, text) = match gh.user_repos().await {
         Ok(discovered) => {
             let count = discovered.len();
             state

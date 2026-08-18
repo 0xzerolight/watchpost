@@ -12,7 +12,7 @@
 //! arbitrary window.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
@@ -22,12 +22,11 @@ use tower::ServiceExt;
 use url::Url;
 
 use chrono_tz::Tz;
-use watchpost::config::Config;
+use watchpost::config::{Config, TokenSource};
 use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
-use watchpost::ratelimit::RateGate;
 use watchpost::routes::router;
-use watchpost::state::{AppState, SyncStatus};
+use watchpost::state::AppState;
 use watchpost::types::{AssetSnapshot, GhRepo, NewEvent, StatSnapshot, TrafficDay, TrafficKind};
 
 const REPO_A: &str = "octo/aaa";
@@ -47,7 +46,7 @@ struct Harness {
 fn harness() -> Harness {
     let base: Url = "http://127.0.0.1:1/".parse().unwrap();
     let cfg = Config {
-        github_token: "t".into(),
+        github_token: Some("t".into()),
         cron_schedule: "0 5 * * * *".into(),
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
@@ -56,14 +55,13 @@ fn harness() -> Harness {
         github_api_base: base.clone(),
         timezone: Tz::UTC,
     };
-    let state = Arc::new(AppState {
-        db: Db::open_in_memory().unwrap(),
-        gh: GhClient::new("t", base).unwrap(),
+    let state = Arc::new(AppState::new(
+        Db::open_in_memory().unwrap(),
         cfg,
-        gate: RateGate::new(),
-        sync: Mutex::new(SyncStatus::Idle),
-        sync_guard: Arc::new(tokio::sync::Mutex::new(())),
-    });
+        Some(GhClient::new("t", base).unwrap()),
+        Some("t"),
+        TokenSource::Env,
+    ));
     Harness {
         app: router(Arc::clone(&state)),
         state,

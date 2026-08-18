@@ -1,18 +1,17 @@
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use watchpost::collector::try_run_cycle;
-use watchpost::config::{Config, DEFAULT_CRON};
-use watchpost::db::Db;
+use watchpost::config::{Config, DEFAULT_CRON, resolve_token};
+use watchpost::db::{Db, queries};
 use watchpost::doctor::run_doctor;
 use watchpost::gh_client::GhClient;
-use watchpost::ratelimit::RateGate;
 use watchpost::routes::router;
-use watchpost::state::{AppState, SyncStatus};
+use watchpost::state::AppState;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -52,22 +51,32 @@ async fn main() -> ExitCode {
         }
     };
 
-    let gh = match GhClient::new(&config.github_token, config.github_api_base.clone()) {
-        Ok(gh) => gh,
-        Err(e) => {
-            eprintln!("github client error: {e}");
-            std::process::exit(1);
+    // A settings read that fails is not a reason to refuse to serve: the setup
+    // page can write a new token, and every other page still renders.
+    let stored = db
+        .call(|c| queries::get_setting(c, queries::GITHUB_TOKEN_KEY))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "could not read the stored token");
+            None
+        });
+    let (token, source) = resolve_token(config.github_token.as_deref(), stored);
+
+    let gh = match token.as_deref() {
+        Some(t) => match GhClient::new(t, config.github_api_base.clone()) {
+            Ok(gh) => Some(gh),
+            Err(e) => {
+                eprintln!("github client error: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            tracing::info!("no GitHub token configured; serving the setup page");
+            None
         }
     };
 
-    let state = Arc::new(AppState {
-        db,
-        gh,
-        cfg: config,
-        gate: RateGate::new(),
-        sync: Mutex::new(SyncStatus::Idle),
-        sync_guard: Arc::new(tokio::sync::Mutex::new(())),
-    });
+    let state = Arc::new(AppState::new(db, config, gh, token.as_deref(), source));
 
     // Collect once at boot rather than waiting up to an hour for the first
     // tick. Spawned, so a slow or failing cycle never delays serving — and
