@@ -204,19 +204,27 @@ async fn discover(state: &AppState) {
     let hidden = state
         .db
         .call(move |c| {
+            // One transaction: a listing that fails to write halfway through
+            // would otherwise leave the repo table holding part of it, with the
+            // hide step decided against a set nobody ever saw whole.
+            let tx = c.transaction()?;
             for repo in &discovered {
-                queries::upsert_repo(c, repo)?;
+                queries::upsert_repo(&tx, repo)?;
             }
-            let tracked = queries::tracked_repos(c)?;
+            let tracked = queries::tracked_repos(&tx)?;
             let missing: Vec<i64> = tracked
                 .iter()
                 .filter(|r| !seen.contains(&r.id))
                 .map(|r| r.id)
                 .collect();
             if !missing.is_empty() && missing.len() == tracked.len() {
+                // Only the hiding is refused; the metadata the listing did
+                // bring is still the freshest we have.
+                tx.commit()?;
                 return Ok(None);
             }
-            queries::mark_hidden(c, &missing)?;
+            queries::mark_hidden(&tx, &missing)?;
+            tx.commit()?;
             Ok(Some(missing.len()))
         })
         .await;
@@ -330,27 +338,32 @@ async fn sync_one_repo(
     state
         .db
         .call(move |c| {
+            // One transaction for the whole repo: the endpoints that answered
+            // land together or not at all, so a write that dies partway never
+            // leaves a day made of one repo's stats and another's traffic.
+            let tx = c.transaction()?;
             if let Some(m) = &meta {
-                queries::upsert_repo(c, m)?;
+                queries::upsert_repo(&tx, m)?;
             }
             if let Some(s) = &stats {
-                queries::upsert_stats(c, repo_id, &date, s)?;
+                queries::upsert_stats(&tx, repo_id, &date, s)?;
             }
             if let Some(days) = &view_days {
-                queries::upsert_traffic_days(c, repo_id, TrafficKind::Views, days)?;
+                queries::upsert_traffic_days(&tx, repo_id, TrafficKind::Views, days)?;
             }
             if let Some(days) = &clone_days {
-                queries::upsert_traffic_days(c, repo_id, TrafficKind::Clones, days)?;
+                queries::upsert_traffic_days(&tx, repo_id, TrafficKind::Clones, days)?;
             }
             if let Some(rows) = &referrer_rows {
-                queries::upsert_referrers(c, repo_id, &date, rows)?;
+                queries::upsert_referrers(&tx, repo_id, &date, rows)?;
             }
             if let Some(rows) = &path_rows {
-                queries::upsert_paths(c, repo_id, &date, rows)?;
+                queries::upsert_paths(&tx, repo_id, &date, rows)?;
             }
             if let Some(rows) = &assets {
-                queries::upsert_release_assets(c, repo_id, &date, rows)?;
+                queries::upsert_release_assets(&tx, repo_id, &date, rows)?;
             }
+            tx.commit()?;
             Ok(())
         })
         .await?;

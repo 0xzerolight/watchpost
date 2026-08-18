@@ -171,6 +171,21 @@ async fn repo_field<T: FromSql + Send + 'static>(state: &AppState, id: i64, col:
         .unwrap()
 }
 
+/// Make the next write of `table` fail, the way a constraint, a disk error or
+/// a schema drift would: the statement aborts partway through the batch around
+/// it. `when` is a SQL predicate over `NEW`.
+async fn fail_writes_to(state: &AppState, table: &str, when: &str) {
+    let sql = format!(
+        "CREATE TRIGGER fail_{table} BEFORE INSERT ON {table} WHEN {when}
+         BEGIN SELECT RAISE(ABORT, 'injected write failure'); END"
+    );
+    state
+        .db
+        .call(move |c| c.execute_batch(&sql).map_err(Into::into))
+        .await
+        .unwrap();
+}
+
 /// Ids the picker/dashboard would show, in `known_repos` order (by name).
 async fn known_repo_ids(state: &AppState) -> Vec<i64> {
     state
@@ -530,6 +545,58 @@ async fn partial_sync_does_not_inflate_the_backoff_streak() {
     assert!(
         until < Utc::now() + chrono::Duration::minutes(45),
         "first failure must back off ~30min, got {backoff}"
+    );
+}
+
+/// The per-repo write batch is one transaction: an endpoint that answered is
+/// only stored if all of them are. Otherwise a repo could end a cycle holding
+/// today's traffic with yesterday's counters beside it.
+#[tokio::test]
+async fn a_failed_write_lands_none_of_the_repo_batch() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    // Release assets are written last, so everything else in the batch has
+    // already been written by the time this aborts.
+    fail_writes_to(&state, "release_assets", "1").await;
+
+    let report = run_cycle(state.clone()).await;
+
+    assert_eq!(report.repos_failed, 1);
+    assert_eq!(report.repos_ok, 0);
+    assert_eq!(count(&state, "release_assets").await, 0);
+    assert_eq!(count(&state, "repo_referrers").await, 0, "referrers landed");
+    assert_eq!(count(&state, "repo_popular_paths").await, 0, "paths landed");
+    assert_eq!(
+        count(&state, "repo_stats").await,
+        0,
+        "stats and traffic landed without the rest of the batch"
+    );
+}
+
+/// Same rule for the discovery batch: a listing is written whole or not at all.
+#[tokio::test]
+async fn a_failed_discovery_write_lands_no_repos() {
+    let server = MockServer::start().await;
+    // A is written first and B fails, so A is what proves the rollback.
+    mount_discovery(
+        &server,
+        vec![repo_json(ID_A, REPO_A), repo_json(ID_B, REPO_B)],
+    )
+    .await;
+
+    let state = state_for(&server);
+    fail_writes_to(&state, "repos", &format!("NEW.name = '{REPO_B}'")).await;
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(
+        count(&state, "repos").await,
+        0,
+        "a half-written listing must roll back"
     );
 }
 
