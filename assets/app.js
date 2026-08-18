@@ -1648,8 +1648,31 @@ htmx.config.includeIndicatorStyles = false;
     return elt.id || null;
   }
 
+  /*
+   * Whether a request is one the reader started.
+   *
+   * htmx carries the DOM event that triggered a request through to
+   * `requestConfig`, and a poller has none to carry — it calls its handler with
+   * the element alone. That is the difference this reads. The settings sync
+   * poller fires every 2s against `#sync-status`, and without this guard its
+   * request would overwrite the id of a Save the reader is still waiting on:
+   * `/settings/discover` is a GitHub round trip, so a poll landing inside one
+   * is the likely case rather than the unlucky one.
+   *
+   * The confirm dialog's re-issued Delete keeps its event (htmx threads the
+   * original through `issueRequest`), so answering the prompt still counts as
+   * something the reader did.
+   */
+  function readerStarted(detail) {
+    var config = detail ? detail.requestConfig : null;
+    return !!(config && config.triggeringEvent);
+  }
+
   document.addEventListener("htmx:beforeRequest", function (evt) {
-    pendingFocusId = pressedId(evt.detail ? evt.detail.elt : null);
+    if (!readerStarted(evt.detail)) {
+      return;
+    }
+    pendingFocusId = pressedId(evt.detail.elt);
   });
 
   /* The first thing a reader would type into in a freshly swapped edit row. */
@@ -1678,9 +1701,16 @@ htmx.config.includeIndicatorStyles = false;
    * its date field rather than back on the button it has just replaced.
    */
   document.addEventListener("htmx:afterSettle", function (evt) {
+    // Same guard as the recorder, for the same reason from the other side. A
+    // poll settling while a save is in flight would otherwise consume that
+    // save's id and leave nothing to restore when its own swap arrives — the
+    // whole mechanism engages only for requests the reader started.
+    if (!readerStarted(evt.detail)) {
+      return;
+    }
     var id = pendingFocusId;
-    // Consumed either way. A later swap nobody pressed anything for — a
-    // background poll — must not inherit this and move focus to a stale id.
+    // Consumed either way: the request that recorded it is the one settling
+    // here, so a later reader-started swap must not inherit a stale id.
     pendingFocusId = null;
 
     // Anything other than `<body>` means focus is already somewhere deliberate:

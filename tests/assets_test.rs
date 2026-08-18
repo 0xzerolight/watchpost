@@ -144,7 +144,13 @@ async fn app_js_defines_the_watchpost_namespace() {
         "htmx:beforeRequest",
         "htmx:afterSettle",
         // Where focus goes when the control that started the swap left with it.
-        "events-section",
+        // Spelled as the lookup, not the bare id: the id also appears in a
+        // comment and in `applyFilter`'s selector, so a plain needle would go
+        // on passing with the fallback deleted.
+        r#"getElementById("events-section")"#,
+        // Polls must not record or consume a focus id — this is what tells a
+        // poll from a press.
+        "triggeringEvent",
         // The three names a period change goes through. Losing any of them
         // means the charts are being destroyed and rebuilt again, which is the
         // blank card this arrangement exists to avoid.
