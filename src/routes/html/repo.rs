@@ -13,6 +13,7 @@
 //! whole history, so the selector is a client-side zoom over data the page
 //! already has (see `setPeriod` in assets/app.js) rather than a round trip.
 
+use chrono_tz::Tz;
 use maud::{Markup, html};
 use serde::Serialize;
 
@@ -302,6 +303,9 @@ pub struct RepoView<'a> {
     /// Distinct event kinds on this repo, for the filter chips and datalist.
     pub kinds: &'a [String],
     pub popular: PopularParams,
+    /// Display zone, for the new-event date default. The chart columns below
+    /// are UTC day keys and stay that way.
+    pub tz: Tz,
 }
 
 impl RepoView<'_> {
@@ -339,6 +343,7 @@ pub fn repo_body(view: &RepoView) -> Markup {
             events: view.events,
             kinds: view.kinds,
             draft: None,
+            tz: view.tz,
         }))
     }
 }
@@ -596,6 +601,8 @@ pub struct EventsView<'a> {
     /// Distinct kinds on this repo, for the filter chips and the datalist.
     pub kinds: &'a [String],
     pub draft: Option<&'a EventDraft>,
+    /// Display zone for the new-event date default.
+    pub tz: Tz,
 }
 
 /// The whole timeline: what every successful mutation (and a rejected create)
@@ -617,7 +624,7 @@ pub fn events_section(view: &EventsView) -> Markup {
         section id="events-section" tabindex="-1" {
             h2 { "Events" }
             (kind_chips(view.kinds))
-            (event_add_form(view.repo_id, view.draft))
+            (event_add_form(view.repo_id, view.draft, view.tz))
             // Outside the collapsed <details> on purpose: the edit rows point
             // their kind inputs at this same list.
             datalist id="kind-list" { @for kind in view.kinds { option value=(kind); } }
@@ -670,6 +677,17 @@ fn kind_chip(kind: Option<&str>) -> Markup {
     }
 }
 
+/// The calendar day `now` falls on in `tz`, as the `YYYY-MM-DD` an
+/// `<input type="date">` expects.
+///
+/// Split out of the form so the zone arithmetic is testable against a fixed
+/// instant; the caller supplies the clock. An event is something the user did
+/// on a day they name, so the default is their day — the chart column it lands
+/// on is still a UTC day key, which is what the label on that column says.
+fn local_day(now: chrono::DateTime<chrono::Utc>, tz: Tz) -> String {
+    now.with_timezone(&tz).format("%Y-%m-%d").to_string()
+}
+
 /// The "Add event" disclosure.
 ///
 /// The htmx attributes sit on the `<form>`, not on the button: htmx serializes
@@ -680,13 +698,13 @@ fn kind_chip(kind: Option<&str>) -> Markup {
 /// form: a second press before the swap arrives creates a second event, and
 /// this is the one control on the page where that means a duplicate row rather
 /// than a repeated read.
-fn event_add_form(repo_id: i64, draft: Option<&EventDraft>) -> Markup {
+fn event_add_form(repo_id: i64, draft: Option<&EventDraft>, tz: Tz) -> Markup {
     let blank = EventDraft::default();
     let values = draft.unwrap_or(&blank);
     let errors = &values.errors;
     let date = match draft {
         Some(draft) => draft.date.clone(),
-        None => chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        None => local_day(chrono::Utc::now(), tz),
     };
     html! {
         details open[draft.is_some()] {
@@ -1116,6 +1134,7 @@ mod tests {
             events: &[],
             kinds: &[],
             popular: params(),
+            tz: Tz::UTC,
         }
     }
 
@@ -1216,7 +1235,48 @@ mod tests {
             events,
             kinds,
             draft: None,
+            tz: Tz::UTC,
         }
+    }
+
+    /// The bug this fixes: at 23:30 UTC a reader in Madrid is already on the
+    /// next day, and the form used to pre-fill yesterday.
+    #[test]
+    fn local_day_uses_the_display_zone_not_utc() {
+        let late = chrono::DateTime::parse_from_rfc3339("2026-08-17T23:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(local_day(late, Tz::UTC), "2026-08-17");
+        assert_eq!(local_day(late, Tz::Europe__Madrid), "2026-08-18");
+    }
+
+    /// West of Greenwich the shift goes the other way.
+    #[test]
+    fn local_day_can_fall_behind_utc() {
+        let early = chrono::DateTime::parse_from_rfc3339("2026-08-18T03:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(local_day(early, Tz::America__New_York), "2026-08-17");
+    }
+
+    /// The form must actually consult the zone, not just have one available.
+    ///
+    /// Kiritimati is +14 and Niue is -11 all year — 25 hours apart, so their
+    /// calendar dates differ at every instant. A form that went back to
+    /// `Utc::now()` would render the same date for both.
+    #[test]
+    fn the_add_form_pre_fills_the_day_in_the_display_zone() {
+        let date_value = |markup: &str| {
+            markup
+                .split(r#"id="event-date" name="date" value=""#)
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .map(str::to_owned)
+                .expect("the add form renders a date input with a value")
+        };
+        let east = event_add_form(1, None, Tz::Pacific__Kiritimati).into_string();
+        let west = event_add_form(1, None, Tz::Pacific__Niue).into_string();
+        assert_ne!(date_value(&east), date_value(&west));
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub async fn repo_page(
             paths_sort,
             days: selected,
         },
+        tz: state.cfg.timezone,
     };
 
     Ok(match fragment(&headers) {

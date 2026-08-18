@@ -28,6 +28,7 @@ use axum::extract::{Form, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
+use chrono_tz::Tz;
 use maud::Markup;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -88,7 +89,7 @@ pub async fn event_create(
         .await?;
 
     let (draft, data) = outcome.ok_or(AppError::NotFound)?;
-    Ok(respond(repo_id, &data, draft))
+    Ok(respond(repo_id, &data, draft, state.cfg.timezone))
 }
 
 /// PUT /repos/{id}/events/{eid}
@@ -117,7 +118,7 @@ pub async fn event_update(
         .await?;
 
     match outcome.ok_or(AppError::NotFound)? {
-        Ok(data) => Ok(respond(repo_id, &data, None)),
+        Ok(data) => Ok(respond(repo_id, &data, None, state.cfg.timezone)),
         Err(draft) => Ok(reject_update(repo_id, event_id, &draft)),
     }
 }
@@ -139,7 +140,7 @@ pub async fn event_delete(
         .await?
         .ok_or(AppError::NotFound)?;
 
-    Ok(respond(repo_id, &data, None))
+    Ok(respond(repo_id, &data, None, state.cfg.timezone))
 }
 
 /// GET /repos/{id}/events/{eid} — the display row, which is what the edit
@@ -201,12 +202,13 @@ async fn fetch(state: &AppState, repo_id: i64, event_id: i64) -> Result<Event, A
 /// 422s. With that in place the reopened form with its messages lands where
 /// the section was, while the status still says the request did not take
 /// effect.
-fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>) -> Response {
+fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>, tz: Tz) -> Response {
     let markup = events_section(&EventsView {
         repo_id,
         events: &data.events,
         kinds: &data.kinds,
         draft: draft.as_deref(),
+        tz,
     });
     match draft {
         Some(_) => (StatusCode::UNPROCESSABLE_ENTITY, markup).into_response(),
