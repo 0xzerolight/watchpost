@@ -3,6 +3,7 @@
 //! (`#repos-picker`, `#sync-status`) — an `outerHTML` swap replaces exactly
 //! what these functions produce.
 
+use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use super::ui::{Notice, empty_state, error_glyph, notice, spinner, table_wrap, timestamp};
@@ -18,7 +19,7 @@ use crate::types::RepoRow;
 /// the picker and would otherwise throw away boxes the user has ticked but not
 /// saved. `repo.tracked` is therefore what the caller wants *rendered*, which
 /// on a refresh is the submitted form rather than the db.
-pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup {
+pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>, tz: Tz) -> Markup {
     html! {
         // The save is the form's own request: htmx triggers a form on `submit`,
         // which is what Enter in a field raises. The same attributes on the
@@ -81,7 +82,7 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup 
                                     // repo name.
                                     td { label for=(format!("track-{}", repo.id)) { (repo.name) } }
                                     td class="wp-muted wp-small" {
-                                        (timestamp(repo.last_synced_at.as_deref()))
+                                        (timestamp(repo.last_synced_at.as_deref(), tz))
                                     }
                                     td {
                                         @if let Some(error) = &repo.last_error {
@@ -103,7 +104,7 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup 
 /// would be fine but one rendered per state can also disable itself while a
 /// cycle runs. Only the `Running` variant carries `hx-trigger`, so polling
 /// stops by construction when the cycle finishes — nothing has to cancel it.
-pub fn sync_status_fragment(status: &SyncStatus) -> Markup {
+pub fn sync_status_fragment(status: &SyncStatus, tz: Tz) -> Markup {
     html! {
         @match status {
             SyncStatus::Running { .. } => {
@@ -119,7 +120,7 @@ pub fn sync_status_fragment(status: &SyncStatus) -> Markup {
             SyncStatus::Done { finished, ok, failed } => {
                 div id="sync-status" {
                     (notice(Notice::Success, html! {
-                        "Synced " (ok) " repos · " (timestamp(Some(&finished.to_rfc3339())))
+                        "Synced " (ok) " repos · " (timestamp(Some(&finished.to_rfc3339()), tz))
                     }))
                     @if !failed.is_empty() {
                         // One line per failure, inside the alert rather than
@@ -187,8 +188,12 @@ mod tests {
 
     #[test]
     fn picker_renders_the_sync_time_as_a_time_element() {
-        let out =
-            repos_picker(&[repo("octo/x", Some("2026-08-17T09:05:00Z"), None)], None).into_string();
+        let out = repos_picker(
+            &[repo("octo/x", Some("2026-08-17T09:05:00Z"), None)],
+            None,
+            Tz::UTC,
+        )
+        .into_string();
 
         // The stored RFC 3339 string is machine-readable detail, not the cell's
         // text: a raw timestamp in a table is unreadable at a glance.
@@ -200,8 +205,19 @@ mod tests {
     }
 
     #[test]
+    fn the_picker_shows_last_synced_in_the_display_zone() {
+        let out = repos_picker(
+            &[repo("octo/x", Some("2026-08-17T09:05:00Z"), None)],
+            None,
+            Tz::Europe__Madrid,
+        )
+        .into_string();
+        assert!(out.contains("2026-08-17 11:05 CEST"), "{out}");
+    }
+
+    #[test]
     fn picker_makes_the_repo_name_the_checkbox_label() {
-        let out = repos_picker(&[repo("octo/x", None, None)], None).into_string();
+        let out = repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC).into_string();
 
         // The name cell *is* the label, so the whole name is a click target
         // rather than a 16px box beside it — and the visible text is the
@@ -216,7 +232,8 @@ mod tests {
 
     #[test]
     fn picker_uses_the_shared_error_glyph() {
-        let out = repos_picker(&[repo("octo/x", None, Some("github 502"))], None).into_string();
+        let out =
+            repos_picker(&[repo("octo/x", None, Some("github 502"))], None, Tz::UTC).into_string();
 
         // The hand-rolled glyph was pointer-only; the shared one is focusable
         // and named.
@@ -230,7 +247,7 @@ mod tests {
 
     #[test]
     fn picker_actions_carry_ids_and_one_spinner() {
-        let out = repos_picker(&[], None).into_string();
+        let out = repos_picker(&[], None, Tz::UTC).into_string();
 
         assert!(out.contains(r#"<div class="wp-actions">"#), "{out}");
         assert!(out.contains(r#"id="repos-save""#), "{out}");
@@ -248,7 +265,7 @@ mod tests {
 
     #[test]
     fn picker_actions_disable_themselves_while_they_run() {
-        let out = repos_picker(&[], None).into_string();
+        let out = repos_picker(&[], None, Tz::UTC).into_string();
 
         // Both actions re-render the picker they live in; a second press mid
         // flight races the swap that is about to replace them. The save request
@@ -270,7 +287,7 @@ mod tests {
 
     #[test]
     fn picker_form_posts_itself_so_enter_saves() {
-        let out = repos_picker(&[repo("octo/x", None, None)], None).into_string();
+        let out = repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC).into_string();
 
         // The save is the form's request, not the button's: htmx triggers a
         // form on `submit`, which is what Enter in a field raises. Hang the
@@ -297,7 +314,7 @@ mod tests {
 
     #[test]
     fn picker_empty_uses_the_shared_empty_state() {
-        let out = repos_picker(&[], None).into_string();
+        let out = repos_picker(&[], None, Tz::UTC).into_string();
         assert!(
             out.contains(
                 r#"<div class="wp-empty"><p>No repos known yet — load them from GitHub.</p></div>"#
@@ -312,7 +329,7 @@ mod tests {
     /// this wrapper instead.
     #[test]
     fn picker_table_scrolls_inside_its_own_wrapper() {
-        let out = repos_picker(&[repo("octo/x", None, None)], None).into_string();
+        let out = repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC).into_string();
         assert!(
             out.contains(r#"<div class="overflow-auto wp-table-wrap"><table>"#),
             "{out}"
@@ -321,9 +338,12 @@ mod tests {
 
     #[test]
     fn running_polls_and_disables_the_button() {
-        let out = sync_status_fragment(&SyncStatus::Running {
-            started: Utc::now(),
-        })
+        let out = sync_status_fragment(
+            &SyncStatus::Running {
+                started: Utc::now(),
+            },
+            Tz::UTC,
+        )
         .into_string();
 
         assert!(out.contains(r#"hx-trigger="every 2s""#), "{out}");
@@ -339,11 +359,14 @@ mod tests {
 
     #[test]
     fn done_reports_the_count_as_a_success_notice() {
-        let out = sync_status_fragment(&SyncStatus::Done {
-            finished: Utc::now(),
-            ok: 3,
-            failed: vec![],
-        })
+        let out = sync_status_fragment(
+            &SyncStatus::Done {
+                finished: Utc::now(),
+                ok: 3,
+                failed: vec![],
+            },
+            Tz::UTC,
+        )
         .into_string();
 
         assert!(out.contains("wp-notice-success"), "{out}");
@@ -357,11 +380,14 @@ mod tests {
 
     #[test]
     fn done_with_failures_names_them_inside_the_alert() {
-        let out = sync_status_fragment(&SyncStatus::Done {
-            finished: Utc::now(),
-            ok: 1,
-            failed: vec![("octo/x".into(), "github 502".into())],
-        })
+        let out = sync_status_fragment(
+            &SyncStatus::Done {
+                finished: Utc::now(),
+                ok: 1,
+                failed: vec![("octo/x".into(), "github 502".into())],
+            },
+            Tz::UTC,
+        )
         .into_string();
 
         assert!(out.contains("wp-notice-error"), "{out}");
@@ -374,7 +400,7 @@ mod tests {
 
     #[test]
     fn idle_says_so_politely() {
-        let out = sync_status_fragment(&SyncStatus::Idle).into_string();
+        let out = sync_status_fragment(&SyncStatus::Idle, Tz::UTC).into_string();
 
         assert!(out.contains("wp-notice-info"), "{out}");
         assert!(out.contains(r#"role="status""#), "{out}");
@@ -384,7 +410,7 @@ mod tests {
 
     #[test]
     fn sync_button_indicator_matches_its_spinner() {
-        let out = sync_status_fragment(&SyncStatus::Idle).into_string();
+        let out = sync_status_fragment(&SyncStatus::Idle, Tz::UTC).into_string();
         assert!(out.contains(r##"hx-indicator="#sync-spinner""##), "{out}");
         assert!(
             out.contains(r#"<span id="sync-spinner" class="htmx-indicator wp-spinner""#),

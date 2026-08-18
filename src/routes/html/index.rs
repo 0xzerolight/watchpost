@@ -6,6 +6,7 @@
 //! sparkline binds to: a `canvas.spark` and, as its sibling, a `spark-data`
 //! JSON island holding that repo's dense 30-day star values.
 
+use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use crate::routes::html::{empty_state, error_glyph, json_script_class, page_header, timestamp};
@@ -19,7 +20,7 @@ pub const SPARK_DAYS: u32 = 30;
 pub type Card = (RepoOverview, Vec<Option<i64>>);
 
 /// The dashboard body, for wrapping in [`super::base`].
-pub fn index_body(cards: &[Card]) -> Markup {
+pub fn index_body(cards: &[Card], tz: Tz) -> Markup {
     html! {
         (page_header(
             "Repos",
@@ -34,7 +35,7 @@ pub fn index_body(cards: &[Card]) -> Markup {
         } @else {
             div class="wp-cards" {
                 @for (repo, spark) in cards {
-                    (repo_card(repo, spark))
+                    (repo_card(repo, spark, tz))
                 }
             }
         }
@@ -45,7 +46,7 @@ pub fn index_body(cards: &[Card]) -> Markup {
 /// [`crate::db::queries::dense_series`] — already carried forward, so the
 /// client can plot it directly and treat any remaining `null` as a genuine
 /// "not yet observed" gap.
-pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>]) -> Markup {
+pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>], tz: Tz) -> Markup {
     html! {
         article class="wp-card" {
             header class="wp-row" {
@@ -67,7 +68,7 @@ pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>]) -> Markup {
             }
             footer class="wp-muted wp-small" {
                 (repo.event_count) " " (plural(repo.event_count, "event", "events"))
-                " · synced " (timestamp(repo.last_synced_at.as_deref()))
+                " · synced " (timestamp(repo.last_synced_at.as_deref(), tz))
             }
         }
     }
@@ -101,7 +102,7 @@ mod tests {
             stars: Some(3),
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[Some(1), None, Some(2)]).into_string();
+        let out = repo_card(&repo, &[Some(1), None, Some(2)], Tz::UTC).into_string();
 
         // The canvas and its payload must be siblings, canvas first — that is
         // the relationship the client walks.
@@ -123,7 +124,7 @@ mod tests {
             name: "octo/x".into(),
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[]).into_string();
+        let out = repo_card(&repo, &[], Tz::UTC).into_string();
         assert!(
             out.contains(r#"<h2 class="wp-card-title wp-grow"><a href="/repos/7">octo/x</a></h2>"#),
             "out was {out}"
@@ -139,7 +140,7 @@ mod tests {
             last_error: Some("github 502".into()),
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[]).into_string();
+        let out = repo_card(&repo, &[], Tz::UTC).into_string();
         assert!(
             out.contains(&error_glyph("github 502").into_string()),
             "out was {out}"
@@ -152,7 +153,7 @@ mod tests {
             last_synced_at: Some("2026-08-17T09:05:00Z".into()),
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[]).into_string();
+        let out = repo_card(&repo, &[], Tz::UTC).into_string();
         // Coarse text to read, exact instant still in the markup.
         assert!(
             out.contains(r#"<time datetime="2026-08-17T09:05:00Z""#),
@@ -162,7 +163,7 @@ mod tests {
 
     #[test]
     fn dashboard_leads_with_the_shared_page_header() {
-        let out = index_body(&[]).into_string();
+        let out = index_body(&[], Tz::UTC).into_string();
         assert!(
             out.starts_with(r#"<header class="wp-page-header"><hgroup><h1>Repos</h1>"#),
             "out was {out}"
@@ -181,7 +182,7 @@ mod tests {
             stars: None,
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[]).into_string();
+        let out = repo_card(&repo, &[], Tz::UTC).into_string();
         assert!(out.contains("<strong>—</strong>"), "out was {out}");
         assert!(!out.contains("<strong>0</strong>"), "out was {out}");
     }
@@ -192,17 +193,25 @@ mod tests {
             event_count: 1,
             ..RepoOverview::default()
         };
-        assert!(repo_card(&one, &[]).into_string().contains("1 event ·"));
+        assert!(
+            repo_card(&one, &[], Tz::UTC)
+                .into_string()
+                .contains("1 event ·")
+        );
         let many = RepoOverview {
             event_count: 2,
             ..RepoOverview::default()
         };
-        assert!(repo_card(&many, &[]).into_string().contains("2 events ·"));
+        assert!(
+            repo_card(&many, &[], Tz::UTC)
+                .into_string()
+                .contains("2 events ·")
+        );
     }
 
     #[test]
     fn empty_state_points_at_settings_and_draws_nothing() {
-        let out = index_body(&[]).into_string();
+        let out = index_body(&[], Tz::UTC).into_string();
         assert!(
             out.contains("<p>No repos tracked yet — stats start collecting on the next sync.</p>"),
             "out was {out}"

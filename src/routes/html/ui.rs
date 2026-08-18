@@ -7,6 +7,7 @@
 //! quietly drifted apart.
 
 use axum::http::StatusCode;
+use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use crate::csrf::CsrfToken;
@@ -155,7 +156,12 @@ pub fn error_glyph(error: &str) -> Markup {
 /// The relative text alone loses information the machine-readable attributes
 /// keep. A value that does not parse is shown as stored rather than dressed up
 /// as a time, so a malformed row is visible instead of plausible.
-pub fn timestamp(at: Option<&str>) -> Markup {
+///
+/// `title` is the instant in `tz` — the zone the reader lives in — and carries
+/// that zone's abbreviation so the digits are never ambiguous. `datetime` stays
+/// the string as stored, because a machine reader wants the instant, not the
+/// operator's display preference.
+pub fn timestamp(at: Option<&str>, tz: Tz) -> Markup {
     let Some(at) = at else {
         return html! { "never" };
     };
@@ -163,8 +169,8 @@ pub fn timestamp(at: Option<&str>) -> Markup {
         return html! { span class="wp-muted" { (at) } };
     };
     let exact = then
-        .with_timezone(&chrono::Utc)
-        .format("%Y-%m-%d %H:%M UTC")
+        .with_timezone(&tz)
+        .format("%Y-%m-%d %H:%M %Z")
         .to_string();
     html! {
         time datetime=(at) title=(exact) { (relative_time(Some(at))) }
@@ -372,7 +378,7 @@ mod tests {
     #[test]
     fn timestamp_carries_both_the_exact_and_the_relative_form() {
         let at = "2026-08-17T09:05:00Z";
-        let out = timestamp(Some(at)).into_string();
+        let out = timestamp(Some(at), Tz::UTC).into_string();
         assert!(
             out.starts_with(r#"<time datetime="2026-08-17T09:05:00Z""#),
             "{out}"
@@ -382,17 +388,40 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_normalises_the_title_to_utc() {
-        // An offset timestamp's title must be the same instant in UTC, not the
-        // wall-clock digits as stored.
-        let out = timestamp(Some("2026-08-17T14:05:00+05:00")).into_string();
+    fn timestamp_renders_the_title_in_the_configured_zone() {
+        // Same instant, two zones: the tooltip is wall-clock local, the
+        // machine-readable attribute stays exactly as stored.
+        let out = timestamp(Some("2026-08-17T09:05:00Z"), Tz::Europe__Madrid).into_string();
+        assert!(out.contains(r#"title="2026-08-17 11:05 CEST""#), "{out}");
+        assert!(
+            out.starts_with(r#"<time datetime="2026-08-17T09:05:00Z""#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn timestamp_converts_a_stored_offset_into_the_display_zone() {
+        // An offset timestamp's title must be the same instant in the display
+        // zone, not the wall-clock digits as stored.
+        let out = timestamp(Some("2026-08-17T14:05:00+05:00"), Tz::UTC).into_string();
         assert!(out.contains(r#"title="2026-08-17 09:05 UTC""#), "{out}");
+    }
+
+    /// Winter is CET, summer is CEST: the abbreviation comes from the zone's
+    /// DST rules at that instant, not from a fixed offset.
+    #[test]
+    fn timestamp_abbreviation_follows_dst() {
+        let winter = timestamp(Some("2026-01-17T09:05:00Z"), Tz::Europe__Madrid).into_string();
+        assert!(
+            winter.contains(r#"title="2026-01-17 10:05 CET""#),
+            "{winter}"
+        );
     }
 
     #[test]
     fn timestamp_falls_back_without_faking_a_time() {
-        assert_eq!(timestamp(None).into_string(), "never");
-        let out = timestamp(Some("not a date")).into_string();
+        assert_eq!(timestamp(None, Tz::UTC).into_string(), "never");
+        let out = timestamp(Some("not a date"), Tz::UTC).into_string();
         assert_eq!(out, r#"<span class="wp-muted">not a date</span>"#);
         assert!(!out.contains("<time"), "{out}");
     }
