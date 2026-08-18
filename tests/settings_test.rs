@@ -275,13 +275,11 @@ async fn settings_page_lists_known_repos() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
-    // The page states what it is for, in the shared header block.
+    // The page states what it is, in the shared header block, and stops there.
     assert!(
-        body.contains(r#"<header class="wp-page-header"><hgroup><h1>Settings</h1>"#),
-        "body was {body}"
-    );
-    assert!(
-        body.contains("Choose which repos watchpost tracks."),
+        body.contains(
+            r#"<header class="wp-page-header"><hgroup><h1>Settings</h1></hgroup></header>"#
+        ),
         "body was {body}"
     );
     assert!(body.contains(REPO_A), "body was {body}");

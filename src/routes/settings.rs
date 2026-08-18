@@ -43,17 +43,13 @@ pub async fn settings_page(
         NavItem::Settings,
         &csrf,
         html! {
-            (page_header(
-                "Settings",
-                Some(html! { "Choose which repos watchpost tracks." }),
-                None,
-            ))
+            (page_header("Settings", None, None))
             section {
                 h2 { "Sync" }
                 (sync_status_fragment(&status, state.cfg.timezone))
             }
             section {
-                h2 { "Repos" }
+                h2 { "Repositories" }
                 (picker)
             }
         },

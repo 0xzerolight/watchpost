@@ -28,6 +28,16 @@
   --wp-radius-pill: 999px;
 
   /*
+   * Pico scales its root font size with the viewport, up to 131.25% past
+   * 1536px. That is sized for a reading column; watchpost is a grid of tables
+   * and charts, and on a wide monitor the same setting makes every control a
+   * third larger than it was drawn. Pinning it keeps one size at every width —
+   * the type scale above and Pico's own are unchanged, just anchored to the
+   * browser's default rather than to the window.
+   */
+  --pico-font-size: 100%;
+
+  /*
    * The two palettes, each written once. Rules never read `--wp-l-*` or
    * `--wp-d-*` directly; the blocks below point `--wp-marker-*` at one set or
    * the other, so a colour is edited in one place and the scheme selectors
@@ -151,18 +161,6 @@
   margin: 0;
   font-size: 1rem;
   line-height: 1.4;
-}
-
-/*
- * The annotation beside a chart card's title — its latest value, filled in
- * client-side. Rendered empty on every card, so it must be invisible until it
- * has text: an inline element with no content takes no space.
- */
-.wp-card-note {
-  margin-left: var(--wp-space-2);
-  color: var(--pico-muted-color, #6b7280);
-  font-size: var(--wp-text-sm);
-  font-weight: normal;
 }
 
 /*
@@ -407,7 +405,7 @@ tr.wp-edit-row [name="kind"] {
   justify-content: space-between;
   gap: var(--wp-space-4);
   flex-wrap: wrap;
-  margin-block-end: var(--wp-space-6);
+  margin-block-end: var(--wp-space-5);
 }
 
 /* Pico's hgroup margin would push the actions off the title's baseline. */
@@ -434,6 +432,10 @@ tr.wp-edit-row [name="kind"] {
 .wp-actions > [type="button"] {
   width: auto;
   margin-bottom: 0;
+  /* Pico pads for a page-width form field. These sit in a toolbar beside a
+   * heading, so they take the same compact box `.wp-action` does. */
+  padding: var(--wp-space-1) var(--wp-space-3);
+  font-size: var(--wp-text-sm);
 }
 
 /*
@@ -538,18 +540,26 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
- * The sort arrow beside a sortable column's label. Dimmed by default so the
- * inactive columns read as "sortable" rather than as three competing arrows,
- * and full strength on the column the table is actually ordered by —
- * `[aria-sort]` is only ever on that one cell, so the state needs no class.
+ * The sort indicator beside a sortable column's label. An SVG rather than an
+ * arrow character, so its weight and baseline are ours and not the platform
+ * font's; `em` units keep it in step with the header text at any root size.
+ * Idle columns are dimmed so they read as "sortable" rather than as three
+ * competing arrows — the active one is full strength, and it is the only cell
+ * without `.wp-sort-idle`, so the state needs no second selector.
  */
-.wp-sort-glyph {
+.wp-sort-icon {
+  width: 0.85em;
+  height: 0.85em;
   margin-left: var(--wp-space-1);
-  opacity: 0.35;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-th[aria-sort] .wp-sort-glyph {
-  opacity: 1;
+.wp-sort-idle {
+  opacity: 0.4;
 }
 
 /*

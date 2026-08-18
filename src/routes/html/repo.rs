@@ -14,7 +14,7 @@
 //! already has (see `setPeriod` in assets/app.js) rather than a round trip.
 
 use chrono_tz::Tz;
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
@@ -39,6 +39,21 @@ pub const PERIODS: [(i64, &str); 5] = [
     (365, "1 year"),
     (ALL_DAYS, "All"),
 ];
+
+/// The three sort indicators. Inline SVG rather than arrow characters: `↕`
+/// renders as an emoji on some platforms, and `▲`/`▼` sit on a different
+/// baseline and weight in every font that has them. One stroked chevron each,
+/// sized in `em` by `.wp-sort-icon` so they track the header's text.
+///
+/// The path data is factored out because the tests assert on it — an icon that
+/// silently became the wrong direction would otherwise still match on its
+/// wrapper.
+const SORT_ASC_PATH: &str = r#"<path d="M2.5 8 6 4.5 9.5 8"/>"#;
+const SORT_DESC_PATH: &str = r#"<path d="M2.5 4.5 6 8 9.5 4.5"/>"#;
+/// The idle pair needs a wider gap than the halves of the active chevron: at
+/// the size these render, two chevrons a stroke-width apart close up into a
+/// diamond instead of reading as one arrow above another.
+const SORT_IDLE_PATH: &str = r#"<path d="M3 4.5 6 1.5 9 4.5M3 7.5 6 10.5 9 7.5"/>"#;
 
 // ---------------------------------------------------------------------------
 // Payloads the client reads
@@ -397,10 +412,7 @@ fn charts_section(view: &RepoView) -> Markup {
     }
 }
 
-/// One chart panel. The empty `.wp-card-note` is the slot the client fills when
-/// a window is too long to plot a column per day, to say how wide the buckets
-/// are; it renders either way, so the heading never reflows when the note
-/// arrives.
+/// One chart panel.
 ///
 /// The canvas is labelled as one graphic: a bare `<canvas>` has no role, so a
 /// screenreader walks into an element with nothing inside it and announces
@@ -410,7 +422,7 @@ fn charts_section(view: &RepoView) -> Markup {
 fn chart_card(title: &str, canvas_id: &str) -> Markup {
     html! {
         article class="wp-card" {
-            h3 class="wp-card-title" { (title) span class="wp-card-note" {} }
+            h3 class="wp-card-title" { (title) }
             div class="chart-box" {
                 canvas id=(canvas_id) role="img" aria-label=(format!("{title} over time")) {}
             }
@@ -424,7 +436,7 @@ fn chart_card(title: &str, canvas_id: &str) -> Markup {
 fn popular_section(view: &RepoView) -> Markup {
     html! {
         section {
-            h2 { "Popular" }
+            h2 { "Views" }
             // The wrapper is the section's, not the table's: a sort swaps the
             // table's own `outerHTML` inside it, so a fragment that carried one
             // would nest a fresh scroll container per click.
@@ -440,7 +452,7 @@ fn popular_section(view: &RepoView) -> Markup {
 pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularParams) -> Markup {
     let (caption, name_label) = match kind {
         PopularKind::Referrers => ("Referrers", "Referrer"),
-        PopularKind::Paths => ("Popular paths", "Path"),
+        PopularKind::Paths => ("Paths", "Path"),
     };
     let sort = params.sort(kind);
     html! {
@@ -448,14 +460,9 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
             caption { (caption) }
             thead {
                 tr {
-                    (sort_th(kind, SortKey::Name, name_label, sort, params, None))
-                    // "Views" alone would read as an exact all-time total,
-                    // which the accumulated-increases aggregation is not —
-                    // the tooltip says what the number really is.
-                    (sort_th(kind, SortKey::Count, "Views", sort, params,
-                        Some("Accumulated views — sum of observed daily increases; undercounts before install or during downtime")))
-                    (sort_th(kind, SortKey::Uniques, "Uniques", sort, params,
-                        Some("Peak daily unique — uniques are never summed")))
+                    (sort_th(kind, SortKey::Name, name_label, sort, params))
+                    (sort_th(kind, SortKey::Count, "Views", sort, params))
+                    (sort_th(kind, SortKey::Uniques, "Uniques", sort, params))
                 }
             }
             tbody {
@@ -503,27 +510,27 @@ fn table_id(kind: PopularKind) -> &'static str {
 /// like work instead of like a click that did nothing. Nothing is disabled — a
 /// link cannot be, and re-sorting mid-request only re-sorts.
 ///
-/// The glyph is `aria-hidden`: `aria-sort` on the cell already announces the
-/// ordering, and a screenreader reading "▼" after the column name would say it
-/// twice. Every column carries one — a dimmed `↕` on the inactive ones is what
-/// says the other columns are sortable at all, and rendering it always means
-/// the header row does not reflow when the sort moves.
+/// The icon is `aria-hidden`: `aria-sort` on the cell already announces the
+/// ordering, and a screenreader reading "down chevron" after the column name
+/// would say it twice. Every column carries one — a dimmed double chevron on
+/// the inactive ones is what says the other columns are sortable at all, and
+/// rendering it always means the header row does not reflow when the sort
+/// moves.
 fn sort_th(
     kind: PopularKind,
     key: SortKey,
     label: &str,
     current: Sort,
     params: &PopularParams,
-    tooltip: Option<&str>,
 ) -> Markup {
     let url = params.sort_url(kind, key);
     let table = table_id(kind);
     let active = current.key == key;
     let aria = active.then(|| current.dir.aria());
-    let glyph = match (active, current.dir) {
-        (false, _) => "↕",
-        (true, SortDir::Asc) => "▲",
-        (true, SortDir::Desc) => "▼",
+    let (icon_class, path) = match (active, current.dir) {
+        (false, _) => ("wp-sort-icon wp-sort-idle", SORT_IDLE_PATH),
+        (true, SortDir::Asc) => ("wp-sort-icon", SORT_ASC_PATH),
+        (true, SortDir::Desc) => ("wp-sort-icon", SORT_DESC_PATH),
     };
     html! {
         th scope="col" aria-sort=[aria] {
@@ -534,10 +541,12 @@ fn sort_th(
                 hx-target=(format!("#{table}"))
                 hx-swap="outerHTML"
                 hx-replace-url="true"
-                hx-indicator="closest table"
-                data-tooltip=[tooltip] {
+                hx-indicator="closest table" {
                     (label)
-                    span class="wp-sort-glyph" aria-hidden="true" { (glyph) }
+                    svg class=(icon_class) viewBox="0 0 12 12"
+                        aria-hidden="true" focusable="false" {
+                            (PreEscaped(path))
+                        }
                 }
         }
     }
@@ -1000,20 +1009,24 @@ mod tests {
     }
 
     #[test]
-    fn uniques_header_explains_the_aggregation() {
+    fn tables_are_captioned_by_what_they_list() {
+        let refs = popular_table(PopularKind::Referrers, &[], &params()).into_string();
+        assert!(refs.contains("<caption>Referrers</caption>"), "was {refs}");
+
+        let paths = popular_table(PopularKind::Paths, &[], &params()).into_string();
+        assert!(paths.contains("<caption>Paths</caption>"), "was {paths}");
+        // "Popular" was an adjective doing a heading's job; the section above
+        // these two tables now says what the numbers are.
+        assert!(!paths.contains("Popular"), "was {paths}");
+    }
+
+    #[test]
+    fn an_empty_table_still_renders_its_swap_target() {
         let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
-        assert!(
-            out.contains(r#"data-tooltip="Peak daily unique — uniques are never summed""#),
-            "out was {out}"
-        );
-        // The count column says what its number is too — accumulated observed
-        // increases, not an exact all-time total.
-        assert!(
-            out.contains(r#"data-tooltip="Accumulated views — sum of observed daily increases; undercounts before install or during downtime""#),
-            "out was {out}"
-        );
-        // The two numeric columns and nothing else.
-        assert_eq!(out.matches("data-tooltip").count(), 2, "out was {out}");
+        // Column headers carry no tooltips: the numbers are labelled, and a
+        // paragraph of caveat on a hover is not how a one-user dashboard
+        // explains itself.
+        assert!(!out.contains("data-tooltip"), "out was {out}");
         // An empty table still renders its swap target, and says why it is
         // empty across the full width of the columns it has.
         assert!(
@@ -1066,14 +1079,19 @@ mod tests {
     fn every_column_shows_its_sort_state() {
         // Default ordering: count descending, the other two columns idle.
         let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
-        assert_eq!(out.matches("wp-sort-glyph").count(), 3, "out was {out}");
-        assert_eq!(out.matches('↕').count(), 2, "out was {out}");
-        assert!(
-            out.contains(r#"Views<span class="wp-sort-glyph" aria-hidden="true">▼</span>"#),
+        assert_eq!(out.matches("wp-sort-icon").count(), 3, "out was {out}");
+        assert_eq!(
+            out.matches("wp-sort-icon wp-sort-idle").count(),
+            2,
             "out was {out}"
         );
+        assert!(
+            out.contains(r#"Views<svg class="wp-sort-icon" viewBox="0 0 12 12""#),
+            "out was {out}"
+        );
+        assert!(out.contains(SORT_DESC_PATH), "out was {out}");
 
-        // Ascending on the name column moves both the glyph and its direction.
+        // Ascending on the name column moves both the icon and its direction.
         let params = PopularParams {
             refs_sort: Sort {
                 key: SortKey::Name,
@@ -1083,11 +1101,16 @@ mod tests {
         };
         let out = popular_table(PopularKind::Referrers, &[], &params).into_string();
         assert!(
-            out.contains(r#"Referrer<span class="wp-sort-glyph" aria-hidden="true">▲</span>"#),
+            out.contains(r#"Referrer<svg class="wp-sort-icon" viewBox="0 0 12 12""#),
             "out was {out}"
         );
-        assert_eq!(out.matches('↕').count(), 2, "out was {out}");
-        // The glyph duplicates what `aria-sort` already says, so it is hidden
+        assert!(out.contains(SORT_ASC_PATH), "out was {out}");
+        assert_eq!(
+            out.matches("wp-sort-icon wp-sort-idle").count(),
+            2,
+            "out was {out}"
+        );
+        // The icon duplicates what `aria-sort` already says, so it is hidden
         // from the accessibility tree on every column, active or not.
         assert_eq!(
             out.matches(r#"aria-hidden="true""#).count(),
@@ -1175,18 +1198,17 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_card_titles_itself_with_a_slot_for_its_latest_value() {
+    fn a_chart_card_titles_itself() {
         let payload = payload(-1, Some(3));
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &repo)).into_string();
         assert!(
-            out.contains(
-                r#"<h3 class="wp-card-title">Stars<span class="wp-card-note"></span></h3>"#
-            ),
+            out.contains(r#"<h3 class="wp-card-title">Stars</h3>"#),
             "out was {out}"
         );
-        // One note slot per card, rendered whether or not it has content yet.
-        assert_eq!(out.matches("wp-card-note").count(), 4, "out was {out}");
+        // No annotation slot: the bucket note it carried explained an x-axis
+        // that the period selector above it already names.
+        assert!(!out.contains("wp-card-note"), "out was {out}");
     }
 
     #[test]

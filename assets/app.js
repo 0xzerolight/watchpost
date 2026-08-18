@@ -994,35 +994,6 @@
   }
 
   /*
-   * Past a quarter of history the x-axis stops being one column per day
-   * (`getBucketKind`), which changes what a column is — and on the two charts
-   * that plot uniques it changes what the number means, since uniques peak
-   * rather than sum. The card's note says so, and says nothing at day zoom.
-   */
-  var BUCKET_NOTES = { week: "Weekly buckets", month: "Monthly buckets" };
-
-  function cardNote(spec, view) {
-    var note = BUCKET_NOTES[view.kind];
-    if (!note) {
-      return "";
-    }
-    var plotsUniques = spec.datasets.some(function (descriptor) {
-      return descriptor.mode === "max";
-    });
-    return plotsUniques ? note + " — uniques shown as peak daily" : note;
-  }
-
-  /* Fill the card heading's note slot, which the server renders empty. */
-  function setCardNote(canvasId, text) {
-    var canvas = document.getElementById(canvasId);
-    var card = canvas ? canvas.closest(".wp-card") : null;
-    var note = card ? card.querySelector(".wp-card-note") : null;
-    if (note) {
-      note.textContent = text;
-    }
-  }
-
-  /*
    * The `#chart-data` island the current charts were built from. The
    * `htmx:afterSwap` handler compares against it so that a swap which left the
    * island alone — every event mutation does — does not destroy and rebuild
@@ -1245,7 +1216,6 @@
     var events = readJson("events-data") || [];
     CHART_SPECS.forEach(function (spec) {
       syncChart(spec, view, events);
-      setCardNote(spec.canvasId, cardNote(spec, view));
     });
     applyFilter();
   }
