@@ -11,12 +11,35 @@ use crate::types::{
     PopularKind, RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
 };
 
+/// Builds the NULL-safe last-write-wins `SET` fragment for one nullable
+/// column (substrate rule 1). NULL incoming means "not observed this run",
+/// never "observed as zero", so it keeps the existing value; any non-NULL
+/// value replaces what is stored.
+///
+/// This is the rule for writers that send a **full snapshot** of a counter
+/// GitHub can report lower than before — [`upsert_stats`]. Stars, forks,
+/// watchers, issues and PRs all fall in normal use (unstars, closed issues,
+/// merged PRs), and a MAX rule would pin the day's row to its intraday peak
+/// and silently drop every decrease. Compare [`null_safe_max_clause`].
+fn null_safe_last_clause(col: &str) -> String {
+    format!("{col} = COALESCE(excluded.{col}, t.{col})")
+}
+
 /// Builds the NULL-safe monotonic MAX `SET` fragment for one nullable
 /// counter column (substrate rule 1). Scalar `MAX()` returns NULL if *any*
 /// argument is NULL, which would clobber a previously observed value when a
-/// partial sync brings in NULL for this column. NULL incoming means "not
-/// observed this run" — keep the existing value; otherwise take the larger
-/// of the two (counters only grow).
+/// partial sync brings in NULL for this column, hence the CASE guard.
+///
+/// This is the rule for writers whose value may be a **partial view of the
+/// same quantity** another writer reports in full, so the larger observation
+/// is the more complete one:
+///
+/// - [`insert_star_history`] replays stargazer pages into a running total,
+///   truncated wherever the per-cycle page budget ran out. Last-write-wins
+///   here would overwrite the true count from [`upsert_stats`] with a
+///   fraction of it.
+/// - [`upsert_traffic_days`] rewrites GitHub's rolling 14-day window every
+///   cycle, and the current day is still accumulating when it is read.
 fn null_safe_max_clause(col: &str) -> String {
     format!(
         "{col} = CASE WHEN excluded.{col} IS NULL THEN t.{col} \
@@ -56,6 +79,9 @@ pub fn upsert_repo(conn: &Connection, repo: &GhRepo) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Record one day's counter snapshot. Each column keeps the **last**
+/// observation of the day rather than the day's maximum — see
+/// [`null_safe_last_clause`] for why these counters must be allowed to fall.
 pub fn upsert_stats(
     conn: &Connection,
     repo_id: i64,
@@ -65,7 +91,7 @@ pub fn upsert_stats(
     let cols = ["stars", "forks", "watchers", "issues", "prs"];
     let set_clause = cols
         .iter()
-        .map(|c| null_safe_max_clause(c))
+        .map(|c| null_safe_last_clause(c))
         .collect::<Vec<_>>()
         .join(",\n  ");
     let sql = format!(
@@ -181,6 +207,10 @@ pub fn upsert_release_assets(
     Ok(())
 }
 
+/// Backfill `stars` from replayed stargazer pages. Deliberately keeps the
+/// monotonic MAX rule that [`upsert_stats`] no longer uses: these totals are
+/// truncated wherever the page budget ran out, so the larger of the two
+/// observations is the trustworthy one — see [`null_safe_max_clause`].
 pub fn insert_star_history(
     conn: &Connection,
     repo_id: i64,
@@ -915,12 +945,15 @@ mod tests {
     // ---- Step 1: substrate proofs ------------------------------------------
 
     #[test]
-    fn upsert_is_monotonic_max() {
+    fn upsert_stats_records_last_observation() {
         let c = test_conn();
         seed_repo(&c, 1);
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10))).unwrap();
-        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(7))).unwrap(); // lower — must NOT win
-        assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(10));
+        // Unstars, closed issues and merged PRs all make these counters fall.
+        // A lower snapshot must win, or the row freezes at the intraday peak
+        // and the drop is never recorded.
+        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(7))).unwrap();
+        assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(7));
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(12))).unwrap();
         assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(12));
     }
@@ -966,8 +999,8 @@ mod tests {
 
     #[test]
     fn null_incoming_never_clobbers_observed() {
-        // Substrate rule 1 NULL-safety proof (scalar MAX(x, NULL) = NULL
-        // would destroy data).
+        // Substrate rule 1 NULL-safety proof: NULL means "not observed this
+        // run", never "observed as nothing", so it must not reach the column.
         let c = test_conn();
         seed_repo(&c, 1);
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10), prs: Some(2))).unwrap();
@@ -1407,6 +1440,18 @@ mod tests {
         insert_star_history(&c, 1, &[("2026-08-01".into(), 100)]).unwrap();
         insert_star_history(&c, 1, &[("2026-08-01".into(), 90)]).unwrap(); // lower, must not win
         assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(100));
+    }
+
+    #[test]
+    fn star_backfill_never_clobbers_snapshot_total() {
+        // Why the two writers cannot share one rule: backfill totals are
+        // truncated by the per-cycle page budget, so a blanket last-write-wins
+        // would overwrite the true count with a partial one.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10))).unwrap();
+        insert_star_history(&c, 1, &[("2026-08-01".into(), 3)]).unwrap();
+        assert_eq!(get_stars(&c, 1, "2026-08-01"), Some(10));
     }
 
     #[test]
