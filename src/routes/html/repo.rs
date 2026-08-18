@@ -397,10 +397,7 @@ fn charts_section(view: &RepoView) -> Markup {
     }
 }
 
-/// One chart panel. The empty `.wp-card-note` is the slot the client fills when
-/// a window is too long to plot a column per day, to say how wide the buckets
-/// are; it renders either way, so the heading never reflows when the note
-/// arrives.
+/// One chart panel.
 ///
 /// The canvas is labelled as one graphic: a bare `<canvas>` has no role, so a
 /// screenreader walks into an element with nothing inside it and announces
@@ -410,7 +407,7 @@ fn charts_section(view: &RepoView) -> Markup {
 fn chart_card(title: &str, canvas_id: &str) -> Markup {
     html! {
         article class="wp-card" {
-            h3 class="wp-card-title" { (title) span class="wp-card-note" {} }
+            h3 class="wp-card-title" { (title) }
             div class="chart-box" {
                 canvas id=(canvas_id) role="img" aria-label=(format!("{title} over time")) {}
             }
@@ -1160,18 +1157,17 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_card_titles_itself_with_a_slot_for_its_latest_value() {
+    fn a_chart_card_titles_itself() {
         let payload = payload(-1, Some(3));
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &repo)).into_string();
         assert!(
-            out.contains(
-                r#"<h3 class="wp-card-title">Stars<span class="wp-card-note"></span></h3>"#
-            ),
+            out.contains(r#"<h3 class="wp-card-title">Stars</h3>"#),
             "out was {out}"
         );
-        // One note slot per card, rendered whether or not it has content yet.
-        assert_eq!(out.matches("wp-card-note").count(), 4, "out was {out}");
+        // No annotation slot: the bucket note it carried explained an x-axis
+        // that the period selector above it already names.
+        assert!(!out.contains("wp-card-note"), "out was {out}");
     }
 
     #[test]

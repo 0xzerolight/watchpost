@@ -154,18 +154,6 @@
 }
 
 /*
- * The annotation beside a chart card's title — its latest value, filled in
- * client-side. Rendered empty on every card, so it must be invisible until it
- * has text: an inline element with no content takes no space.
- */
-.wp-card-note {
-  margin-left: var(--wp-space-2);
-  color: var(--pico-muted-color, #6b7280);
-  font-size: var(--wp-text-sm);
-  font-weight: normal;
-}
-
-/*
  * The sparkline canvas needs a height from its parent for the same reason
  * `.chart-box` does — Chart.js measures the container, not the canvas.
  */
