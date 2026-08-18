@@ -159,6 +159,11 @@ async fn app_js_defines_the_watchpost_namespace() {
         "CHART_SPECS",
         "computeView",
         "syncChart",
+        // A line series with one or two observed buckets gets no stroke worth
+        // seeing out of `spanGaps: false`. Lose this and a freshly tracked
+        // repo's Downloads card is an empty plot area under a correctly scaled
+        // axis.
+        "strandedPointRadius",
         // Sort links are rendered with the period the page was requested at and
         // carry hx-replace-url, so without this rewrite a sort after a zoom
         // stomps the period out of the address bar.
