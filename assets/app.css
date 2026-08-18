@@ -28,6 +28,16 @@
   --wp-radius-pill: 999px;
 
   /*
+   * Pico scales its root font size with the viewport, up to 131.25% past
+   * 1536px. That is sized for a reading column; watchpost is a grid of tables
+   * and charts, and on a wide monitor the same setting makes every control a
+   * third larger than it was drawn. Pinning it keeps one size at every width —
+   * the type scale above and Pico's own are unchanged, just anchored to the
+   * browser's default rather than to the window.
+   */
+  --pico-font-size: 100%;
+
+  /*
    * The two palettes, each written once. Rules never read `--wp-l-*` or
    * `--wp-d-*` directly; the blocks below point `--wp-marker-*` at one set or
    * the other, so a colour is edited in one place and the scheme selectors
@@ -395,7 +405,7 @@ tr.wp-edit-row [name="kind"] {
   justify-content: space-between;
   gap: var(--wp-space-4);
   flex-wrap: wrap;
-  margin-block-end: var(--wp-space-6);
+  margin-block-end: var(--wp-space-5);
 }
 
 /* Pico's hgroup margin would push the actions off the title's baseline. */
@@ -422,6 +432,10 @@ tr.wp-edit-row [name="kind"] {
 .wp-actions > [type="button"] {
   width: auto;
   margin-bottom: 0;
+  /* Pico pads for a page-width form field. These sit in a toolbar beside a
+   * heading, so they take the same compact box `.wp-action` does. */
+  padding: var(--wp-space-1) var(--wp-space-3);
+  font-size: var(--wp-text-sm);
 }
 
 /*
