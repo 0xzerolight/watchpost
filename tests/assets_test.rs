@@ -241,8 +241,10 @@ fn hx_headers(body: &str) -> serde_json::Value {
     serde_json::from_str(&decoded).unwrap_or_else(|e| panic!("hx-headers {decoded:?}: {e}"))
 }
 
+/// 200 is no longer merely "the process is up": the handler queries the
+/// database first, so a green healthcheck means sqlite answered too.
 #[tokio::test]
-async fn health_still_serves() {
+async fn health_reports_an_answering_database() {
     let resp = get("/health").await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body_string(resp).await, "OK");

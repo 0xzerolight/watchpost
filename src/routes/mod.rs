@@ -12,6 +12,7 @@ use crate::state::AppState;
 
 pub mod assets;
 pub mod events;
+pub mod health;
 pub mod html;
 pub mod index;
 pub mod repo;
@@ -40,7 +41,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = extra
         .route("/", get(index::index_page))
-        .route("/health", get(async || "OK"))
+        .route("/health", get(health::health))
         .route("/repos/{id}", get(repo::repo_page))
         .route("/repos/{id}/events", post(events::event_create))
         // One path, three methods: the display row a cancelled edit swaps back
