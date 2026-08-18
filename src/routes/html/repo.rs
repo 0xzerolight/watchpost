@@ -421,7 +421,7 @@ fn chart_card(title: &str, canvas_id: &str) -> Markup {
 fn popular_section(view: &RepoView) -> Markup {
     html! {
         section {
-            h2 { "Popular" }
+            h2 { "Views" }
             // The wrapper is the section's, not the table's: a sort swaps the
             // table's own `outerHTML` inside it, so a fragment that carried one
             // would nest a fresh scroll container per click.
@@ -437,7 +437,7 @@ fn popular_section(view: &RepoView) -> Markup {
 pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularParams) -> Markup {
     let (caption, name_label) = match kind {
         PopularKind::Referrers => ("Referrers", "Referrer"),
-        PopularKind::Paths => ("Popular paths", "Path"),
+        PopularKind::Paths => ("Paths", "Path"),
     };
     let sort = params.sort(kind);
     html! {
@@ -987,6 +987,18 @@ mod tests {
         };
         let url = params.sort_url(PopularKind::Paths, SortKey::Uniques);
         assert!(url.contains("&days=90"), "url was {url}");
+    }
+
+    #[test]
+    fn tables_are_captioned_by_what_they_list() {
+        let refs = popular_table(PopularKind::Referrers, &[], &params()).into_string();
+        assert!(refs.contains("<caption>Referrers</caption>"), "was {refs}");
+
+        let paths = popular_table(PopularKind::Paths, &[], &params()).into_string();
+        assert!(paths.contains("<caption>Paths</caption>"), "was {paths}");
+        // "Popular" was an adjective doing a heading's job; the section above
+        // these two tables now says what the numbers are.
+        assert!(!paths.contains("Popular"), "was {paths}");
     }
 
     #[test]
