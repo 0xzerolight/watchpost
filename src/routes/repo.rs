@@ -132,14 +132,11 @@ struct PageData {
 
 /// `None` means no such repo — the handler turns that into a 404.
 ///
-/// The repo is looked up through `repo_overview`, so the page exists for
+/// The repo is looked up through `repo_overview_one`, so the page exists for
 /// exactly the repos the dashboard links to: an untracked or upstream-hidden
 /// repo has no page, even though its history is still on disk.
 fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageData>, DbError> {
-    let Some(repo) = queries::repo_overview(conn)?
-        .into_iter()
-        .find(|r| r.repo_id == repo_id)
-    else {
+    let Some(repo) = queries::repo_overview_one(conn, repo_id)? else {
         return Ok(None);
     };
     Ok(Some(PageData {

@@ -411,22 +411,50 @@ pub fn repos_needing_star_backfill(conn: &Connection) -> Result<Vec<RepoRow>, Db
 // Reads: overview, series, asset series, popular items
 // ---------------------------------------------------------------------------
 
-/// Dashboard projection: one row per tracked, visible repo, joined to its
-/// latest `repo_stats` row and total event count. Uses a
-/// `ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY date DESC)` CTE to pick
-/// the latest row per repo — deliberately not SQLite's
-/// bare-column-with-`MAX()` extension (that only special-cases a single
-/// aggregate column per query and silently picks arbitrary values for the
-/// rest when more than one non-aggregated column is selected).
-pub fn repo_overview(conn: &Connection) -> Result<Vec<RepoOverview>, DbError> {
-    let mut stmt = conn.prepare(
+fn map_overview_row(r: &rusqlite::Row) -> rusqlite::Result<RepoOverview> {
+    Ok(RepoOverview {
+        repo_id: r.get(0)?,
+        name: r.get(1)?,
+        description: r.get(2)?,
+        homepage: r.get(3)?,
+        archived: r.get(4)?,
+        fork: r.get(5)?,
+        last_synced_at: r.get(6)?,
+        last_error: r.get(7)?,
+        error_streak: r.get(8)?,
+        date: r.get(9)?,
+        stars: r.get(10)?,
+        forks: r.get(11)?,
+        watchers: r.get(12)?,
+        issues: r.get(13)?,
+        prs: r.get(14)?,
+        event_count: r.get(15)?,
+    })
+}
+
+/// The overview projection, either for every visible repo or for one.
+///
+/// Both callers share this one statement so the column order can never drift
+/// away from [`map_overview_row`]'s positional reads. `one_repo` splices the
+/// `?1` filter into **both** CTEs, not just the outer `WHERE`: a window
+/// function is an optimization barrier, so an outer-only filter still makes
+/// SQLite number every repo's stats rows and count every repo's events before
+/// discarding all but one. The literal fragments are built here, never from
+/// caller input.
+fn overview_sql(one_repo: bool) -> String {
+    let (scope, outer, order) = if one_repo {
+        ("WHERE repo_id = ?1", "AND r.id = ?1", "")
+    } else {
+        ("", "", "ORDER BY r.name")
+    };
+    format!(
         "WITH latest AS (
              SELECT repo_id, date, stars, forks, watchers, issues, prs,
                     ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY date DESC) AS rn
-             FROM repo_stats
+             FROM repo_stats {scope}
          ),
          ev AS (
-             SELECT repo_id, COUNT(*) AS event_count FROM events GROUP BY repo_id
+             SELECT repo_id, COUNT(*) AS event_count FROM events {scope} GROUP BY repo_id
          )
          SELECT r.id, r.name, r.description, r.homepage, r.archived, r.fork,
                 r.last_synced_at, r.last_error, r.error_streak,
@@ -435,32 +463,36 @@ pub fn repo_overview(conn: &Connection) -> Result<Vec<RepoOverview>, DbError> {
          FROM repos r
          LEFT JOIN latest l ON l.repo_id = r.id AND l.rn = 1
          LEFT JOIN ev ON ev.repo_id = r.id
-         WHERE r.tracked = 1 AND r.hidden = 0
-         ORDER BY r.name",
-    )?;
+         WHERE r.tracked = 1 AND r.hidden = 0 {outer}
+         {order}"
+    )
+}
+
+/// Dashboard projection: one row per tracked, visible repo, joined to its
+/// latest `repo_stats` row and total event count. Uses a
+/// `ROW_NUMBER() OVER (PARTITION BY repo_id ORDER BY date DESC)` CTE to pick
+/// the latest row per repo — deliberately not SQLite's
+/// bare-column-with-`MAX()` extension (that only special-cases a single
+/// aggregate column per query and silently picks arbitrary values for the
+/// rest when more than one non-aggregated column is selected).
+pub fn repo_overview(conn: &Connection) -> Result<Vec<RepoOverview>, DbError> {
+    let mut stmt = conn.prepare(&overview_sql(false))?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(RepoOverview {
-                repo_id: r.get(0)?,
-                name: r.get(1)?,
-                description: r.get(2)?,
-                homepage: r.get(3)?,
-                archived: r.get(4)?,
-                fork: r.get(5)?,
-                last_synced_at: r.get(6)?,
-                last_error: r.get(7)?,
-                error_streak: r.get(8)?,
-                date: r.get(9)?,
-                stars: r.get(10)?,
-                forks: r.get(11)?,
-                watchers: r.get(12)?,
-                issues: r.get(13)?,
-                prs: r.get(14)?,
-                event_count: r.get(15)?,
-            })
-        })?
+        .query_map([], map_overview_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// The same projection for a single repo, for the page that renders one.
+///
+/// `None` means the repo has no page — untracked, hidden upstream, or never
+/// discovered at all — which is exactly [`repo_overview`]'s predicate, so a
+/// repo the dashboard does not link to 404s.
+pub fn repo_overview_one(conn: &Connection, repo_id: i64) -> Result<Option<RepoOverview>, DbError> {
+    let row = conn
+        .query_row(&overview_sql(true), params![repo_id], map_overview_row)
+        .optional()?;
+    Ok(row)
 }
 
 /// Raw daily values for one metric. Returns only OBSERVED rows (the column
@@ -1556,6 +1588,78 @@ mod tests {
         assert_eq!(overview[0].date, Some("2026-08-02".into()));
         assert_eq!(overview[0].stars, Some(12));
         assert_eq!(overview[0].event_count, 1);
+    }
+
+    #[test]
+    fn repo_overview_one_equals_the_all_repos_row() {
+        // The single-repo query filters inside the CTEs rather than after
+        // them; this pins it to the projection the dashboard already renders,
+        // repo by repo, so the two can never drift apart.
+        let c = test_conn();
+        for id in 1..=3 {
+            seed_repo(&c, id);
+            set_tracked(&c, id, true).unwrap();
+        }
+        // Deliberately uneven: repo 1 has history and events, repo 2 has one
+        // stats row and no events, repo 3 has never been synced at all.
+        upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10), forks: Some(1))).unwrap();
+        upsert_stats(
+            &c,
+            1,
+            "2026-08-02",
+            &snap!(stars: Some(12), forks: Some(2), watchers: Some(3), issues: Some(4), prs: Some(5)),
+        )
+        .unwrap();
+        upsert_stats(&c, 2, "2026-08-03", &snap!(stars: Some(7))).unwrap();
+        for title in ["a", "b"] {
+            insert_event(
+                &c,
+                &NewEvent {
+                    repo_id: 1,
+                    date: "2026-08-01".into(),
+                    title: title.into(),
+                    notes: "".into(),
+                    url: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let all = repo_overview(&c).unwrap();
+        assert_eq!(all.len(), 3);
+        for row in &all {
+            assert_eq!(
+                repo_overview_one(&c, row.repo_id).unwrap().as_ref(),
+                Some(row)
+            );
+        }
+        // Guard against the comparison passing on three identical blank rows.
+        assert_eq!(all[0].event_count, 2);
+        assert_eq!(all[0].date, Some("2026-08-02".into()));
+        assert_eq!(all[1].stars, Some(7));
+        assert_eq!(all[2].date, None);
+    }
+
+    #[test]
+    fn repo_overview_one_is_none_for_a_repo_with_no_page() {
+        // 404 semantics: the same predicate the all-repos query applies, so a
+        // repo the dashboard does not link to has no page either.
+        let c = test_conn();
+        seed_repo(&c, 1); // untracked
+        seed_repo(&c, 2);
+        set_tracked(&c, 2, true).unwrap();
+        mark_hidden(&c, &[2]).unwrap(); // tracked, but gone upstream
+        seed_repo(&c, 3);
+        set_tracked(&c, 3, true).unwrap();
+
+        assert_eq!(repo_overview_one(&c, 1).unwrap(), None);
+        assert_eq!(repo_overview_one(&c, 2).unwrap(), None);
+        assert_eq!(repo_overview_one(&c, 999).unwrap(), None);
+        assert!(repo_overview_one(&c, 3).unwrap().is_some());
+        let all = repo_overview(&c).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].repo_id, 3);
     }
 
     #[test]
