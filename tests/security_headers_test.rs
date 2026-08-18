@@ -94,11 +94,12 @@ async fn the_index_carries_every_header() {
     assert_common_headers(&resp, "index");
 }
 
-/// Pinned byte-for-byte. Phase A keeps `'unsafe-inline'` for scripts (the
-/// shell's two inline htmx config blocks are all that still need it) and
-/// `data: https:` for images (the favicon is inlined as a data URI, and
-/// markdown-rendered event notes embed https screenshots); a change to any of
-/// them is a deliberate decision, not a drive-by edit.
+/// Pinned byte-for-byte. `script-src` is a bare `'self'` — no `'unsafe-inline'`
+/// anywhere, which is the whole point of the shell's htmx config being a served
+/// file — and the only relaxations left are `data: https:` for images (the
+/// favicon is inlined as a data URI, and markdown-rendered event notes embed
+/// https screenshots). A change to any of them is a deliberate decision, not a
+/// drive-by edit.
 #[tokio::test]
 async fn the_policy_is_exactly_this() {
     let resp = get("/").await;
@@ -106,7 +107,7 @@ async fn the_policy_is_exactly_this() {
         header(&resp, "content-security-policy"),
         "default-src 'self'; base-uri 'none'; form-action 'self'; \
          frame-ancestors 'none'; object-src 'none'; img-src 'self' data: https:; \
-         style-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'"
+         style-src 'self'; script-src 'self'; connect-src 'self'"
     );
 }
 
@@ -161,10 +162,10 @@ async fn a_404_is_decorated_too() {
 /// and the replacement rules have to travel with the policy.
 #[tokio::test]
 async fn the_htmx_indicator_styles_are_ours_now() {
-    let js = body_string(get("/assets/app.js").await).await;
+    let js = body_string(get("/assets/htmx-config.js").await).await;
     assert!(
         js.contains("htmx.config.includeIndicatorStyles = false"),
-        "app.js must switch off htmx's injected indicator <style>"
+        "htmx-config.js must switch off htmx's injected indicator <style>"
     );
 
     let css = body_string(get("/assets/app.css").await).await;

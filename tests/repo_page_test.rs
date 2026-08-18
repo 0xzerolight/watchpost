@@ -569,8 +569,10 @@ async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
     // The page hands the charts their data and nothing else: no body-level
     // script calls into app.js, which boots itself on DOMContentLoaded.
     assert!(!body.contains("watchpost."), "body was {body}");
-    // The shell's two htmx config blocks are the only inline scripts left.
-    assert_eq!(body.matches("<script>").count(), 2, "body was {body}");
+    // Not one inline script anywhere, which is what `script-src 'self'` costs:
+    // a new inline block would be dead in the browser and silent in every test
+    // but this one.
+    assert_eq!(body.matches("<script>").count(), 0, "body was {body}");
 }
 
 #[tokio::test]

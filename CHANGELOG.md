@@ -63,6 +63,8 @@ never tagged.
 
 - Security headers on every response: Content-Security-Policy, X-Content-Type-Options,
   X-Frame-Options, Referrer-Policy and Cross-Origin-Opener-Policy.
+- The policy allows no inline script or style at all (`script-src 'self'`, `style-src 'self'`), so
+  an injected `<script>` or `onerror=` does not execute even if it survives the escaping.
 - The CSRF cookie is checked for the shape this server mints, and carries `Secure` when the request
   arrived over HTTPS plus a 30-day `Max-Age` so it outlives the browser session.
 - Repo discovery is a CSRF-gated POST; it used to be a GET that spent API calls as a side effect.

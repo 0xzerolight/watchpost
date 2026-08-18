@@ -30,6 +30,7 @@ pub const HTMX_JS: &str = "htmx-2.0.4.min.js";
 pub const CHART_JS: &str = "chart-4.4.7.umd.js";
 pub const APP_CSS: &str = "app.css";
 pub const APP_JS: &str = "app.js";
+pub const HTMX_CONFIG_JS: &str = "htmx-config.js";
 pub const FAVICON: &str = "favicon.svg";
 
 const FAVICON_BYTES: &[u8] = include_bytes!("../../assets/favicon.svg");
@@ -56,6 +57,11 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
     ),
     (APP_CSS, include_bytes!("../../assets/app.css"), CSS),
     (APP_JS, include_bytes!("../../assets/app.js"), JS),
+    (
+        HTMX_CONFIG_JS,
+        include_bytes!("../../assets/htmx-config.js"),
+        JS,
+    ),
     (FAVICON, FAVICON_BYTES, SVG),
 ];
 
@@ -239,7 +245,15 @@ mod tests {
 
     #[test]
     fn every_named_asset_resolves() {
-        for name in [PICO_CSS, HTMX_JS, CHART_JS, APP_CSS, APP_JS, FAVICON] {
+        for name in [
+            PICO_CSS,
+            HTMX_JS,
+            CHART_JS,
+            APP_CSS,
+            APP_JS,
+            HTMX_CONFIG_JS,
+            FAVICON,
+        ] {
             let (bytes, _) = lookup(name).unwrap_or_else(|| panic!("{name} is not embedded"));
             assert!(!bytes.is_empty(), "{name} is empty");
         }

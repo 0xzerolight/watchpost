@@ -19,15 +19,6 @@
  * page (`setPeriod`), not a request — the server never re-renders for a period
  * change.
  */
-/*
- * htmx injects an inline <style> for `.htmx-indicator` when it boots, and the
- * Content-Security-Policy's `style-src 'self'` blocks it — every spinner would
- * be stuck visible. app.css carries the same rules instead. Set before the rest
- * of this file because htmx reads the flag on DOMContentLoaded, which is after
- * this deferred script has run.
- */
-htmx.config.includeIndicatorStyles = false;
-
 (function () {
   "use strict";
 

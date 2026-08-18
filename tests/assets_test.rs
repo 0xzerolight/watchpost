@@ -171,6 +171,40 @@ async fn app_js_defines_the_watchpost_namespace() {
     }
 }
 
+/// The three settings that used to be inline blocks in the shell. Nothing but a
+/// browser notices any of them going missing: the page renders, and then the
+/// back button serves dead charts, Save on an invalid event does nothing at
+/// all, and every spinner is stuck visible.
+#[tokio::test]
+async fn the_htmx_config_asset_carries_every_setting() {
+    let resp = get("/assets/htmx-config.js").await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        header(&resp, "content-type"),
+        "text/javascript; charset=utf-8"
+    );
+    let body = body_string(resp).await;
+
+    assert!(body.contains("htmx.config.historyCacheSize = 0"), "{body}");
+    assert!(
+        body.contains("htmx.config.includeIndicatorStyles = false"),
+        "{body}"
+    );
+    // Pinned byte-for-byte: htmx's default responseHandling never swaps a 4xx,
+    // so without this override every 422 validation response is silently
+    // discarded — the user presses Save and nothing happens. The 422 rule must
+    // precede the `[45]..` catch-all: htmx takes the first match.
+    assert!(
+        body.contains(concat!(
+            r#"htmx.config.responseHandling = [{code:"204",swap:false},"#,
+            r#"{code:"[23]..",swap:true},{code:"422",swap:true,error:true},"#,
+            r#"{code:"[45]..",swap:false,error:true}];"#
+        )),
+        "422 swap config missing: {body}"
+    );
+}
+
 #[tokio::test]
 async fn vendor_assets_are_served_with_their_types() {
     for (file, content_type, needle) in [
@@ -354,21 +388,22 @@ async fn index_renders_the_base_layout() {
         serde_json::json!({ "x-csrf-token": cookie_token })
     );
 
-    assert!(body.contains("htmx.config.historyCacheSize = 0"), "{body}");
-
-    // Pinned byte-for-byte: htmx's default responseHandling never swaps a 4xx,
-    // so without this override every 422 validation response is silently
-    // discarded — the user presses Save and nothing happens. Only a browser
-    // would notice it missing, hence a test that reads the shell. The 422 rule
-    // must precede the `[45]..` catch-all: htmx takes the first match.
-    assert!(
-        body.contains(concat!(
-            r#"htmx.config.responseHandling = [{code:"204",swap:false},"#,
-            r#"{code:"[23]..",swap:true},{code:"422",swap:true,error:true},"#,
-            r#"{code:"[45]..",swap:false,error:true}];"#
-        )),
-        "422 swap config missing from the shell: {body}"
+    // htmx's config is a served file (so the CSP can forbid inline script) and
+    // is cache-busted (so a stale copy cannot freeze the 422 rule for a year).
+    // Its position is the load-bearing part: it must follow htmx, which gives
+    // it a real `htmx` global, and it must not be deferred, or an element could
+    // swap before the config lands.
+    let config_tag = format!(
+        r#"<script src="{}"></script>"#,
+        asset_href("htmx-config.js")
     );
+    let config = body
+        .find(&config_tag)
+        .unwrap_or_else(|| panic!("htmx config missing or deferred: {body}"));
+    let htmx = body
+        .find("/assets/htmx-2.0.4.min.js")
+        .unwrap_or_else(|| panic!("htmx missing: {body}"));
+    assert!(htmx < config, "config must load after htmx: {body}");
 
     for href in [
         "/assets/pico-2.0.6.min.css",

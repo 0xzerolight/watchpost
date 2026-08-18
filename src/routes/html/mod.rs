@@ -15,12 +15,6 @@ pub mod ui;
 
 pub use ui::*;
 
-/// The `htmx.config.responseHandling` override the shell inlines. Kept as a
-/// named constant so a test can pin the exact string: nothing but a browser
-/// would otherwise notice this config going missing, and without it every 422
-/// validation response is silently dropped instead of swapped.
-const RESPONSE_HANDLING_JS: &str = r#"htmx.config.responseHandling = [{code:"204",swap:false},{code:"[23]..",swap:true},{code:"422",swap:true,error:true},{code:"[45]..",swap:false,error:true}];"#;
-
 /// The document shell every page renders into.
 ///
 /// Two details are load-bearing:
@@ -29,8 +23,11 @@ const RESPONSE_HANDLING_JS: &str = r#"htmx.config.responseHandling = [{code:"204
 ///   so no individual form or button has to remember it. The value is built
 ///   with `serde_json` rather than spliced together, so a token that somehow
 ///   contained a quote could not escape the attribute.
-/// * htmx is loaded synchronously so the inline config below runs against a
-///   real `htmx` object, before any element on the page can trigger a swap.
+/// * htmx and its config are both loaded synchronously, in that order, so the
+///   config runs against a real `htmx` object and lands before any element on
+///   the page can trigger a swap. The config lives in `assets/htmx-config.js`
+///   rather than in an inline block, which is what lets the CSP say
+///   `script-src 'self'`.
 ///
 /// There is deliberately no `hx-boost` here. Boosted navigation would swap the
 /// body without re-running the page's chart setup, and `historyCacheSize = 0`
@@ -53,23 +50,17 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                 link rel="stylesheet" href=(format!("/assets/{}", assets::PICO_CSS));
                 link rel="stylesheet" href=(assets::asset_href(assets::APP_CSS));
                 script src=(format!("/assets/{}", assets::HTMX_JS)) {}
+                // htmx's configuration, deliberately not deferred: it has to
+                // run against a real `htmx` object (the tag above is
+                // synchronous, so there is one) and before any element can
+                // trigger a swap, which the parser being still in <head>
+                // guarantees. See the file itself for what each setting buys.
+                script src=(assets::asset_href(assets::HTMX_CONFIG_JS)) {}
                 // The charts are only needed once the DOM exists, so both of
                 // these defer; `defer` also keeps them in order, and app.js
                 // depends on Chart.
                 script src=(format!("/assets/{}", assets::CHART_JS)) defer {}
                 script src=(assets::asset_href(assets::APP_JS)) defer {}
-                // htmx's history cache restores a serialized DOM snapshot,
-                // which brings back <canvas> elements with no Chart.js
-                // instance behind them — dead charts on every back button.
-                // Disabling the cache costs a re-request and keeps pages live.
-                script { "htmx.config.historyCacheSize = 0;" }
-                // htmx 2's default responseHandling never swaps a 4xx, so the
-                // 422 bodies the event forms answer with would be discarded —
-                // the user would press Save and watch nothing happen. This
-                // override keeps the defaults and adds one rule that swaps 422
-                // (still flagged as an error). Rules match first-wins, so the
-                // 422 entry MUST sit before the `[45]..` catch-all.
-                script { (PreEscaped(RESPONSE_HANDLING_JS)) }
             }
             body hx-headers=(hx_headers) {
                 // First element in the body, or a keyboard user tabs the nav
