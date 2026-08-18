@@ -374,7 +374,10 @@ async fn index_renders_the_base_layout() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
-    assert!(body.contains("<title>Repos · watchpost</title>"), "{body}");
+    assert!(
+        body.contains("<title>Repositories · watchpost</title>"),
+        "{body}"
+    );
     // Both themes are honoured by pico; without this the browser paints the
     // form controls and scrollbars light even in a dark UA theme.
     assert!(
@@ -437,7 +440,7 @@ async fn index_renders_the_base_layout() {
     // screenreader user with no idea where they are.
     assert_eq!(body.matches(r#"aria-current="page""#).count(), 1, "{body}");
     assert!(
-        body.contains(r#"<a href="/" aria-current="page">Repos</a>"#),
+        body.contains(r#"<a href="/" aria-current="page">Repositories</a>"#),
         "{body}"
     );
 

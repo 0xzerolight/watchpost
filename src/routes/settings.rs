@@ -53,7 +53,7 @@ pub async fn settings_page(
                 (sync_status_fragment(&status, state.cfg.timezone))
             }
             section {
-                h2 { "Repos" }
+                h2 { "Repositories" }
                 (picker)
             }
         },

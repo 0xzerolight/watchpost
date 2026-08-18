@@ -23,7 +23,7 @@ pub type Card = (RepoOverview, Vec<Option<i64>>);
 pub fn index_body(cards: &[Card], tz: Tz) -> Markup {
     html! {
         (page_header(
-            "Repos",
+            "Repositories",
             Some(html! { "Tracked repositories and their latest metrics." }),
             None,
         ))
@@ -165,7 +165,7 @@ mod tests {
     fn dashboard_leads_with_the_shared_page_header() {
         let out = index_body(&[], Tz::UTC).into_string();
         assert!(
-            out.starts_with(r#"<header class="wp-page-header"><hgroup><h1>Repos</h1>"#),
+            out.starts_with(r#"<header class="wp-page-header"><hgroup><h1>Repositories</h1>"#),
             "out was {out}"
         );
         assert!(

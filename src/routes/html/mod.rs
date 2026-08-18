@@ -71,7 +71,7 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                     ul {
                         li {
                             a href="/" aria-current=[matches!(nav, NavItem::Home).then_some("page")] {
-                                "Repos"
+                                "Repositories"
                             }
                         }
                         li {
