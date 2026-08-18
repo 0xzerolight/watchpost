@@ -5,7 +5,7 @@
 
 use maud::{Markup, html};
 
-use super::ui::{Notice, empty_state, error_glyph, notice, spinner, timestamp};
+use super::ui::{Notice, empty_state, error_glyph, notice, spinner, table_wrap, timestamp};
 use crate::state::SyncStatus;
 use crate::types::RepoRow;
 
@@ -56,40 +56,43 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>) -> Markup 
             @if repos.is_empty() {
                 (empty_state("No repos known yet — load them from GitHub.", None))
             } @else {
-                table {
-                    thead {
-                        tr {
-                            th scope="col" { "Track" }
-                            th scope="col" { "Repo" }
-                            th scope="col" { "Last synced" }
-                            th scope="col" { "" }
-                        }
-                    }
-                    tbody {
-                        @for repo in repos {
+                (table_wrap(html! {
+                    table {
+                        thead {
                             tr {
-                                td {
-                                    input type="checkbox" id=(format!("track-{}", repo.id))
-                                        name="tracked" value=(repo.id)
-                                        checked[repo.tracked];
-                                }
-                                // The name cell is the box's label rather than
-                                // text beside it: the visible name becomes the
-                                // accessible one, and the click target grows
-                                // from the box to the whole repo name.
-                                td { label for=(format!("track-{}", repo.id)) { (repo.name) } }
-                                td class="wp-muted wp-small" {
-                                    (timestamp(repo.last_synced_at.as_deref()))
-                                }
-                                td {
-                                    @if let Some(error) = &repo.last_error {
-                                        (error_glyph(error))
+                                th scope="col" { "Track" }
+                                th scope="col" { "Repo" }
+                                th scope="col" { "Last synced" }
+                                th scope="col" { "" }
+                            }
+                        }
+                        tbody {
+                            @for repo in repos {
+                                tr {
+                                    td {
+                                        input type="checkbox" id=(format!("track-{}", repo.id))
+                                            name="tracked" value=(repo.id)
+                                            checked[repo.tracked];
+                                    }
+                                    // The name cell is the box's label rather
+                                    // than text beside it: the visible name
+                                    // becomes the accessible one, and the click
+                                    // target grows from the box to the whole
+                                    // repo name.
+                                    td { label for=(format!("track-{}", repo.id)) { (repo.name) } }
+                                    td class="wp-muted wp-small" {
+                                        (timestamp(repo.last_synced_at.as_deref()))
+                                    }
+                                    td {
+                                        @if let Some(error) = &repo.last_error {
+                                            (error_glyph(error))
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
+                }))
             }
         }
     }
@@ -302,6 +305,18 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("<table"), "{out}");
+    }
+
+    /// Unwrapped, this table's intrinsic width pushed the whole settings page
+    /// wider than a phone viewport — the repo page's tables all scroll inside
+    /// this wrapper instead.
+    #[test]
+    fn picker_table_scrolls_inside_its_own_wrapper() {
+        let out = repos_picker(&[repo("octo/x", None, None)], None).into_string();
+        assert!(
+            out.contains(r#"<div class="overflow-auto wp-table-wrap"><table>"#),
+            "{out}"
+        );
     }
 
     #[test]
