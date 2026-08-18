@@ -526,18 +526,26 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
- * The sort arrow beside a sortable column's label. Dimmed by default so the
- * inactive columns read as "sortable" rather than as three competing arrows,
- * and full strength on the column the table is actually ordered by —
- * `[aria-sort]` is only ever on that one cell, so the state needs no class.
+ * The sort indicator beside a sortable column's label. An SVG rather than an
+ * arrow character, so its weight and baseline are ours and not the platform
+ * font's; `em` units keep it in step with the header text at any root size.
+ * Idle columns are dimmed so they read as "sortable" rather than as three
+ * competing arrows — the active one is full strength, and it is the only cell
+ * without `.wp-sort-idle`, so the state needs no second selector.
  */
-.wp-sort-glyph {
+.wp-sort-icon {
+  width: 0.7em;
+  height: 0.7em;
   margin-left: var(--wp-space-1);
-  opacity: 0.35;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-th[aria-sort] .wp-sort-glyph {
-  opacity: 1;
+.wp-sort-idle {
+  opacity: 0.4;
 }
 
 /*

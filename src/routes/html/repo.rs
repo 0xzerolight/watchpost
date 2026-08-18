@@ -14,7 +14,7 @@
 //! already has (see `setPeriod` in assets/app.js) rather than a round trip.
 
 use chrono_tz::Tz;
-use maud::{Markup, html};
+use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
@@ -39,6 +39,18 @@ pub const PERIODS: [(i64, &str); 5] = [
     (365, "1 year"),
     (ALL_DAYS, "All"),
 ];
+
+/// The three sort indicators. Inline SVG rather than arrow characters: `↕`
+/// renders as an emoji on some platforms, and `▲`/`▼` sit on a different
+/// baseline and weight in every font that has them. One stroked chevron each,
+/// sized in `em` by `.wp-sort-icon` so they track the header's text.
+///
+/// The path data is factored out because the tests assert on it — an icon that
+/// silently became the wrong direction would otherwise still match on its
+/// wrapper.
+const SORT_ASC_PATH: &str = r#"<path d="M2 6.5 5 3.5 8 6.5"/>"#;
+const SORT_DESC_PATH: &str = r#"<path d="M2 3.5 5 6.5 8 3.5"/>"#;
+const SORT_IDLE_PATH: &str = r#"<path d="M2.5 4.2 5 1.7 7.5 4.2M2.5 5.8 5 8.3 7.5 5.8"/>"#;
 
 // ---------------------------------------------------------------------------
 // Payloads the client reads
@@ -495,11 +507,12 @@ fn table_id(kind: PopularKind) -> &'static str {
 /// like work instead of like a click that did nothing. Nothing is disabled — a
 /// link cannot be, and re-sorting mid-request only re-sorts.
 ///
-/// The glyph is `aria-hidden`: `aria-sort` on the cell already announces the
-/// ordering, and a screenreader reading "▼" after the column name would say it
-/// twice. Every column carries one — a dimmed `↕` on the inactive ones is what
-/// says the other columns are sortable at all, and rendering it always means
-/// the header row does not reflow when the sort moves.
+/// The icon is `aria-hidden`: `aria-sort` on the cell already announces the
+/// ordering, and a screenreader reading "down chevron" after the column name
+/// would say it twice. Every column carries one — a dimmed double chevron on
+/// the inactive ones is what says the other columns are sortable at all, and
+/// rendering it always means the header row does not reflow when the sort
+/// moves.
 fn sort_th(
     kind: PopularKind,
     key: SortKey,
@@ -511,10 +524,10 @@ fn sort_th(
     let table = table_id(kind);
     let active = current.key == key;
     let aria = active.then(|| current.dir.aria());
-    let glyph = match (active, current.dir) {
-        (false, _) => "↕",
-        (true, SortDir::Asc) => "▲",
-        (true, SortDir::Desc) => "▼",
+    let (icon_class, path) = match (active, current.dir) {
+        (false, _) => ("wp-sort-icon wp-sort-idle", SORT_IDLE_PATH),
+        (true, SortDir::Asc) => ("wp-sort-icon", SORT_ASC_PATH),
+        (true, SortDir::Desc) => ("wp-sort-icon", SORT_DESC_PATH),
     };
     html! {
         th scope="col" aria-sort=[aria] {
@@ -527,7 +540,10 @@ fn sort_th(
                 hx-replace-url="true"
                 hx-indicator="closest table" {
                     (label)
-                    span class="wp-sort-glyph" aria-hidden="true" { (glyph) }
+                    svg class=(icon_class) viewBox="0 0 10 10"
+                        aria-hidden="true" focusable="false" {
+                            (PreEscaped(path))
+                        }
                 }
         }
     }
@@ -1060,14 +1076,19 @@ mod tests {
     fn every_column_shows_its_sort_state() {
         // Default ordering: count descending, the other two columns idle.
         let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
-        assert_eq!(out.matches("wp-sort-glyph").count(), 3, "out was {out}");
-        assert_eq!(out.matches('↕').count(), 2, "out was {out}");
-        assert!(
-            out.contains(r#"Views<span class="wp-sort-glyph" aria-hidden="true">▼</span>"#),
+        assert_eq!(out.matches("wp-sort-icon").count(), 3, "out was {out}");
+        assert_eq!(
+            out.matches("wp-sort-icon wp-sort-idle").count(),
+            2,
             "out was {out}"
         );
+        assert!(
+            out.contains(r#"Views<svg class="wp-sort-icon" viewBox="0 0 10 10""#),
+            "out was {out}"
+        );
+        assert!(out.contains(SORT_DESC_PATH), "out was {out}");
 
-        // Ascending on the name column moves both the glyph and its direction.
+        // Ascending on the name column moves both the icon and its direction.
         let params = PopularParams {
             refs_sort: Sort {
                 key: SortKey::Name,
@@ -1077,11 +1098,16 @@ mod tests {
         };
         let out = popular_table(PopularKind::Referrers, &[], &params).into_string();
         assert!(
-            out.contains(r#"Referrer<span class="wp-sort-glyph" aria-hidden="true">▲</span>"#),
+            out.contains(r#"Referrer<svg class="wp-sort-icon" viewBox="0 0 10 10""#),
             "out was {out}"
         );
-        assert_eq!(out.matches('↕').count(), 2, "out was {out}");
-        // The glyph duplicates what `aria-sort` already says, so it is hidden
+        assert!(out.contains(SORT_ASC_PATH), "out was {out}");
+        assert_eq!(
+            out.matches("wp-sort-icon wp-sort-idle").count(),
+            2,
+            "out was {out}"
+        );
+        // The icon duplicates what `aria-sort` already says, so it is hidden
         // from the accessibility tree on every column, active or not.
         assert_eq!(
             out.matches(r#"aria-hidden="true""#).count(),
