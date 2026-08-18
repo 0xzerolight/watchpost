@@ -9,8 +9,14 @@ services:
     # reach this port has full read/write — including the form that sets the
     # GitHub token. Widen deliberately, behind a proxy that authenticates (see
     # the README's security section), never by accident.
+    #
+    # WATCHPOST_HOST_PORT, deliberately not WATCHPOST_PORT: `.env` is handed to
+    # the container as well as read by compose, and WATCHPOST_PORT is the port
+    # the binary *binds* inside it. Reusing that name here would move the app
+    # off 8080 while this mapping still pointed at 8080, and nothing would
+    # answer. The container side is fixed — the healthcheck hardcodes it too.
     ports:
-      - "127.0.0.1:${WATCHPOST_PORT:-8080}:8080"
+      - "127.0.0.1:${WATCHPOST_HOST_PORT:-8080}:8080"
     env_file:
       - path: .env
         required: false
