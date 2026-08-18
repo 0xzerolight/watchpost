@@ -139,6 +139,11 @@ async fn app_js_defines_the_watchpost_namespace() {
         "CHART_SPECS",
         "computeView",
         "syncChart",
+        // Sort links are rendered with the period the page was requested at and
+        // carry hx-replace-url, so without this rewrite a sort after a zoom
+        // stomps the period out of the address bar.
+        "data-sort-link",
+        "updateSortLinks",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

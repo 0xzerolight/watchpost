@@ -427,13 +427,13 @@ fn popular_section(view: &RepoView) -> Markup {
 /// must be the fragment's root — the caption carries the heading rather than an
 /// `<h3>` outside it, which a swap would leave behind.
 pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularParams) -> Markup {
-    let (table_id, caption, name_label) = match kind {
-        PopularKind::Referrers => ("refs-table", "Referrers", "Referrer"),
-        PopularKind::Paths => ("paths-table", "Popular paths", "Path"),
+    let (caption, name_label) = match kind {
+        PopularKind::Referrers => ("Referrers", "Referrer"),
+        PopularKind::Paths => ("Popular paths", "Path"),
     };
     let sort = params.sort(kind);
     html! {
-        table id=(table_id) {
+        table id=(table_id(kind)) {
             caption { (caption) }
             thead {
                 tr {
@@ -469,9 +469,23 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
     }
 }
 
+/// The table element's `id`. Also the sort links' swap target and the stem of
+/// their own ids, so all three are the same string by construction.
+fn table_id(kind: PopularKind) -> &'static str {
+    match kind {
+        PopularKind::Referrers => "refs-table",
+        PopularKind::Paths => "paths-table",
+    }
+}
+
 /// A sortable header cell. The link is a real `href` as well as an `hx-get`, so
 /// the column still sorts with htmx unavailable, and `aria-sort` tells a
 /// screenreader which column the table is ordered by.
+///
+/// `data-sort-link` is how `assets/app.js` finds these to re-point them at the
+/// period showing now: the URLs are built here from the period the page was
+/// requested at, but zooming the charts is client-side and never comes back
+/// through this function.
 ///
 /// The indicator is the table rather than the link: `table.htmx-request tbody`
 /// fades exactly the rows the swap is about to replace, so a slow sort looks
@@ -486,16 +500,15 @@ fn sort_th(
     tooltip: Option<&str>,
 ) -> Markup {
     let url = params.sort_url(kind, key);
-    let target = match kind {
-        PopularKind::Referrers => "#refs-table",
-        PopularKind::Paths => "#paths-table",
-    };
+    let table = table_id(kind);
     let aria = (current.key == key).then(|| current.dir.aria());
     html! {
         th scope="col" aria-sort=[aria] {
-            a href=(url)
+            a id=(format!("sort-{table}-{}", key.param(kind)))
+                data-sort-link
+                href=(url)
                 hx-get=(url)
-                hx-target=(target)
+                hx-target=(format!("#{table}"))
                 hx-swap="outerHTML"
                 hx-replace-url="true"
                 hx-indicator="closest table"
@@ -970,6 +983,32 @@ mod tests {
         assert!(out.contains("Nothing recorded yet."), "out was {out}");
         // The scroll wrapper belongs to the section, not to the fragment.
         assert!(!out.contains("wp-table-wrap"), "out was {out}");
+    }
+
+    #[test]
+    fn sort_links_are_findable_by_the_client() {
+        // Zooming the charts never re-renders these links, so app.js rewrites
+        // them in place: `data-sort-link` is how it finds them, and the ids are
+        // derived from the table id so a link can never name the wrong table.
+        let refs = popular_table(PopularKind::Referrers, &[], &params()).into_string();
+        assert_eq!(refs.matches("data-sort-link").count(), 3, "refs was {refs}");
+        for id in [
+            "sort-refs-table-referrer",
+            "sort-refs-table-count",
+            "sort-refs-table-uniques",
+        ] {
+            assert!(refs.contains(&format!(r#"id="{id}""#)), "refs was {refs}");
+        }
+
+        let paths = popular_table(PopularKind::Paths, &[], &params()).into_string();
+        assert!(
+            paths.contains(r#"id="sort-paths-table-path""#),
+            "paths was {paths}"
+        );
+        assert!(
+            paths.contains(r##"hx-target="#paths-table""##),
+            "paths was {paths}"
+        );
     }
 
     #[test]

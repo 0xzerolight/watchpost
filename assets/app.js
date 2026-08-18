@@ -969,6 +969,48 @@ htmx.config.includeIndicatorStyles = false;
     return PERIODS.indexOf(days) === -1 ? ALL_DAYS : days;
   }
 
+  /* `new URL`, without taking a caller down over a href the parser refuses. */
+  function parseUrl(href) {
+    if (typeof URL !== "function") {
+      return null;
+    }
+    try {
+      return new URL(href, window.location.href);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function periodFromUrl() {
+    var url = parseUrl(window.location.href);
+    return url ? normalisePeriod(url.searchParams.get("days")) : ALL_DAYS;
+  }
+
+  /*
+   * The period the page is currently showing.
+   *
+   * Seeded from the address bar rather than from `#chart-data`, because the
+   * sort links this drives outlive the charts: a repo with nothing observed
+   * renders no island and no selector, but its popular tables and their links
+   * are there either way. The allowlist is the same one the server validates
+   * `?days=` against, so a hand-edited value lands on the same period here as
+   * it did there.
+   */
+  var currentDays = periodFromUrl();
+
+  /*
+   * How a period is spelled in a query string, in one place. The default is
+   * spelled as no parameter at all — the same convention `sort_url` follows
+   * server-side, so the address only ever names a period someone picked.
+   */
+  function applyPeriod(params, days) {
+    if (days === ALL_DAYS) {
+      params.delete("days");
+    } else {
+      params.set("days", String(days));
+    }
+  }
+
   /*
    * The trailing `days` of a dense array, or all of it for "All" (and for a
    * window longer than the history, which `slice` already handles).
@@ -999,11 +1041,12 @@ htmx.config.includeIndicatorStyles = false;
   }
 
   /*
-   * Zoom to `value` days: re-render from the payload already in the page and
-   * put the choice in the address bar, so a reload or a shared link opens on
-   * the same period. `replaceState` rather than `pushState` — a zoom is not a
-   * navigation, and the back button should leave the page rather than step
-   * through every period the reader tried.
+   * Zoom to `value` days: re-render from the payload already in the page, put
+   * the choice in the address bar and hand it to the sort links, so a reload, a
+   * shared link or a sort click all stay on the period showing.
+   * `replaceState` rather than `pushState` — a zoom is not a navigation, and the
+   * back button should leave the page rather than step through every period the
+   * reader tried.
    */
   function setPeriod(value) {
     if (!chartPayload) {
@@ -1011,19 +1054,50 @@ htmx.config.includeIndicatorStyles = false;
     }
     var days = normalisePeriod(value);
     renderCharts(chartPayload, days);
+    currentDays = days;
     syncPeriodUrl(days);
+    updateSortLinks(days);
   }
 
   function syncPeriodUrl(days) {
-    if (!window.history || !history.replaceState || typeof URL !== "function") {
+    if (!window.history || !history.replaceState) {
       return;
     }
-    try {
-      var url = new URL(window.location.href);
-      url.searchParams.set("days", String(days));
-      history.replaceState(history.state, "", url.toString());
-    } catch (err) {
+    var url = parseUrl(window.location.href);
+    if (!url) {
       // A location the URL parser refuses is not worth failing a zoom over.
+      return;
+    }
+    applyPeriod(url.searchParams, days);
+    history.replaceState(history.state, "", url.toString());
+  }
+
+  /*
+   * Re-point every sort link at `days`.
+   *
+   * The links are rendered with the period the page was requested at, and
+   * `hx-replace-url` makes a sort rewrite the whole address bar — so without
+   * this, sorting after a zoom would put the old period back and a reload would
+   * open on it.
+   *
+   * `href` and `hx-get` both, then `htmx.process`: htmx reads `hx-get` once,
+   * when it wires an element up, and keeps the URL in the click handler's
+   * closure. Rewriting the attribute alone would fix the fallback link and
+   * change nothing about the request; re-processing is what re-reads it.
+   */
+  function updateSortLinks(days) {
+    var links = document.querySelectorAll("[data-sort-link]");
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var url = parseUrl(link.getAttribute("href"));
+      if (!url) {
+        continue;
+      }
+      applyPeriod(url.searchParams, days);
+      var next = url.pathname + url.search;
+      link.setAttribute("href", next);
+      link.setAttribute("hx-get", next);
+      htmx.process(link);
     }
   }
 
@@ -1568,6 +1642,12 @@ htmx.config.includeIndicatorStyles = false;
       (target.matches && target.matches("canvas.spark"))
     ) {
       initSparklines(target);
+    }
+    // A sorted table arrives as fresh server markup, so its links carry the
+    // period the page was requested at all over again — reapply the zoom to
+    // them or the next sort undoes it.
+    if (target.id === "refs-table" || target.id === "paths-table") {
+      updateSortLinks(currentDays);
     }
     // Belt to the fragment's inline calls, for a swap that lands the islands
     // without them (an out-of-band swap, say). Both are guarded against doing
