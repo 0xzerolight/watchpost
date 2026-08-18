@@ -53,3 +53,7 @@ under 72 characters and write a body only when the "why" is not obvious from the
 [ARCHITECTURE.md](ARCHITECTURE.md) covers the stack, the collection loop, the storage rules and the
 caveats behind the numbers. Worth reading before changing anything in `src/collector.rs` or
 `src/db/`.
+
+## Releasing
+
+Maintainers: see [RELEASING.md](RELEASING.md).
