@@ -133,7 +133,7 @@
 .wp-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
-  gap: 1rem;
+  gap: var(--wp-space-4);
 }
 
 /* Pico gives articles a generous default margin, which a grid already spaces. */
@@ -172,13 +172,13 @@
 .wp-spark {
   position: relative;
   height: 3rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: var(--wp-space-3);
 }
 
 /* Stats row: label above value, evenly divided, no list markers. */
 .wp-stats {
   display: flex;
-  gap: 1rem;
+  gap: var(--wp-space-4);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -286,7 +286,7 @@
   position: absolute;
   z-index: 10;
   max-width: 22rem;
-  padding: 0.5rem 0.75rem;
+  padding: var(--wp-space-2) var(--wp-space-3);
   border: 1px solid var(--pico-card-border-color, #d0d5dd);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
@@ -315,7 +315,7 @@
  */
 .wp-action {
   width: auto;
-  margin: 0 0.25rem 0 0;
+  margin: 0 var(--wp-space-1) 0 0;
   padding: 0.15rem 0.6rem;
   font-size: 0.8rem;
 }
@@ -648,11 +648,11 @@ th[aria-sort] .wp-sort-glyph {
 .wp-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--wp-space-2);
   flex-wrap: wrap;
 }
 
-.wp-gap-1 { gap: 0.25rem; }
+.wp-gap-1 { gap: var(--wp-space-1); }
 .wp-grow { flex: 1 1 auto; }
 .wp-muted { color: var(--pico-muted-color, #6b7280); }
 .wp-danger { color: var(--pico-del-color, #b3261e); }

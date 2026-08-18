@@ -475,22 +475,28 @@ htmx.config.includeIndicatorStyles = false;
     // element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
     // any earlier would decide it fits everywhere.
     var x = native.pageX + 14;
-    var y = native.pageY + 14;
     var maxX = window.scrollX + document.documentElement.clientWidth - 8;
     if (x + tip.offsetWidth > maxX) {
       x = Math.max(window.scrollX + 8, native.pageX - tip.offsetWidth - 14);
     }
+    // Written before the height is read, not with the `top` below. The tip is
+    // absolutely positioned with an automatic width, so the room between its
+    // `left` and the page edge is what decides where its text wraps and
+    // therefore how tall it is; measured while the previous tip's `left` was
+    // still on the element, the height answered for a box of a different width.
+    tip.style.left = x + "px";
+
     // The same flip vertically. Without it a marker near the foot of the window
     // opened its tip below the fold — the tip is positioned in page
     // coordinates, so nothing scrolls it back into view. Flipping above the
     // cursor keeps it beside the marker it belongs to; the `Math.max` pins a
     // tip taller than the viewport to the top edge, losing its last line rather
     // than its first.
+    var y = native.pageY + 14;
     var maxY = window.scrollY + document.documentElement.clientHeight - 8;
     if (y + tip.offsetHeight > maxY) {
       y = Math.max(window.scrollY + 8, native.pageY - tip.offsetHeight - 14);
     }
-    tip.style.left = x + "px";
     tip.style.top = y + "px";
   }
 
