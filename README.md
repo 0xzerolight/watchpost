@@ -68,17 +68,20 @@ sync button. Syncing spends the token's GitHub rate budget, so an open instance 
 a stranger to exhaust it. The token itself is never rendered (`--doctor` prints its last 4
 characters and length, nothing else), but everything it can read is on the page.
 
-So treat the port as private. Outside Docker `WATCHPOST_HOST` defaults to `127.0.0.1`; the image
-sets `0.0.0.0` and the shipped `compose.yml` publishes `8080:8080`, which is every interface on the
-host. On a machine that is not alone on its network, publish to the loopback instead:
+So both defaults keep the port private. Outside Docker `WATCHPOST_HOST` is `127.0.0.1`, and
+`compose.yml` publishes to `127.0.0.1:8080`. The container itself listens on `0.0.0.0` — that is
+what makes publishing work at all — but the host offers the port to the loopback and nowhere else,
+so as shipped nothing on your network can reach it.
+
+Widening that is one line, and worth a moment's thought first:
 
 ```yaml
 ports:
-  - "127.0.0.1:8080:8080"
+  - "8080:8080"      # every interface on the host
 ```
 
-Then reach it through an SSH tunnel, or put a reverse proxy in front and let the proxy do the
-authenticating. Do not expose it directly.
+Do that only behind a reverse proxy that does the authenticating. Otherwise leave it on the
+loopback and reach it through an SSH tunnel. Do not expose it directly.
 
 **Behind a TLS-terminating proxy, forward `X-Forwarded-Proto: https`.** The CSRF cookie is marked
 `Secure` only when that header says the browser spoke HTTPS; setting it unconditionally would make

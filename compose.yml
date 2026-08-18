@@ -1,8 +1,11 @@
 services:
   watchpost:
     build: .
+    # Loopback only: watchpost has no authentication, so anything that can
+    # reach this port has full read/write. Widen deliberately (see the README's
+    # security section), never by accident.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     env_file:
       - path: .env
         required: false
