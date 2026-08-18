@@ -1226,7 +1226,7 @@ htmx.config.includeIndicatorStyles = false;
       canvases.push(scope);
     }
 
-    var colour = css("--wp-marker-0", "#2f6fd0");
+    var colour = css("--wp-marker-0", "#1f5bb5");
     canvases.forEach(function (canvas) {
       var values = sparkData(canvas);
       if (!values) {

@@ -27,14 +27,21 @@
   /* Larger than any element is tall, so a pill stays a pill at any height. */
   --wp-radius-pill: 999px;
 
-  --wp-marker-0: #2f6fd0;
-  --wp-marker-1: #d1493f;
-  --wp-marker-2: #2e8b57;
-  --wp-marker-3: #b4720d;
-  --wp-marker-4: #7c5cd6;
-  --wp-marker-5: #0f8b8d;
-  --wp-marker-6: #c2557f;
-  --wp-marker-7: #a0522d;
+  /*
+   * Every slot clears 5.9:1 against white. The chips wear these as text on the
+   * card background, so 3:1 (a graphical object) is not the bar they have to
+   * meet — WCAG 1.4.3 is, at the small size a chip is set in. The eight are
+   * still walked around the hue circle so that adjacent slots stay
+   * distinguishable as marker lines too.
+   */
+  --wp-marker-0: #1f5bb5;
+  --wp-marker-1: #b3352c;
+  --wp-marker-2: #1f6f43;
+  --wp-marker-3: #8a5600;
+  --wp-marker-4: #6544c4;
+  --wp-marker-5: #0a6f71;
+  --wp-marker-6: #a8386a;
+  --wp-marker-7: #8a4522;
   --wp-flash-bg: #fff3c4;
 }
 
@@ -162,17 +169,26 @@
   align-items: center;
   gap: 0.3rem;
   /*
-   * Pico stretches every <button> to the full width of its container, which
-   * turns the kind filter row into three full-width bars. Chips size to their
-   * label instead — the rule has to name both, because the same class dresses
-   * a <span> badge in a table cell and a <button> in the filter row.
+   * Pico hangs a form-layout `margin-bottom` on `[type=button]`, which a chip —
+   * a label, not a control in a form — must not reserve a line of space for.
+   * The filter row's `role="group"` happens to zero it for its own children,
+   * so this is what keeps a chip a chip anywhere else. What actually stretches
+   * the filter chips is that group's `flex: 1 1 auto`, undone further down on
+   * the group's own selector; no blanket Pico button rule is involved.
    */
-  width: auto;
+  margin: 0;
   padding: 0.1rem 0.6rem;
   border: 1px solid var(--wp-kind-color, var(--pico-muted-border-color));
   border-radius: var(--wp-radius-pill);
   color: var(--wp-kind-color, inherit);
-  font-size: var(--wp-text-xs);
+  /*
+   * A chip is the smallest type on the page and the only text set in a colour
+   * rather than in the body ink. WCAG's 4.5:1 bar does not move with size and
+   * the palette above clears it either way, but legibility does move: one step
+   * up from `--wp-text-xs` is what makes a coloured pill readable rather than
+   * merely compliant.
+   */
+  font-size: var(--wp-text-sm);
   line-height: 1.6;
   white-space: nowrap;
   background: transparent;
@@ -189,8 +205,6 @@
 [role="group"] > .wp-chip,
 [role="group"] > button[type="button"].wp-chip {
   flex: 0 0 auto;
-  display: inline-flex;
-  width: auto;
   margin-left: 0;
   border-radius: var(--wp-radius-pill);
 }
