@@ -77,7 +77,6 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
         return report;
     }
 
-    let today = Utc::now().format("%Y-%m-%d").to_string();
     discover(&state).await;
 
     let tracked = match state.db.call(|c| queries::tracked_repos(c)).await {
@@ -95,6 +94,9 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
             info!(repo = %repo.name, "skipped: in backoff");
             continue;
         }
+        // Read per repo, not once per cycle: a long cycle can cross midnight,
+        // and the repos after the crossing belong on the new day.
+        let today = Utc::now().format("%Y-%m-%d").to_string();
         match sync_one_repo(&state, &repo, &today).await {
             Ok(None) => {
                 let (id, now) = (repo.id, Utc::now().to_rfc3339());
@@ -108,10 +110,12 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
                 report.repos_ok += 1;
             }
             Ok(Some(partial)) => {
-                // Partial data landed, so no backoff — the repo stays in the
-                // next cycle. The streak still ticks up; a later full success
-                // clears it.
-                record_err(&state, &repo, &partial, None).await;
+                // Data landed, so the repo is healthy enough to retry next
+                // cycle: no backoff, and the error streak is left where it is.
+                // Only a total failure feeds the exponential backoff — a repo
+                // with one permanently broken endpoint would otherwise walk its
+                // streak to the 24h cap and take its first real failure there.
+                record_partial(&state, &repo, &partial).await;
                 report.repos_failed += 1;
                 failed.push((repo.name.clone(), partial));
             }
@@ -133,7 +137,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
                 let streak = u32::try_from(repo.error_streak).unwrap_or(0);
                 let until = (Utc::now() + repo_backoff(streak)).to_rfc3339();
                 warn!(repo = %repo.name, error = %e, "sync failed");
-                record_err(&state, &repo, &msg, Some(&until)).await;
+                record_err(&state, &repo, &msg, &until).await;
                 report.repos_failed += 1;
                 failed.push((repo.name.clone(), msg));
             }
@@ -494,12 +498,23 @@ async fn mark_synced(state: &AppState, repo: &RepoRow) {
     }
 }
 
-async fn record_err(state: &AppState, repo: &RepoRow, msg: &str, backoff_until: Option<&str>) {
-    let (id, msg_owned) = (repo.id, msg.to_string());
-    let backoff = backoff_until.map(str::to_string);
+async fn record_partial(state: &AppState, repo: &RepoRow, msg: &str) {
+    let (id, msg_owned, now) = (repo.id, msg.to_string(), Utc::now().to_rfc3339());
     if let Err(e) = state
         .db
-        .call(move |c| queries::record_sync_err(c, id, &msg_owned, backoff.as_deref()))
+        .call(move |c| queries::record_sync_partial(c, id, &now, &msg_owned))
+        .await
+    {
+        warn!(repo = %repo.name, error = %e, "recording partial sync failed");
+    }
+}
+
+async fn record_err(state: &AppState, repo: &RepoRow, msg: &str, backoff_until: &str) {
+    let (id, msg_owned) = (repo.id, msg.to_string());
+    let backoff = backoff_until.to_string();
+    if let Err(e) = state
+        .db
+        .call(move |c| queries::record_sync_err(c, id, &msg_owned, Some(&backoff)))
         .await
     {
         warn!(repo = %repo.name, error = %e, "recording sync error failed");

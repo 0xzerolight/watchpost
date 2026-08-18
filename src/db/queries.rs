@@ -352,6 +352,28 @@ pub fn record_sync_ok(conn: &Connection, repo_id: i64, at: &str) -> Result<(), D
     Ok(())
 }
 
+/// A sync that wrote something but not everything: the repo answered, so it
+/// counts as synced and is taken out of backoff, while `last_error` keeps the
+/// endpoints that failed.
+///
+/// `error_streak` is deliberately left alone. It is the exponent behind
+/// [`record_sync_err`]'s backoff, and data landing means the repo is healthy
+/// enough to try again next cycle — counting partials would walk the streak up
+/// until the first total failure backed off for a day instead of 30 minutes.
+pub fn record_sync_partial(
+    conn: &Connection,
+    repo_id: i64,
+    at: &str,
+    err: &str,
+) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE repos SET last_synced_at = ?2, last_error = ?3, backoff_until = NULL
+         WHERE id = ?1",
+        params![repo_id, at, err],
+    )?;
+    Ok(())
+}
+
 pub fn record_sync_err(
     conn: &Connection,
     repo_id: i64,
@@ -1491,6 +1513,23 @@ mod tests {
 
         mark_stars_synced(&c, 1).unwrap();
         assert!(repos_needing_star_backfill(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_sync_partial_clears_backoff_and_keeps_the_streak() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        set_tracked(&c, 1, true).unwrap();
+        record_sync_err(&c, 1, "boom", Some("2026-08-02T00:00:00Z")).unwrap();
+        record_sync_err(&c, 1, "boom again", Some("2026-08-03T00:00:00Z")).unwrap();
+
+        record_sync_partial(&c, 1, "2026-08-04T00:00:00Z", "partial: releases: down").unwrap();
+
+        let repo = &tracked_repos(&c).unwrap()[0];
+        assert_eq!(repo.last_synced_at.as_deref(), Some("2026-08-04T00:00:00Z"));
+        assert_eq!(repo.last_error.as_deref(), Some("partial: releases: down"));
+        assert_eq!(repo.backoff_until, None, "partial data must not back off");
+        assert_eq!(repo.error_streak, 2, "a partial must not move the streak");
     }
 
     #[test]

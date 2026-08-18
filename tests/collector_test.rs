@@ -465,6 +465,74 @@ async fn partial_failure_lands_partial_data() {
     );
 }
 
+/// A partial sync counts as a sync, not as a strike: it records a timestamp,
+/// leaves the streak alone and stays out of backoff. If it counted, a repo with
+/// one permanently broken endpoint would arrive at its first real failure with
+/// a streak deep enough to back off for a day instead of 30 minutes.
+#[tokio::test]
+async fn partial_sync_does_not_inflate_the_backoff_streak() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    // First cycle only: meta and pulls answer, releases 500 → partial sync.
+    // Everything is unmounted by the second cycle, so that one 404s throughout
+    // and is a total failure.
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_A}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(repo_json(ID_A, REPO_A)))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_A}/pulls")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{}])))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_A}/releases")))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    run_cycle(state.clone()).await;
+
+    assert_eq!(
+        repo_field::<i64>(&state, ID_A, "error_streak").await,
+        0,
+        "a partial sync must not count as a strike"
+    );
+    assert_eq!(
+        repo_field::<Option<String>>(&state, ID_A, "backoff_until").await,
+        None
+    );
+    assert!(
+        repo_field::<Option<String>>(&state, ID_A, "last_synced_at")
+            .await
+            .is_some(),
+        "data landed, so the repo counts as synced"
+    );
+
+    // Now the repo fails outright: this is the first strike, so the backoff is
+    // the first step (30 minutes), not a later one.
+    run_cycle(state.clone()).await;
+
+    assert_eq!(repo_field::<i64>(&state, ID_A, "error_streak").await, 1);
+    let backoff = repo_field::<Option<String>>(&state, ID_A, "backoff_until")
+        .await
+        .expect("a total failure must back the repo off");
+    let until = chrono::DateTime::parse_from_rfc3339(&backoff)
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(until > Utc::now(), "backoff must be in the future");
+    assert!(
+        until < Utc::now() + chrono::Duration::minutes(45),
+        "first failure must back off ~30min, got {backoff}"
+    );
+}
+
 #[tokio::test]
 async fn run_cycle_twice_identical_rowcounts() {
     let server = MockServer::start().await;

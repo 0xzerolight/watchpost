@@ -69,6 +69,12 @@ async fn main() -> ExitCode {
     // Collect once at boot rather than waiting up to an hour for the first
     // tick. Spawned, so a slow or failing cycle never delays serving — and
     // `run_cycle` records its own failures, so there is nothing to handle here.
+    //
+    // A cycle that *panicked* would take its `SyncStatus::Running` with it and
+    // the dashboard would poll a sync that is never going to finish. Accepted
+    // as-is: the one known panic source on this path was a poisoned sync mutex,
+    // which `lock_recover` now absorbs, and a `catch_unwind` net around a
+    // failure nobody can name would cost more than it protects.
     {
         let state = Arc::clone(&state);
         tokio::spawn(async move {
