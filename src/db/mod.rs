@@ -9,14 +9,10 @@ use rusqlite::Connection;
 use crate::errors::DbError;
 use crate::state::lock_recover;
 
-// open_in_memory and call are unused outside tests until Task 3 wires in
-// queries on top of Db::call.
-#[allow(dead_code)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
 }
 
-#[allow(dead_code)]
 impl Db {
     /// Open (creating if missing) the sqlite file at `path`, apply pragmas,
     /// back up if there are pending migrations against an existing db, then

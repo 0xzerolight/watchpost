@@ -7,7 +7,6 @@ use crate::state::lock_recover;
 
 /// Classification of GitHub API failures.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum GhFailureClass {
     /// Primary rate limit (per-minute limit) exhausted.
     PrimaryLimited { reset_at: DateTime<Utc> },
@@ -40,7 +39,6 @@ pub enum GhFailureClass {
 ///    d. otherwise (403, no limit signal) → Forbidden
 /// 2. status 404 → NotFound
 /// 3. any other non-2xx → Transient
-#[allow(dead_code)]
 pub fn classify(status: StatusCode, headers: &HeaderMap, body_snippet: &str) -> GhFailureClass {
     if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
         // 1a. retry-after wins over the other limit signals: it is the one
@@ -104,7 +102,6 @@ pub fn classify(status: StatusCode, headers: &HeaderMap, body_snippet: &str) -> 
 /// - streak 10+ → 24h (cap)
 ///
 /// Uses saturating arithmetic to guard against shift overflow.
-#[allow(dead_code)]
 pub fn repo_backoff(error_streak: u32) -> Duration {
     const BASE_MINUTES: i64 = 30;
     const MAX_MINUTES: i64 = 24 * 60; // 24 hours in minutes
@@ -122,14 +119,12 @@ pub fn repo_backoff(error_streak: u32) -> Duration {
 ///
 /// Internally tracks `Option<DateTime<Utc>>`. `blocked_until()` returns `None` and
 /// clears itself when the stored time is past (as a side effect).
-#[allow(dead_code)]
 pub struct RateGate {
     blocked_until: Mutex<Option<DateTime<Utc>>>,
 }
 
 impl RateGate {
     /// Create a new unblocked rate gate.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         RateGate {
             blocked_until: Mutex::new(None),
@@ -139,7 +134,6 @@ impl RateGate {
     /// Get the current block deadline, or None if unblocked.
     ///
     /// As a side effect, clears the block if the deadline has passed.
-    #[allow(dead_code)]
     pub fn blocked_until(&self) -> Option<DateTime<Utc>> {
         let mut guard = lock_recover(&self.blocked_until);
         if let Some(deadline) = *guard {
@@ -155,14 +149,15 @@ impl RateGate {
     }
 
     /// Block until the given deadline.
-    #[allow(dead_code)]
     pub fn block_until(&self, deadline: DateTime<Utc>) {
         let mut guard = lock_recover(&self.blocked_until);
         *guard = Some(deadline);
     }
+}
 
+#[cfg(test)]
+impl RateGate {
     /// Clear the block immediately.
-    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut guard = lock_recover(&self.blocked_until);
         *guard = None;

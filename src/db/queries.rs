@@ -1,14 +1,11 @@
-//! Query functions on top of `Db::call`'s `&Connection`. Everything here is
-//! unused outside tests until later tasks wire in the collector and http
-//! handlers.
-#![allow(dead_code)]
+//! Query functions on top of `Db::call`'s `&Connection`.
 
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::errors::DbError;
 use crate::types::{
-    AssetSeriesRow, AssetSnapshot, Event, GhRepo, Metric, NewEvent, PopularDay, PopularItem,
-    PopularKind, RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
+    AssetSnapshot, Event, GhRepo, Metric, NewEvent, PopularDay, PopularItem, PopularKind,
+    RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
 };
 
 /// Builds the NULL-safe last-write-wins `SET` fragment for one nullable
@@ -515,54 +512,14 @@ pub fn repo_overview_one(conn: &Connection, repo_id: i64) -> Result<Option<RepoO
     Ok(row)
 }
 
-/// Raw daily values for one metric. Returns only OBSERVED rows (the column
-/// is `NOT NULL`-filtered) — dense-range materialization for chart gaps
-/// happens in later tasks' handlers, not here. `days == 0` means all time.
-pub fn series(
-    conn: &Connection,
-    repo_id: i64,
-    metric: Metric,
-    days: u32,
-) -> Result<Vec<(String, Option<i64>)>, DbError> {
-    let col = metric.column();
-    // Never SUM(uniques) across days: GitHub's weekly uniques deduplicates
-    // visitors across days; a sum is arithmetically wrong. `series()` reads
-    // the raw daily column with no aggregation — this comment guards
-    // against a future rewrite that tries to aggregate uniques metrics here.
-    let mut stmt = if days == 0 {
-        conn.prepare(&format!(
-            "SELECT date, {col} FROM repo_stats
-             WHERE repo_id = ?1 AND {col} IS NOT NULL ORDER BY date"
-        ))?
-    } else {
-        conn.prepare(&format!(
-            "SELECT date, {col} FROM repo_stats
-             WHERE repo_id = ?1 AND {col} IS NOT NULL AND date >= date('now', ?2)
-             ORDER BY date"
-        ))?
-    };
-    let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, Option<i64>)> {
-        Ok((r.get(0)?, r.get(1)?))
-    };
-    let rows = if days == 0 {
-        stmt.query_map(params![repo_id], map_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        let window = format!("-{days} day");
-        stmt.query_map(params![repo_id, window], map_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    Ok(rows)
-}
-
 /// One slot per UTC day across the trailing `days` window ending today,
 /// whether or not that day was observed. The single source of truth for chart
 /// series shape — every page that plots `repo_stats` goes through here, so a
 /// gap means the same thing everywhere.
 ///
-/// [`series`] returns observed rows only, which is the right shape for a table
-/// but the wrong one for a chart: a collector that ran on Monday and Thursday
-/// would draw those two points as adjacent, silently compressing the week.
+/// Returning observed rows only would be the wrong shape for a chart: a
+/// collector that ran on Monday and Thursday would draw those two points as
+/// adjacent, silently compressing the week.
 ///
 /// How an unobserved day is filled depends on the metric
 /// ([`Metric::carries_forward`]):
@@ -578,8 +535,8 @@ pub fn series(
 ///   traffic row is unknown activity; repeating the previous day's count would
 ///   fabricate visits.
 ///
-/// `days == 0` is an empty range, not "all time" — unlike [`series`], there is
-/// no unbounded dense window.
+/// `days == 0` is an empty range, not "all time": there is no unbounded dense
+/// window.
 pub fn dense_series(
     conn: &Connection,
     repo_id: i64,
@@ -597,6 +554,10 @@ pub fn dense_series(
     // Observed rows inside the window, keyed by date for O(1) lookup while
     // walking the calendar below. No ORDER BY: the calendar walk supplies the
     // ordering, this is only a lookup table.
+    //
+    // Never SUM(uniques) across days: GitHub's weekly uniques deduplicates
+    // visitors across days, so a sum is arithmetically wrong. This reads the
+    // raw daily column with no aggregation, and must stay that way.
     let mut stmt = conn.prepare(&format!(
         "SELECT date, {col} FROM repo_stats
          WHERE repo_id = ?1 AND {col} IS NOT NULL AND date >= ?2 AND date <= ?3"
@@ -740,27 +701,6 @@ pub fn first_observed_date(conn: &Connection, repo_id: i64) -> Result<Option<Str
         |r| r.get::<_, Option<String>>(0),
     )?;
     Ok(date)
-}
-
-pub fn asset_series(
-    conn: &Connection,
-    repo_id: i64,
-    release_tag: &str,
-    asset_name: &str,
-) -> Result<Vec<AssetSeriesRow>, DbError> {
-    let mut stmt = conn.prepare(
-        "SELECT date, download_count FROM release_assets
-         WHERE repo_id = ?1 AND release_tag = ?2 AND asset_name = ?3 ORDER BY date",
-    )?;
-    let rows = stmt
-        .query_map(params![repo_id, release_tag, asset_name], |r| {
-            Ok(AssetSeriesRow {
-                date: r.get(0)?,
-                download_count: r.get(1)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
 }
 
 /// How many rows [`popular_items`] returns at most. All-time aggregation
@@ -1048,11 +988,20 @@ mod tests {
         seed_repo(&c, 1);
         upsert_stats(&c, 1, "2026-08-01", &snap!(stars: Some(10))).unwrap();
         upsert_stats(&c, 1, "2026-08-03", &snap!(stars: Some(11))).unwrap();
-        let s = series(&c, 1, Metric::Stars, 0 /* all */).unwrap();
-        // series returns only observed rows; dense-range materialization
-        // happens in a later task's handler.
-        assert!(!s.iter().any(|(d, _)| d == "2026-08-02"));
-        assert_eq!(s.len(), 2);
+        // The unobserved day gets no row at all, never a row reading zero.
+        let mut stmt = c
+            .prepare(
+                "SELECT date FROM repo_stats
+                 WHERE repo_id = 1 AND stars IS NOT NULL ORDER BY date",
+            )
+            .unwrap();
+        let dates: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(dates, ["2026-08-01", "2026-08-03"]);
+        assert_eq!(get_stars(&c, 1, "2026-08-02"), None);
     }
 
     #[test]
@@ -1545,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn release_assets_upsert_and_series_are_monotonic() {
+    fn release_assets_upsert_is_monotonic() {
         let c = test_conn();
         seed_repo(&c, 1);
         upsert_release_assets(
@@ -1582,19 +1531,21 @@ mod tests {
             }],
         )
         .unwrap();
-        let s = asset_series(&c, 1, "v1", "app.bin").unwrap();
+        let mut stmt = c
+            .prepare(
+                "SELECT date, download_count FROM release_assets
+                 WHERE repo_id = 1 AND release_tag = 'v1' AND asset_name = 'app.bin'
+                 ORDER BY date",
+            )
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         assert_eq!(
-            s,
-            vec![
-                AssetSeriesRow {
-                    date: "2026-08-01".into(),
-                    download_count: 10
-                },
-                AssetSeriesRow {
-                    date: "2026-08-02".into(),
-                    download_count: 25
-                },
-            ]
+            rows,
+            [("2026-08-01".to_owned(), 10), ("2026-08-02".to_owned(), 25)]
         );
     }
 
@@ -1828,17 +1779,6 @@ mod tests {
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].title, "a");
         assert_eq!(events_for_repo(&c, 1, None).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn series_days_window_excludes_older_rows() {
-        let c = test_conn();
-        seed_repo(&c, 1);
-        upsert_stats(&c, 1, &days_ago(30), &snap!(stars: Some(1))).unwrap();
-        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(2))).unwrap();
-        let recent = series(&c, 1, Metric::Stars, 7).unwrap();
-        assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].1, Some(2));
     }
 
     // ---- dense_series ------------------------------------------------------

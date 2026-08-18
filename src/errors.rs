@@ -7,9 +7,6 @@
 //! copy in the `IntoResponse` table below. Nothing formats an error into a
 //! response body.
 
-// GhError/DbError/AppError are unused until later tasks wire in the GitHub
-// client, the sqlite layer, and request handlers respectively.
-#[allow(dead_code)]
 #[derive(thiserror::Error, Debug)]
 pub enum GhError {
     #[error("primary rate limit exhausted; resets {reset_at}")]
@@ -57,7 +54,6 @@ impl GhError {
     }
 }
 
-#[allow(dead_code)]
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
     #[error(transparent)]
@@ -77,7 +73,6 @@ pub enum DbError {
     Join(#[from] tokio::task::JoinError),
 }
 
-#[allow(dead_code)]
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
     #[error(transparent)]

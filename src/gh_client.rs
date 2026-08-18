@@ -11,11 +11,6 @@
 //! `.unwrap()`/`.expect()`d — malformed input degrades to a typed error
 //! (or, for the `Link` header, to "no next page") rather than panicking.
 
-// Unused from the bin target until a later task wires this into the sync
-// loop / handlers; the wiremock tests in tests/gh_client_test.rs exercise it
-// via the lib target in the meantime.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use reqwest::Client;

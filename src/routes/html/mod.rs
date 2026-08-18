@@ -1,5 +1,4 @@
-//! Shared HTML rendering helpers. Page templates land here in later tasks;
-//! this module currently holds the document shell (`base`) plus the pieces
+//! Shared HTML rendering helpers: the document shell (`base`) plus the pieces
 //! every template needs, including the two that carry XSS-defence weight
 //! (`json_script`, `render_markdown`).
 

@@ -1113,8 +1113,8 @@ async fn titles_and_kinds_are_escaped_in_the_table() {
 
 #[tokio::test]
 async fn row_ids_and_kind_attributes_survive_a_mutation() {
-    // Task 12's contract with the chart marker code: every row is addressable
-    // by id and tagged with its kind, including in a post-mutation render.
+    // The contract with the chart marker code: every row is addressable by id
+    // and tagged with its kind, including in a post-mutation render.
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
     let id = h

@@ -1,10 +1,6 @@
 //! Row/DTO types shared by `db::queries`. `GhRepo` mirrors the subset of the
-//! GitHub repo API response the db layer needs; it already derives
-//! `Deserialize` so Task 5's http client needs no changes to this struct.
-
-// Most of these types/fields are only consumed by db::queries, which is
-// itself unused outside tests until later tasks wire in handlers.
-#![allow(dead_code)]
+//! GitHub repo API response the db layer needs, and derives `Deserialize` so
+//! the http client can decode straight into it.
 
 use serde::Deserialize;
 
@@ -28,8 +24,8 @@ pub enum TrafficKind {
 
 /// One day of GitHub traffic (views or clones). `timestamp` is the raw
 /// GitHub API value (`2026-08-01T00:00:00Z`); `upsert_traffic_days`
-/// truncates it to the date. Derives `Deserialize` for reuse by Task 5's
-/// http client (`TrafficSeries`), whose JSON payload nests these directly.
+/// truncates it to the date. Derives `Deserialize` for the http client's
+/// `TrafficSeries`, whose JSON payload nests these directly.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrafficDay {
     pub timestamp: String,
@@ -37,7 +33,7 @@ pub struct TrafficDay {
     pub uniques: i64,
 }
 
-/// Which `repo_stats` column a `series()` call reads.
+/// Which `repo_stats` column a `dense_series()` call reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
     Stars,
@@ -155,12 +151,6 @@ pub struct AssetSnapshot {
     pub download_count: i64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AssetSeriesRow {
-    pub date: String,
-    pub download_count: i64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopularKind {
     Referrers,
@@ -187,10 +177,11 @@ pub struct PopularDay {
     pub uniques: i64,
 }
 
-/// Subset of GitHub's repo API response the db layer needs. Task 5 reuses
-/// this struct for its http client (already `Deserialize`); the fields
-/// below that this layer doesn't write anywhere yet (stargazers_count,
-/// forks_count, subscribers_count, open_issues_count) exist for that reuse.
+/// Subset of GitHub's repo API response, shared by the http client (which
+/// decodes into it) and `upsert_repo` (which writes the identity fields). The
+/// counter fields — stargazers_count, forks_count, subscribers_count,
+/// open_issues_count — belong to neither: the collector reads them off into a
+/// `StatSnapshot` for `upsert_stats`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GhRepo {
     pub id: i64,
