@@ -18,13 +18,10 @@ use watchpost::state::{AppState, SyncStatus};
 async fn main() -> ExitCode {
     dotenvy::dotenv().ok();
 
-    let log_level = std::env::var("WATCHPOST_LOG").unwrap_or_else(|_| "info".to_string());
-    let env_filter = tracing_subscriber::EnvFilter::new(log_level);
-    Registry::default()
-        .with(env_filter)
-        .with(tracing_logfmt::layer())
-        .init();
-
+    // Config first, logging second: the log level is one of the settings, so
+    // reading the environment twice is how the two would drift apart. The only
+    // cost is that a config error has no subscriber to log through — `eprintln`
+    // is the right channel for it anyway.
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -32,6 +29,12 @@ async fn main() -> ExitCode {
             std::process::exit(1);
         }
     };
+
+    Registry::default()
+        .with(tracing_subscriber::EnvFilter::new(&config.log_level))
+        .with(tracing_logfmt::layer())
+        .init();
+
     // One flag, checked before anything is opened or bound: `--doctor` is a
     // diagnostic run that must work on an install whose server path is the
     // thing that is broken. A single flag does not earn a clap dependency.

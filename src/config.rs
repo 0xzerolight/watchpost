@@ -24,10 +24,18 @@ pub struct Config {
     pub github_api_base: Url,
 }
 
+const API_BASE_VAR: &str = "WATCHPOST_GITHUB_API_BASE";
+
 impl Config {
     pub fn from_env() -> Result<Config, ConfigError> {
-        let github_token =
-            env::var("WATCHPOST_GITHUB_TOKEN").map_err(|_| ConfigError::MissingToken)?;
+        // Trimmed, then required to be non-empty: a token set to "" or to a
+        // stray newline (a secrets file, a quoted .env line) is not a token,
+        // and letting it through only moves the failure to the first 401.
+        let github_token = env::var("WATCHPOST_GITHUB_TOKEN")
+            .map(|t| t.trim().to_string())
+            .ok()
+            .filter(|t| !t.is_empty())
+            .ok_or(ConfigError::MissingToken)?;
 
         let cron_schedule = env::var("WATCHPOST_CRON").unwrap_or_else(|_| DEFAULT_CRON.to_string());
 
@@ -47,13 +55,9 @@ impl Config {
 
         let log_level = env::var("WATCHPOST_LOG").unwrap_or_else(|_| DEFAULT_LOG.to_string());
 
-        let github_api_base = match env::var("WATCHPOST_GITHUB_API_BASE") {
-            Ok(raw) => Url::parse(&raw).map_err(|e| ConfigError::BadValue {
-                var: "WATCHPOST_GITHUB_API_BASE".to_string(),
-                msg: e.to_string(),
-            })?,
-            Err(_) => Url::parse(DEFAULT_GITHUB_API_BASE).expect("default URL is valid"),
-        };
+        let github_api_base = parse_api_base(
+            &env::var(API_BASE_VAR).unwrap_or_else(|_| DEFAULT_GITHUB_API_BASE.to_string()),
+        )?;
 
         Ok(Config {
             github_token,
@@ -94,6 +98,29 @@ impl Config {
     }
 }
 
+/// Parse an API base, keeping out what the client could never fetch and
+/// normalizing the path to end in `/`.
+///
+/// The trailing slash is load-bearing. [`Url::join`] replaces the last path
+/// segment, so a GitHub Enterprise base of `https://ghe.example/api/v3` joined
+/// with `user/repos` gives `https://ghe.example/api/user/repos` — every request
+/// 404s and nothing in the config looks wrong.
+fn parse_api_base(raw: &str) -> Result<Url, ConfigError> {
+    let bad = |msg: String| ConfigError::BadValue {
+        var: API_BASE_VAR.to_string(),
+        msg,
+    };
+    let mut url = Url::parse(raw).map_err(|e| bad(e.to_string()))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(bad(format!("scheme {} is not http or https", url.scheme())));
+    }
+    if !url.path().ends_with('/') {
+        let with_slash = format!("{}/", url.path());
+        url.set_path(&with_slash);
+    }
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +144,83 @@ mod tests {
             assert!(matches!(Config::from_env(), Err(ConfigError::MissingToken)));
         });
     }
+    /// A token of blanks is the shape a quoted `.env` line or an empty secrets
+    /// file takes; it is missing, not present.
+    #[test]
+    fn blank_token_errors() {
+        for raw in ["", "   ", "\n"] {
+            temp_env::with_var("WATCHPOST_GITHUB_TOKEN", Some(raw), || {
+                assert!(
+                    matches!(Config::from_env(), Err(ConfigError::MissingToken)),
+                    "{raw:?} must not pass as a token"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed_off_the_token() {
+        temp_env::with_var("WATCHPOST_GITHUB_TOKEN", Some(" ghp_test1234\n"), || {
+            assert_eq!(Config::from_env().unwrap().github_token, "ghp_test1234");
+        });
+    }
+
+    #[test]
+    fn api_base_must_be_http_or_https() {
+        temp_env::with_vars(
+            [
+                ("WATCHPOST_GITHUB_TOKEN", Some("ghp_test1234")),
+                ("WATCHPOST_GITHUB_API_BASE", Some("ftp://ghe.example/api")),
+            ],
+            || {
+                let err = Config::from_env().expect_err("ftp is not fetchable");
+                assert!(
+                    matches!(&err, ConfigError::BadValue { var, .. } if var == API_BASE_VAR),
+                    "{err}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn api_base_is_rejected_when_it_is_not_a_url() {
+        temp_env::with_vars(
+            [
+                ("WATCHPOST_GITHUB_TOKEN", Some("ghp_test1234")),
+                ("WATCHPOST_GITHUB_API_BASE", Some("ghe.example/api")),
+            ],
+            || {
+                assert!(matches!(
+                    Config::from_env(),
+                    Err(ConfigError::BadValue { .. })
+                ));
+            },
+        );
+    }
+
+    /// The join is the whole point of the normalization: without the trailing
+    /// slash `Url::join` drops `v3` and every request goes to the wrong path.
+    #[test]
+    fn api_base_gets_a_trailing_slash_so_paths_join_below_it() {
+        temp_env::with_vars(
+            [
+                ("WATCHPOST_GITHUB_TOKEN", Some("ghp_test1234")),
+                (
+                    "WATCHPOST_GITHUB_API_BASE",
+                    Some("https://ghe.example/api/v3"),
+                ),
+            ],
+            || {
+                let base = Config::from_env().unwrap().github_api_base;
+                assert_eq!(base.as_str(), "https://ghe.example/api/v3/");
+                assert_eq!(
+                    base.join("user/repos").unwrap().as_str(),
+                    "https://ghe.example/api/v3/user/repos"
+                );
+            },
+        );
+    }
+
     #[test]
     fn redacted_summary_hides_token() {
         temp_env::with_vars(base_env(), || {

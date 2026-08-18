@@ -58,7 +58,7 @@ All settings are environment variables; the image reads them from `.env` via com
 | `WATCHPOST_HOST` | `127.0.0.1` | Bind address; the image sets `0.0.0.0` |
 | `WATCHPOST_PORT` | `8080` | Bind port |
 | `WATCHPOST_LOG` | `info` | `tracing` filter, e.g. `watchpost=debug` |
-| `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise or tests |
+| `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise or tests; must be `http`/`https`, and a missing trailing slash is added (`…/api/v3` → `…/api/v3/`) |
 
 ## Reading the data
 
