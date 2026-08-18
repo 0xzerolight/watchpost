@@ -90,20 +90,28 @@ async fn chart_js_is_gzipped_for_a_client_that_asks() {
     );
 }
 
+/// gzip is the only encoding compiled in. A browser offers brotli first and
+/// would be served it the moment `compression-br` came back — which is the
+/// change this asserts against, because brotli measured worse than gzip here at
+/// any quality a request path can afford.
 #[tokio::test]
-async fn brotli_is_offered_too() {
+async fn a_browser_offering_brotli_first_still_gets_gzip() {
+    let resp = get(CHART_JS, Some("br, gzip, deflate, zstd")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(content_encoding(&resp).as_deref(), Some("gzip"));
+    assert!(body_bytes(resp).await.starts_with(&[0x1f, 0x8b]));
+}
+
+/// A client that accepts *only* an encoding watchpost cannot produce gets the
+/// bytes uncompressed, not a 406 and not a mislabelled body.
+#[tokio::test]
+async fn an_encoding_we_do_not_have_falls_back_to_identity() {
     let resp = get(CHART_JS, Some("br")).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(content_encoding(&resp).as_deref(), Some("br"));
+    assert_eq!(content_encoding(&resp), None);
 
     let plain = body_bytes(get(CHART_JS, None).await).await;
-    let compressed = body_bytes(resp).await;
-    assert!(
-        compressed.len() * 2 < plain.len(),
-        "br {} vs plain {}",
-        compressed.len(),
-        plain.len()
-    );
+    assert_eq!(body_bytes(resp).await.len(), plain.len());
 }
 
 /// HTML is the other half of the win: a repo page carries its chart data inline

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::routing::{get, post};
 use tower_http::catch_panic::CatchPanicLayer;
-use tower_http::compression::{CompressionLayer, CompressionLevel};
+use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::csrf::csrf_middleware;
@@ -71,12 +71,12 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/assets/{file}", get(assets::serve_asset))
         .layer(axum::middleware::from_fn(csrf_middleware))
         .layer(axum::middleware::from_fn(security::security_headers))
-        // Quality is pinned because the default is brotli 11, and brotli wins
-        // negotiation for every modern browser: every HTML navigation is
-        // uncached, so that default re-encodes a page at maximum effort on a
-        // worker thread on every request. 4 costs about what gzip costs and
-        // lands within a few percent of 11 on minified text.
-        .layer(CompressionLayer::new().quality(CompressionLevel::Precise(4)))
+        // gzip only, and deliberately so: brotli wins negotiation wherever it
+        // is compiled in, but at the quality a request path can afford it
+        // measured slightly *worse* than gzip on watchpost's own assets, and
+        // the quality that beats gzip re-encodes every uncached page at
+        // maximum effort. gzip's default level is the sweet spot.
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new());
     router.with_state(state)
