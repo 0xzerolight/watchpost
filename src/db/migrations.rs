@@ -20,6 +20,7 @@ pub(crate) fn run_migrations(
     migrations: &[Migration],
 ) -> Result<(), DbError> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    guard_schema_version(version, migrations.len())?;
     for (idx, m) in migrations.iter().enumerate() {
         let target = idx as i64 + 1;
         if version < target {
@@ -32,6 +33,26 @@ pub(crate) fn run_migrations(
             tx.pragma_update(None, "user_version", target)?;
             tx.commit()?; // DDL + version bump atomic
         }
+    }
+    Ok(())
+}
+
+/// Refuse a database a newer build wrote.
+///
+/// Migrations only run forward, so an older binary meeting a newer schema
+/// would find nothing to do and then serve queries against a shape it does not
+/// know — a silent half-working install, and one that keeps writing to a file
+/// the newer build still considers current. Refusing to open is the only
+/// honest answer, and the message names the fix.
+///
+/// Checked by `Db::open` before it touches the file and here, which is what
+/// the in-memory and test paths go through.
+pub(crate) fn guard_schema_version(found: i64, supported: usize) -> Result<(), DbError> {
+    if found > supported as i64 {
+        return Err(DbError::SchemaTooNew {
+            found,
+            supported: supported as i64,
+        });
     }
     Ok(())
 }
@@ -120,6 +141,20 @@ mod tests {
         migrate(&mut c).unwrap();
         migrate(&mut c).unwrap(); // must not error (CREATE TABLE would collide if re-run)
     }
+    #[test]
+    fn a_schema_from_a_newer_build_is_refused() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "user_version", 99).unwrap();
+
+        let err = migrate(&mut c).unwrap_err();
+        assert!(
+            matches!(err, DbError::SchemaTooNew { found: 99, supported }
+                if supported == MIGRATIONS.len() as i64),
+            "{err}"
+        );
+        assert!(err.to_string().contains("upgrade watchpost"), "{err}");
+    }
+
     #[test]
     fn failed_migration_rolls_back() {
         let mut c = rusqlite::Connection::open_in_memory().unwrap();

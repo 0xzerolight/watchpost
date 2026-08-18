@@ -66,6 +66,11 @@ pub enum DbError {
     NotWritable(String),
     #[error("migration to v{version} failed: {source}")]
     Migration { version: i64, source: Box<DbError> },
+    #[error(
+        "database schema is v{found}, this binary supports v{supported}: \
+         this binary is older than the database; upgrade watchpost"
+    )]
+    SchemaTooNew { found: i64, supported: i64 },
     #[error("backup failed: {0}")]
     Backup(String),
     #[error("db task join: {0}")]
