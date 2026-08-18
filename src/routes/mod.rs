@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::routing::{get, post};
 use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::csrf::csrf_middleware;
@@ -28,6 +29,12 @@ pub mod settings;
 ///
 /// Security headers sit just outside CSRF, so a request rejected there is
 /// decorated with the policy rather than answered bare.
+///
+/// Compression sits outside the headers, so it compresses a response that is
+/// already fully decorated and the `Vary` it depends on is in place before it
+/// looks: tower-http only appends its own `Vary: accept-encoding` when the
+/// response does not already carry one, so `security_headers` stays the single
+/// owner of that header and no response grows a duplicate.
 ///
 /// Panic containment is outermost, so a panic in a handler or in either
 /// middleware becomes a 500 rather than a dropped connection.
@@ -64,6 +71,7 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/assets/{file}", get(assets::serve_asset))
         .layer(axum::middleware::from_fn(csrf_middleware))
         .layer(axum::middleware::from_fn(security::security_headers))
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new());
     router.with_state(state)
