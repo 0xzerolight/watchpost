@@ -210,5 +210,3 @@ Questions and discussion -> [Discussions](https://github.com/0xzerolight/watchpo
 ## License
 
 GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
-
-Copyright © 2026 0xzerolight.
