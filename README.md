@@ -60,6 +60,44 @@ All settings are environment variables; the image reads them from `.env` via com
 | `WATCHPOST_LOG` | `info` | `tracing` filter, e.g. `watchpost=debug` |
 | `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise or tests; must be `http`/`https`, and a missing trailing slash is added (`…/api/v3` → `…/api/v3/`) |
 
+## Security and operations
+
+**There is no authentication.** No login, no users, no API key: anyone who can reach the port gets
+the whole app — every metric, plus write access to events, to the tracked-repo list and to the
+sync button. Syncing spends the token's GitHub rate budget, so an open instance is also a way for
+a stranger to exhaust it. The token itself is never rendered (`--doctor` prints its last 4
+characters and length, nothing else), but everything it can read is on the page.
+
+So treat the port as private. Outside Docker `WATCHPOST_HOST` defaults to `127.0.0.1`; the image
+sets `0.0.0.0` and the shipped `compose.yml` publishes `8080:8080`, which is every interface on the
+host. On a machine that is not alone on its network, publish to the loopback instead:
+
+```yaml
+ports:
+  - "127.0.0.1:8080:8080"
+```
+
+Then reach it through an SSH tunnel, or put a reverse proxy in front and let the proxy do the
+authenticating. Do not expose it directly.
+
+**Behind a TLS-terminating proxy, forward `X-Forwarded-Proto: https`.** The CSRF cookie is marked
+`Secure` only when that header says the browser spoke HTTPS; setting it unconditionally would make
+the cookie invisible to a plain-HTTP deployment and 403 every POST there. Only the first hop's
+value is read.
+
+**Backups are taken on migration, not on a schedule.** Before a schema upgrade the database is
+copied to `data/watchpost.v{schema}.{timestamp}.bak` and the newest three are kept. That copy goes
+through SQLite's backup API, so it is consistent even if a write is in flight.
+
+For backups of your own, copying `data/watchpost.db` is not enough. WAL mode means committed data
+can still be sitting in the `watchpost.db-wal` sidecar, so a copy of the main file alone is stale at
+best and torn at worst. Either stop the container first, or let SQLite take the snapshot while it
+runs:
+
+```sh
+sqlite3 data/watchpost.db ".backup data/snapshot.db"
+```
+
 ## Reading the data
 
 A few things about GitHub's numbers are worth knowing before you draw conclusions from them.
@@ -113,8 +151,9 @@ cargo build --release
 ```
 
 Rust 1.88 or newer, no system dependencies beyond a C toolchain (SQLite is compiled in). `make ci`
-runs the same gate as CI: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test`.
+runs the main gate — `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`,
+`cargo test --locked` — which CI runs too, alongside a 1.88 build, a Docker build and an advisory
+audit.
 
 The Docker image is single-arch — it builds for the host architecture. Cross-building a multi-arch
 image (cargo-zigbuild or buildx with a musl cross toolchain) is a follow-up, not a v1 concern.
@@ -126,7 +165,8 @@ bits (event editing, filters) and Chart.js for the charts. Everything the browse
 Chart.js, htmx, Pico CSS, the app's own CSS and JS — is vendored and embedded in the binary with
 `include_bytes!`, so there is no CDN, no asset directory and no network fetch at page load. Storage
 is SQLite through rusqlite in WAL mode, accessed from async code via a blocking pool so collection
-never stalls request serving. The result is one static binary plus one database file.
+never stalls request serving. The result is one static binary and one data directory: the SQLite
+file, the WAL sidecars beside it, and whatever pre-migration backups it has taken.
 
 ## License
 
