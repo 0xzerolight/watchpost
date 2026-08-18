@@ -28,55 +28,92 @@
   --wp-radius-pill: 999px;
 
   /*
-   * Every slot clears 5.9:1 against white. The chips wear these as text on the
-   * card background, so 3:1 (a graphical object) is not the bar they have to
-   * meet — WCAG 1.4.3 is, at the small size a chip is set in. The eight are
-   * still walked around the hue circle so that adjacent slots stay
+   * The two palettes, each written once. Rules never read `--wp-l-*` or
+   * `--wp-d-*` directly; the blocks below point `--wp-marker-*` at one set or
+   * the other, so a colour is edited in one place and the scheme selectors
+   * carry no hex of their own.
+   *
+   * Light: every slot clears 5.9:1 against white. The chips wear these as text
+   * on the card background, so 3:1 (a graphical object) is not the bar they
+   * have to meet — WCAG 1.4.3 is, at the small size a chip is set in. The eight
+   * are still walked around the hue circle so that adjacent slots stay
    * distinguishable as marker lines too.
    */
-  --wp-marker-0: #1f5bb5;
-  --wp-marker-1: #b3352c;
-  --wp-marker-2: #1f6f43;
-  --wp-marker-3: #8a5600;
-  --wp-marker-4: #6544c4;
-  --wp-marker-5: #0a6f71;
-  --wp-marker-6: #a8386a;
-  --wp-marker-7: #8a4522;
-  --wp-flash-bg: #fff3c4;
+  --wp-l-0: #1f5bb5;
+  --wp-l-1: #b3352c;
+  --wp-l-2: #1f6f43;
+  --wp-l-3: #8a5600;
+  --wp-l-4: #6544c4;
+  --wp-l-5: #0a6f71;
+  --wp-l-6: #a8386a;
+  --wp-l-7: #8a4522;
+  --wp-l-flash: #fff3c4;
+
+  /*
+   * Dark: lighter and less saturated than their light twins, because the light
+   * palette is tuned for contrast against white and turns muddy on a dark
+   * surface.
+   */
+  --wp-d-0: #7aa9f7;
+  --wp-d-1: #f08a80;
+  --wp-d-2: #6fce9a;
+  --wp-d-3: #e3b45c;
+  --wp-d-4: #b39ef0;
+  --wp-d-5: #4fc3c5;
+  --wp-d-6: #ec93b6;
+  --wp-d-7: #d09a72;
+  --wp-d-flash: #4a4020;
+
+  /*
+   * The slots that the rules below and app.js read. `getComputedStyle`
+   * substitutes the `var()` before it answers, so the client still reads a
+   * literal colour out of `--wp-marker-N` and the indirection is invisible
+   * to it.
+   */
+  --wp-marker-0: var(--wp-l-0);
+  --wp-marker-1: var(--wp-l-1);
+  --wp-marker-2: var(--wp-l-2);
+  --wp-marker-3: var(--wp-l-3);
+  --wp-marker-4: var(--wp-l-4);
+  --wp-marker-5: var(--wp-l-5);
+  --wp-marker-6: var(--wp-l-6);
+  --wp-marker-7: var(--wp-l-7);
+  --wp-flash-bg: var(--wp-l-flash);
 }
 
 /*
- * Dark variants are lighter and less saturated: the light palette is tuned for
- * contrast against white and turns muddy on a dark surface.
- *
- * Both selectors carry the same block. The media query follows the OS, and
- * `[data-theme=dark]` is what Pico's (and `applyTheme()`'s) explicit toggle
- * sets — a user who forces dark on a light OS needs the override too.
+ * Dark scheme. Two selectors, one remapping: the media query is what actually
+ * fires today — it follows the OS, and `applyTheme()` listens to the same query
+ * to recolour live charts. `[data-theme]` is Pico's own convention and nothing
+ * in watchpost sets it, so the second block is what a user stylesheet (or a
+ * toggle, if one is ever added) needs in order to force a scheme against the
+ * OS. The `:not([data-theme=light])` guard is the other half of that: forcing
+ * light has to survive a dark OS.
  */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --wp-marker-0: #7aa9f7;
-    --wp-marker-1: #f08a80;
-    --wp-marker-2: #6fce9a;
-    --wp-marker-3: #e3b45c;
-    --wp-marker-4: #b39ef0;
-    --wp-marker-5: #4fc3c5;
-    --wp-marker-6: #ec93b6;
-    --wp-marker-7: #d09a72;
-    --wp-flash-bg: #4a4020;
+    --wp-marker-0: var(--wp-d-0);
+    --wp-marker-1: var(--wp-d-1);
+    --wp-marker-2: var(--wp-d-2);
+    --wp-marker-3: var(--wp-d-3);
+    --wp-marker-4: var(--wp-d-4);
+    --wp-marker-5: var(--wp-d-5);
+    --wp-marker-6: var(--wp-d-6);
+    --wp-marker-7: var(--wp-d-7);
+    --wp-flash-bg: var(--wp-d-flash);
   }
 }
 
 [data-theme="dark"] {
-  --wp-marker-0: #7aa9f7;
-  --wp-marker-1: #f08a80;
-  --wp-marker-2: #6fce9a;
-  --wp-marker-3: #e3b45c;
-  --wp-marker-4: #b39ef0;
-  --wp-marker-5: #4fc3c5;
-  --wp-marker-6: #ec93b6;
-  --wp-marker-7: #d09a72;
-  --wp-flash-bg: #4a4020;
+  --wp-marker-0: var(--wp-d-0);
+  --wp-marker-1: var(--wp-d-1);
+  --wp-marker-2: var(--wp-d-2);
+  --wp-marker-3: var(--wp-d-3);
+  --wp-marker-4: var(--wp-d-4);
+  --wp-marker-5: var(--wp-d-5);
+  --wp-marker-6: var(--wp-d-6);
+  --wp-marker-7: var(--wp-d-7);
+  --wp-flash-bg: var(--wp-d-flash);
 }
 
 /*
@@ -615,16 +652,8 @@ th[aria-sort] .wp-sort-glyph {
   flex-wrap: wrap;
 }
 
-.wp-col {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
 .wp-gap-1 { gap: 0.25rem; }
-.wp-gap-2 { gap: 1rem; }
 .wp-grow { flex: 1 1 auto; }
-.wp-right { margin-left: auto; }
 .wp-muted { color: var(--pico-muted-color, #6b7280); }
 .wp-danger { color: var(--pico-del-color, #b3261e); }
 .wp-small { font-size: 0.85rem; }
