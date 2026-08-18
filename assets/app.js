@@ -297,14 +297,14 @@ htmx.config.includeIndicatorStyles = false;
    * also the "All" state.
    *
    * The chips are the view of this set, not the source of truth: every
-   * mutation of `#events-section` re-renders them from the server with their
-   * default pressed states, so reading `aria-pressed` back off the DOM would
+   * mutation of `#events-section` re-renders them from the server pressed —
+   * the unfiltered state — so reading `aria-pressed` back off the DOM would
    * silently reset the filter on the next edit. `applyFilter` pushes this set
    * onto the chips instead, and is called after every swap.
    *
    * Semantics, decided here and matched by `applyFilter`:
    *   - a kind chip is a mute toggle; `aria-pressed="true"` means "showing",
-   *     which is the state the client normalises every chip to on load;
+   *     which is the state the server renders every chip in;
    *   - the "All" chip (`kind === null`) is a reset, not a toggle: it clears
    *     every mute and is pressed exactly when nothing is muted;
    *   - kind-less events have no chip of their own, so nothing can mute them
@@ -314,14 +314,16 @@ htmx.config.includeIndicatorStyles = false;
    */
   var hiddenKinds = new Set();
 
-  var CHIP_GROUP = '[aria-label="Filter events by kind"]';
+  var CHIP = "[data-chip-kind],[data-chip-all]";
 
-  /*
-   * `btn` is accepted because the markup passes `this`, but the state lives in
-   * `hiddenKinds` — see above for why the DOM cannot be trusted to hold it.
-   */
-  function toggleKind(kind, btn) {
-    void btn;
+  /* The kind a chip filters, or null for the "All" reset. */
+  function chipKind(chip) {
+    return chip.hasAttribute("data-chip-all")
+      ? null
+      : chip.getAttribute("data-chip-kind");
+  }
+
+  function toggleKind(kind) {
     if (kind === null || kind === undefined) {
       hiddenKinds.clear();
     } else if (hiddenKinds.has(kind)) {
@@ -345,18 +347,14 @@ htmx.config.includeIndicatorStyles = false;
         row.hidden = isHidden(row.dataset.kind);
       });
 
-    var group = document.querySelector(CHIP_GROUP);
-    if (group) {
-      // The chips render in one fixed order: "All" first, then one per kind
-      // labelled with the kind itself. Matching on position keeps a kind
-      // literally called "All" from colliding with the reset chip.
-      var chips = group.querySelectorAll(":scope > button");
-      chips.forEach(function (chip, i) {
-        var pressed =
-          i === 0 ? hiddenKinds.size === 0 : !isHidden(chip.textContent);
-        chip.setAttribute("aria-pressed", String(pressed));
-      });
-    }
+    // Each chip names its own kind in an attribute, so nothing here depends on
+    // the chips' order or on their labels — a kind literally called "All" is
+    // just another `data-chip-kind`.
+    document.querySelectorAll(CHIP).forEach(function (chip) {
+      var kind = chipKind(chip);
+      var pressed = kind === null ? hiddenKinds.size === 0 : !isHidden(kind);
+      chip.setAttribute("aria-pressed", String(pressed));
+    });
 
     redrawMarkers();
   }
@@ -944,11 +942,10 @@ htmx.config.includeIndicatorStyles = false;
   }
 
   /*
-   * The `#chart-data` island the current charts were built from. Only the
-   * htmx belt-and-braces re-init consults it: the swapped-in fragment carries
-   * its own `watchpost.initRepoCharts()` call, so by the time `htmx:afterSwap`
-   * fires the charts are usually already up, and rebuilding them a second time
-   * would be visible work for no change.
+   * The `#chart-data` island the current charts were built from. The
+   * `htmx:afterSwap` handler compares against it so that a swap which left the
+   * island alone — every event mutation does — does not destroy and rebuild
+   * four charts that are already showing the right data.
    */
   var chartSource = null;
 
@@ -1026,18 +1023,26 @@ htmx.config.includeIndicatorStyles = false;
     return days > 0 ? values.slice(-days) : values.slice();
   }
 
+  /*
+   * Build the repo charts from the `#chart-data` island, if there is one.
+   *
+   * Answers whether it rendered, which also says whether `applyFilter` has
+   * already run this pass — `renderCharts` ends with one, and callers use that
+   * instead of filtering the page a second time.
+   */
   function initRepoCharts() {
     if (typeof Chart === "undefined") {
-      return;
+      return false;
     }
     var el = document.getElementById("chart-data");
     var payload = readJson("chart-data");
     if (!payload || !Array.isArray(payload.labels) || !payload.labels.length) {
-      return;
+      return false;
     }
     chartPayload = payload;
     chartSource = el;
     renderCharts(payload, normalisePeriod(payload.days));
+    return true;
   }
 
   /*
@@ -1608,11 +1613,11 @@ htmx.config.includeIndicatorStyles = false;
   function boot() {
     applyTheme();
     initSparklines(document);
-    // The fragment's own `initRepoCharts()` call runs before this file is
-    // parsed on a full page load (both scripts are deferred), so it is a no-op
-    // there and this is the call that actually builds the charts.
-    initRepoCharts();
-    applyFilter();
+    // Charts filter the page themselves as the last step of rendering, so the
+    // fallback only runs for a page that has none (or has no Chart.js).
+    if (!initRepoCharts()) {
+      applyFilter();
+    }
   }
 
   /*
@@ -1628,6 +1633,25 @@ htmx.config.includeIndicatorStyles = false;
     var target = evt.target;
     if (target && target.matches && target.matches("[data-period-select]")) {
       setPeriod(target.value);
+    }
+  });
+
+  /*
+   * The kind filter chips, delegated for a stronger version of the same
+   * reason: every event mutation replaces `#events-section`, chips and all, so
+   * a listener bound to a chip would be thrown away on the next save.
+   *
+   * `closest` rather than a match on the target, because a click can land on
+   * something inside the button.
+   */
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    var chip = target.closest(CHIP);
+    if (chip) {
+      toggleKind(chipKind(chip));
     }
   });
 
@@ -1649,10 +1673,11 @@ htmx.config.includeIndicatorStyles = false;
     if (target.id === "refs-table" || target.id === "paths-table") {
       updateSortLinks(currentDays);
     }
-    // Belt to the fragment's inline calls, for a swap that lands the islands
-    // without them (an out-of-band swap, say). Both are guarded against doing
-    // the work twice: the charts only rebuild if the payload element is a new
-    // one, and a marker refresh is a redraw rather than a rebuild.
+    // The swapped markup carries data islands, not scripts, so this is what
+    // picks them up. A swap that replaced `#chart-data` needs the charts
+    // rebuilt; every other one — an event mutation is the usual case — only
+    // needs the markers re-read and the filter pushed back onto the fresh
+    // chips, which is a redraw rather than a rebuild.
     var chartEl = document.getElementById("chart-data");
     if (chartEl && chartEl !== chartSource) {
       initRepoCharts();

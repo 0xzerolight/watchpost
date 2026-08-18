@@ -13,7 +13,7 @@
 //! whole history, so the selector is a client-side zoom over data the page
 //! already has (see `setPeriod` in assets/app.js) rather than a round trip.
 
-use maud::{Markup, PreEscaped, html};
+use maud::{Markup, html};
 use serde::Serialize;
 
 use crate::routes::html::{
@@ -354,8 +354,8 @@ pub fn repo_body(view: &RepoView) -> Markup {
 /// submitted anywhere.
 ///
 /// With nothing observed there is no payload to zoom over, so the cards, the
-/// island, the init call and the selector all go: `setPeriod` would bail on
-/// every change, and four empty panes say less than one sentence does.
+/// island and the selector all go: `setPeriod` would bail on every change, and
+/// four empty panes say less than one sentence does.
 fn charts_section(view: &RepoView) -> Markup {
     let selected = view.payload.days;
     let observed = view.payload.series.any_observed();
@@ -381,12 +381,10 @@ fn charts_section(view: &RepoView) -> Markup {
                     (chart_card("Clones", "chart_clones"))
                     (chart_card("Downloads", "chart_downloads"))
                 }
+                // Data only — the charts are built by app.js on
+                // `DOMContentLoaded`, and rebuilt from this island if a swap
+                // ever delivers a new one.
                 (json_script("chart-data", view.payload))
-                // app.js is deferred, so this runs before the stubs exist. The
-                // guard covers that; `DOMContentLoaded` is what actually builds
-                // the charts. Kept for the case where the island arrives in a
-                // swap.
-                script { (PreEscaped("window.watchpost && watchpost.initRepoCharts();")) }
             } @else {
                 (empty_state("No metrics yet — charts appear after the first sync.", None))
             }
@@ -603,11 +601,9 @@ pub fn events_section(view: &EventsView) -> Markup {
                 // `#events-section` is itself the swap target.
                 (table_wrap(events_table(view.repo_id, view.events)))
             }
+            // Data only: app.js re-reads this island from its `htmx:afterSwap`
+            // handler, which fires for the swap that delivered it.
             (json_script("events-data", &markers))
-            // Guarded for the same reason the chart init is: app.js is
-            // deferred, so on a full page load this runs before the stubs
-            // exist. Static text only — no user data is spliced in here.
-            script { (PreEscaped("window.watchpost && watchpost.refreshMarkers();")) }
         }
     }
 }
@@ -616,34 +612,34 @@ pub fn events_section(view: &EventsView) -> Markup {
 fn kind_chips(kinds: &[String]) -> Markup {
     html! {
         div class="wp-row wp-gap-1" role="group" aria-label="Filter events by kind" {
-            (kind_chip(None, "All", true))
-            @for kind in kinds { (kind_chip(Some(kind), kind, false)) }
+            (kind_chip(None))
+            @for kind in kinds { (kind_chip(Some(kind))) }
         }
     }
 }
 
 /// One filter chip.
 ///
-/// The kind is user-supplied and lands inside an inline event handler, so it is
-/// emitted as a JSON literal rather than spliced between quotes: `serde_json`
-/// escapes whatever would end the JS string, maud escapes the attribute around
-/// it, and the browser undoes exactly the second layer before the JS parser
-/// sees the first. Splicing `'{kind}'` instead would let a kind containing an
-/// apostrophe close the argument and run what followed.
+/// The kind travels in `data-chip-kind`, which app.js's delegated click
+/// listener matches on; the "all" chip carries `data-chip-all` instead of a
+/// sentinel kind, so a repo with an event kind literally called "All" cannot
+/// collide with it. A user-supplied kind is ordinary attribute text — maud
+/// escapes it, and there is no second (JavaScript) layer to escape for.
 ///
-/// The "all" chip passes `null` rather than a sentinel string, so a repo with
-/// an event kind literally called "all" cannot collide with it.
+/// The chip deliberately does not reuse `data-kind`: that attribute marks the
+/// table rows a kind filter hides, and matching it loosely enough to catch a
+/// chip would make the chip hide itself the first time it was pressed.
 ///
-/// The chip deliberately carries no `data-kind`: that attribute marks the table
-/// rows a kind filter hides, and a chip wearing it would hide itself the first
-/// time it was pressed. The kind travels in the handler argument instead.
-fn kind_chip(kind: Option<&str>, label: &str, pressed: bool) -> Markup {
-    let arg = serde_json::to_string(&kind).unwrap_or_else(|_| "null".to_owned());
+/// `aria-pressed="true"` on every chip is the unfiltered state the page opens
+/// in. Rendering the real state server-side means the client has nothing to
+/// correct on load — an "off" default would flash before app.js turned it on.
+fn kind_chip(kind: Option<&str>) -> Markup {
     let class = format!("wp-chip {}", kind_class(&kind.map(str::to_owned)));
     html! {
         button type="button" class=(class)
-            aria-pressed=(pressed)
-            onclick=(format!("watchpost.toggleKind({arg}, this)")) { (label) }
+            aria-pressed="true"
+            data-chip-all[kind.is_none()]
+            data-chip-kind=[kind] { (kind.unwrap_or("All")) }
     }
 }
 
@@ -1068,16 +1064,18 @@ mod tests {
     }
 
     #[test]
-    fn init_call_is_guarded_and_the_selector_is_client_side() {
+    fn the_section_ships_data_only_and_the_selector_is_client_side() {
         let payload = payload(7, Some(3));
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &repo)).into_string();
-        // `&&` must survive as JavaScript — an escaped `&amp;&amp;` is a
-        // syntax error, not a guard.
+        // The payload island is the only script here: no executable inline
+        // script, so nothing has to be guarded against app.js being deferred.
         assert!(
-            out.contains("<script>window.watchpost && watchpost.initRepoCharts();</script>"),
+            out.contains(r#"<script type="application/json" id="chart-data">"#),
             "out was {out}"
         );
+        assert!(!out.contains("<script>"), "out was {out}");
+        assert!(!out.contains("watchpost."), "out was {out}");
         // The period selector zooms in the browser: no htmx, no inline handler
         // — app.js binds one delegated listener to the data attribute — and the
         // option the payload names is the selected one.
@@ -1122,7 +1120,7 @@ mod tests {
         );
         assert!(!out.contains("chart-data"), "out was {out}");
         assert!(!out.contains("wp-period"), "out was {out}");
-        assert!(!out.contains("initRepoCharts"), "out was {out}");
+        assert!(!out.contains("<script"), "out was {out}");
         assert!(!out.contains("<canvas"), "out was {out}");
         // The section still says what it would have shown.
         assert!(out.contains("<h2>Metrics</h2>"), "out was {out}");
@@ -1141,6 +1139,10 @@ mod tests {
     fn events_section_emits_markers_even_when_empty() {
         let out = events_section(&events_view(&[], &[])).into_string();
         assert!(out.contains(r#"id="events-data">[]<"#), "out was {out}");
+        // The island is data; the swap that delivers it is what tells app.js
+        // to re-read it. No inline script rides along.
+        assert!(!out.contains("<script>"), "out was {out}");
+        assert!(!out.contains("watchpost."), "out was {out}");
         assert!(
             out.contains(
                 r#"<div class="wp-empty"><p>No events yet — add the first one above.</p></div>"#
@@ -1299,25 +1301,61 @@ mod tests {
     }
 
     #[test]
-    fn a_hostile_kind_cannot_break_out_of_the_chip_handler() {
-        // Quote, backslash, apostrophe and a newline: everything that would
-        // end the JS string literal early if the kind were spliced in raw.
+    fn a_hostile_kind_cannot_break_out_of_the_chip_attribute() {
+        // Quote, backslash, apostrophe, a newline and a tag: the kind is
+        // attribute text now, so maud's escaping is the whole defence.
         let kinds = vec!["\"'\\\n<x>".to_owned()];
         let out = events_section(&events_view(&[], &kinds)).into_string();
 
-        let onclick = out
-            .split(r#"onclick=""#)
-            .nth(2)
-            .expect("the kind chip follows the All chip")
+        let kind = out
+            .split(r#"data-chip-kind=""#)
+            .nth(1)
+            .expect("the hostile kind renders a chip")
             .split('"')
             .next()
             .unwrap();
-        // No raw `"` survived to close the attribute, and no raw newline
-        // survived to terminate the statement.
-        assert!(!onclick.contains('"'), "onclick was {onclick}");
-        assert!(!onclick.contains('\n'), "onclick was {onclick}");
-        assert!(onclick.starts_with("watchpost.toggleKind("), "{onclick}");
+        // No raw `"` survived to close the attribute early, and the quote is
+        // there in escaped form rather than dropped.
+        assert!(kind.contains("&quot;"), "kind attribute was {kind}");
+        assert!(!kind.contains('"'), "kind attribute was {kind}");
         assert!(!out.contains("<x>"), "out was {out}");
+        // Nothing about a chip is executable any more.
+        assert!(!out.contains("onclick"), "out was {out}");
+    }
+
+    #[test]
+    fn chips_carry_their_kind_and_open_pressed() {
+        let kinds = vec!["release".to_owned()];
+        let out = events_section(&events_view(&[], &kinds)).into_string();
+
+        // The reset chip is told apart by its own attribute, not by its label
+        // or its position, so a kind called "All" cannot impersonate it.
+        assert!(
+            out.contains(
+                r#"<button type="button" class="wp-chip wp-kind-none" aria-pressed="true" data-chip-all>All</button>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"aria-pressed="true" data-chip-kind="release">release</button>"#),
+            "out was {out}"
+        );
+        // Unfiltered is the state the page opens in: every chip renders
+        // pressed, so app.js has nothing to correct on load.
+        assert_eq!(out.matches(r#"aria-pressed="true""#).count(), 2, "{out}");
+        assert!(!out.contains(r#"aria-pressed="false""#), "out was {out}");
+    }
+
+    #[test]
+    fn a_kind_called_all_gets_its_own_chip() {
+        let kinds = vec!["All".to_owned()];
+        let out = events_section(&events_view(&[], &kinds)).into_string();
+
+        assert!(
+            out.contains(r#"data-chip-kind="All">All</button>"#),
+            "{out}"
+        );
+        assert_eq!(out.matches("data-chip-all").count(), 1, "out was {out}");
     }
 
     #[test]

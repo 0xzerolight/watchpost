@@ -117,6 +117,10 @@ async fn app_js_defines_the_watchpost_namespace() {
         // The period selector carries no inline handler, so this delegated
         // listener is the only thing that makes it do anything.
         "data-period-select",
+        // Same for the kind chips: these two attributes are how the delegated
+        // click listener finds them and how it tells a kind from the reset.
+        "data-chip-kind",
+        "data-chip-all",
         // htmx never swaps a 4xx/5xx body, so these two listeners are the
         // only thing standing between a failed request and a dead-looking
         // button.

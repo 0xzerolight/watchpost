@@ -15,9 +15,9 @@ use axum::response::Response;
 /// [`crate::routes::assets::favicon_data_uri`]), `https:` keeps images in
 /// markdown-rendered event notes working — the sanitizer passes https image
 /// URLs through, and release notes routinely embed screenshots off GitHub's
-/// CDN — and `'unsafe-inline'` in `script-src` keeps the shell's inline htmx
-/// config and the fragments' init calls working until the inline handlers are
-/// gone.
+/// CDN — and `'unsafe-inline'` in `script-src` is now down to one holdout: the
+/// shell's two inline config blocks (htmx's history cache and its response
+/// handling). No page or fragment carries any other inline script.
 ///
 /// `style-src 'self'` has one consequence worth remembering: htmx injects an
 /// inline `<style>` for `.htmx-indicator` unless told not to, and that

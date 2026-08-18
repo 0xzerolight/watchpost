@@ -315,10 +315,10 @@ async fn create_lands_row_and_markers() {
     assert_eq!(markers[0]["date"], json!("2026-08-10"));
     assert_eq!(markers[0]["kind"], json!("hn"));
     assert_eq!(markers[0]["title"], json!("Show HN: watchpost"));
-    assert!(
-        body.contains("window.watchpost && watchpost.refreshMarkers()"),
-        "guarded marker refresh missing: {body}"
-    );
+    // The fragment carries no script of its own: app.js re-reads the island
+    // from the `htmx:afterSwap` that delivered it.
+    assert!(!body.contains("<script>"), "body was {body}");
+    assert!(!body.contains("watchpost."), "body was {body}");
 
     let events = h.events(ID_A).await;
     assert_eq!(events.len(), 1, "events were {events:?}");
@@ -982,7 +982,7 @@ async fn notes_disclosure_is_omitted_when_empty() {
 }
 
 #[tokio::test]
-async fn kind_chip_onclick_safe() {
+async fn kind_chip_attribute_is_safe() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
     let hostile = r#""quote'"#;
@@ -994,14 +994,11 @@ async fn kind_chip_onclick_safe() {
 
     let body = body_string(h.get("/repos/1").await).await;
 
-    // The kind reaches an inline handler, so it is emitted as a JSON literal
-    // rather than spliced between quotes. maud escapes the attribute; after
-    // the browser undoes that, what the JS parser sees must still be one
-    // well-formed string argument.
-    // Attribute values hold no raw `"` once maud is done with them, so the
-    // first one after `onclick="` is the closing delimiter.
+    // The kind is attribute text, so maud's escaping is all that stands
+    // between it and the parser. Attribute values hold no raw `"` once maud is
+    // done with them, so the first one after `data-chip-kind="` closes it.
     let raw = body
-        .split(r#"onclick=""#)
+        .split(r#"data-chip-kind=""#)
         .skip(1)
         .map(|part| part.split('"').next().unwrap())
         .find(|attr| attr.contains("quote"))
@@ -1011,15 +1008,14 @@ async fn kind_chip_onclick_safe() {
         raw.contains("&quot;"),
         "the quote reached the attribute unescaped: {raw}"
     );
-    assert_eq!(
-        unescape(raw),
-        r#"watchpost.toggleKind("\"quote'", this)"#,
-        "onclick was {raw}"
-    );
+    // What the browser hands the click listener is the kind as stored.
+    assert_eq!(unescape(raw), hostile, "chip kind was {raw}");
 
-    // The "all" chip passes null, which no real kind can collide with.
+    // Nothing on the chip is executable, and the reset chip is marked by an
+    // attribute of its own rather than by a sentinel kind.
+    assert!(!body.contains("onclick"), "body was {body}");
     assert!(
-        body.contains("watchpost.toggleKind(null, this)"),
+        body.contains("data-chip-all>All</button>"),
         "body was {body}"
     );
 }
@@ -1039,9 +1035,14 @@ async fn kind_chips_and_datalist_list_each_kind_once() {
 
     let body = body_string(h.get("/repos/1").await).await;
     assert_eq!(
-        body.matches("watchpost.toggleKind(").count(),
-        3,
-        "one chip per distinct kind plus All: {body}"
+        body.matches("data-chip-kind=").count(),
+        2,
+        "one chip per distinct kind: {body}"
+    );
+    assert_eq!(
+        body.matches("data-chip-all").count(),
+        1,
+        "exactly one reset chip: {body}"
     );
     assert_eq!(
         body.matches(r#"<option value="release">"#).count(),

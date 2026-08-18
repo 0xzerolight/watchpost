@@ -95,7 +95,7 @@ async fn the_index_carries_every_header() {
 }
 
 /// Pinned byte-for-byte. Phase A keeps `'unsafe-inline'` for scripts (the
-/// shell's inline htmx config and the fragments' init calls still need it) and
+/// shell's two inline htmx config blocks are all that still need it) and
 /// `data: https:` for images (the favicon is inlined as a data URI, and
 /// markdown-rendered event notes embed https screenshots); a change to any of
 /// them is a deliberate decision, not a drive-by edit.

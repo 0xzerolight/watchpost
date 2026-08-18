@@ -515,7 +515,6 @@ async fn a_repo_with_nothing_observed_shows_an_empty_state_instead_of_charts() {
     );
     assert!(!body.contains(r#"id="chart-data""#), "body was {body}");
     assert!(!body.contains(r#"id="wp-period""#), "body was {body}");
-    assert!(!body.contains("initRepoCharts"), "body was {body}");
     assert!(!body.contains("chart_stars"), "body was {body}");
     assert!(body.contains("<h2>Metrics</h2>"), "body was {body}");
     // The rest of the page is still there.
@@ -567,12 +566,11 @@ async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
     ] {
         assert!(body.contains(canvas), "{canvas} missing: {body}");
     }
-    // The init call is guarded: app.js is deferred, so an unguarded call in a
-    // body-level script would throw before DOMContentLoaded.
-    assert!(
-        body.contains("window.watchpost && watchpost.initRepoCharts()"),
-        "body was {body}"
-    );
+    // The page hands the charts their data and nothing else: no body-level
+    // script calls into app.js, which boots itself on DOMContentLoaded.
+    assert!(!body.contains("watchpost."), "body was {body}");
+    // The shell's two htmx config blocks are the only inline scripts left.
+    assert_eq!(body.matches("<script>").count(), 2, "body was {body}");
 }
 
 #[tokio::test]
