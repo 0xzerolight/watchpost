@@ -478,6 +478,21 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * The sort arrow beside a sortable column's label. Dimmed by default so the
+ * inactive columns read as "sortable" rather than as three competing arrows,
+ * and full strength on the column the table is actually ordered by —
+ * `[aria-sort]` is only ever on that one cell, so the state needs no class.
+ */
+.wp-sort-glyph {
+  margin-left: var(--wp-space-1);
+  opacity: 0.35;
+}
+
+th[aria-sort] .wp-sort-glyph {
+  opacity: 1;
+}
+
+/*
  * htmx busy indicator. Pico draws the spinning glyph from `aria-busy="true"`;
  * the span only needs a box to draw it in, since an empty inline element has no
  * height of its own.

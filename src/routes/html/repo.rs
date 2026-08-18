@@ -489,6 +489,12 @@ fn table_id(kind: PopularKind) -> &'static str {
 /// fades exactly the rows the swap is about to replace, so a slow sort looks
 /// like work instead of like a click that did nothing. Nothing is disabled — a
 /// link cannot be, and re-sorting mid-request only re-sorts.
+///
+/// The glyph is `aria-hidden`: `aria-sort` on the cell already announces the
+/// ordering, and a screenreader reading "▼" after the column name would say it
+/// twice. Every column carries one — a dimmed `↕` on the inactive ones is what
+/// says the other columns are sortable at all, and rendering it always means
+/// the header row does not reflow when the sort moves.
 fn sort_th(
     kind: PopularKind,
     key: SortKey,
@@ -499,7 +505,13 @@ fn sort_th(
 ) -> Markup {
     let url = params.sort_url(kind, key);
     let table = table_id(kind);
-    let aria = (current.key == key).then(|| current.dir.aria());
+    let active = current.key == key;
+    let aria = active.then(|| current.dir.aria());
+    let glyph = match (active, current.dir) {
+        (false, _) => "↕",
+        (true, SortDir::Asc) => "▲",
+        (true, SortDir::Desc) => "▼",
+    };
     html! {
         th scope="col" aria-sort=[aria] {
             a id=(format!("sort-{table}-{}", key.param(kind)))
@@ -510,7 +522,10 @@ fn sort_th(
                 hx-swap="outerHTML"
                 hx-replace-url="true"
                 hx-indicator="closest table"
-                data-tooltip=[tooltip] { (label) }
+                data-tooltip=[tooltip] {
+                    (label)
+                    span class="wp-sort-glyph" aria-hidden="true" { (glyph) }
+                }
         }
     }
 }
@@ -1019,6 +1034,40 @@ mod tests {
         let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
         assert_eq!(out.matches("aria-sort").count(), 1, "out was {out}");
         assert!(out.contains(r#"aria-sort="descending""#), "out was {out}");
+    }
+
+    #[test]
+    fn every_column_shows_its_sort_state() {
+        // Default ordering: count descending, the other two columns idle.
+        let out = popular_table(PopularKind::Referrers, &[], &params()).into_string();
+        assert_eq!(out.matches("wp-sort-glyph").count(), 3, "out was {out}");
+        assert_eq!(out.matches('↕').count(), 2, "out was {out}");
+        assert!(
+            out.contains(r#"Views<span class="wp-sort-glyph" aria-hidden="true">▼</span>"#),
+            "out was {out}"
+        );
+
+        // Ascending on the name column moves both the glyph and its direction.
+        let params = PopularParams {
+            refs_sort: Sort {
+                key: SortKey::Name,
+                dir: SortDir::Asc,
+            },
+            ..params()
+        };
+        let out = popular_table(PopularKind::Referrers, &[], &params).into_string();
+        assert!(
+            out.contains(r#"Referrer<span class="wp-sort-glyph" aria-hidden="true">▲</span>"#),
+            "out was {out}"
+        );
+        assert_eq!(out.matches('↕').count(), 2, "out was {out}");
+        // The glyph duplicates what `aria-sort` already says, so it is hidden
+        // from the accessibility tree on every column, active or not.
+        assert_eq!(
+            out.matches(r#"aria-hidden="true""#).count(),
+            3,
+            "out was {out}"
+        );
     }
 
     #[test]
