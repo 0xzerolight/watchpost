@@ -1,10 +1,20 @@
 //! The container healthcheck's endpoint.
 //!
-//! Liveness on its own is worth little here: a watchpost whose database went
-//! away — an unmounted volume, a file replaced underneath it — keeps answering
-//! HTTP while every page it serves is an error. So the probe runs a query, and
-//! a failure is a 503, the status Docker's `HEALTHCHECK` and any proxy in front
-//! already know how to act on.
+//! Liveness on its own is worth little here: a process that answers HTTP while
+//! its database refuses every query is worse than one that is down, because
+//! nothing restarts it. So the probe runs a real statement — the file is
+//! readable, the connection is alive, the mutex is obtainable, sqlite prepares
+//! against the schema that is actually there — and a failure is a 503, the
+//! status Docker's `HEALTHCHECK` and any proxy in front already know how to act
+//! on.
+//!
+//! What it does not claim: no probe notices that the file underneath a running
+//! sqlite handle went away. An open fd survives unlink and unmount, and the
+//! page cache answers reads that never reach the disk — measured on this
+//! schema, with the database file overwritten by garbage mid-process, both
+//! `sqlite_master` and a user table keep answering. Corruption surfaces only on
+//! a read that misses the cache, which is the page handlers' error to report,
+//! and a restart is what turns it into a failed open.
 
 use std::sync::Arc;
 
@@ -22,21 +32,25 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Response {
     probe_response(probe(&state.db).await)
 }
 
-/// The cheapest statement that still exercises the whole path a request takes:
-/// blocking pool, connection mutex, live sqlite handle.
+/// The cheapest statement that still exercises everything a request does:
+/// blocking pool, connection mutex, prepare against the live schema, one btree
+/// read of page 1 — from the page cache while it is warm, from the file when it
+/// is not. `SELECT 1` would prove less: sqlite answers it from its expression
+/// evaluator without opening anything.
 async fn probe(db: &Db) -> Result<i64, DbError> {
     db.call(|c| {
-        c.query_row("SELECT 1", [], |r| r.get(0))
+        c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))
             .map_err(DbError::from)
     })
     .await
 }
 
 /// Kept apart from the handler because the failing branch has no honest
-/// integration test: `SELECT 1` is answered by sqlite's expression evaluator,
-/// so it outlives dropped tables and a deleted file alike, and the ways to
-/// break it for real (a poisoned or closed connection) are not reachable
-/// through [`Db::call`].
+/// integration test. Every way to break a database under a live handle either
+/// leaves the probe answering from cache (see the module doc) or needs a db
+/// seeded past its cache size and its file overwritten mid-request — a test
+/// that would pin sqlite's caching behaviour, not this handler's. So the two
+/// branches are unit-tested here, and the wiring between them is three lines.
 ///
 /// The body is fixed text for the same reason the error pages are: the
 /// operator's detail goes to the log, and the probe's reader is `wget`, which
@@ -84,9 +98,13 @@ mod tests {
         );
     }
 
+    /// The statement is answered by the migrated schema, not by sqlite's
+    /// expression evaluator — an empty count would mean the probe is reading
+    /// nothing.
     #[tokio::test]
-    async fn the_probe_runs_against_a_live_database() {
+    async fn the_probe_reads_the_migrated_schema() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(probe(&db).await.unwrap(), 1);
+        let objects = probe(&db).await.unwrap();
+        assert!(objects > 0, "the probe saw an empty schema: {objects}");
     }
 }
