@@ -190,6 +190,34 @@ mod tests {
         assert!(backups.is_empty(), "fresh db must not be backed up");
     }
 
+    /// The other half of `fresh_db_needs_no_backup`: a database with rows in
+    /// it is copied before its schema is touched, so a migration that goes
+    /// wrong is recoverable.
+    #[test]
+    fn an_outdated_database_is_backed_up_before_migrating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watchpost.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            apply_pragmas(&conn).unwrap();
+            migrations::run_migrations(&mut conn, &migrations::MIGRATIONS[..1]).unwrap();
+        }
+
+        Db::open(&path).unwrap();
+
+        let backups: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(BACKUP_SUFFIX))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        assert!(
+            backups[0].starts_with("watchpost.v1."),
+            "the backup must name the version it was taken at: {backups:?}"
+        );
+    }
+
     /// A downgraded binary must stop at the door rather than serve a schema it
     /// does not know.
     #[test]
