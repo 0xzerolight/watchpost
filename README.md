@@ -66,6 +66,7 @@ All settings are environment variables; the image reads them from `.env` via com
 | `WATCHPOST_PORT` | `8080` | Bind port |
 | `WATCHPOST_LOG` | `info` | `tracing` filter, e.g. `watchpost=debug` |
 | `WATCHPOST_GITHUB_API_BASE` | `https://api.github.com` | Override for GitHub Enterprise or tests; must be `http`/`https`, and a missing trailing slash is added (`…/api/v3` → `…/api/v3/`) |
+| `WATCHPOST_TZ` | `UTC` | IANA zone name (e.g. `Europe/Madrid`) the UI displays times in. An unknown name is a startup error, not a silent fall back to UTC |
 
 ## Security and operations
 
@@ -138,9 +139,12 @@ reconstruct the star history from before it was installed. GitHub stops paginati
 reconstructed. The history between there and today is missing: the curve covers the early growth,
 then jumps to the current total, and daily sampling takes over from the first sync onwards.
 
-**Schedules are UTC.** `WATCHPOST_CRON` and every date in the database are UTC, including the day
-an event is filed under. A collection also runs at startup, so restarting is a way to force a
-refresh.
+**Times display in `WATCHPOST_TZ`; days are UTC.** Timestamps you read — "last synced", the
+`--doctor` rate-limit reset, and the day a new event defaults to — render in the zone you
+configure, with that zone's abbreviation. Everything that groups by day does not: `WATCHPOST_CRON`,
+the dates stored in the database, and the chart columns are all UTC, because GitHub returns traffic
+already summed per UTC day and those buckets cannot be re-cut. A collection also runs at startup,
+so restarting is a way to force a refresh.
 
 ## Diagnostics
 

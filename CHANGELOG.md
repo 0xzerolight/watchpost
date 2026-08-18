@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `WATCHPOST_TZ`: displayed times — "last synced", the `--doctor` rate-limit reset, and the day a
+  new event defaults to — render in the configured IANA zone instead of always UTC. Stored dates,
+  chart day buckets and `WATCHPOST_CRON` stay UTC.
+
+### Fixed
+
+- The Add event form pre-filled the UTC day, so between local midnight and the UTC rollover it
+  defaulted to the wrong date.
+
 ## [1.0.0] - 2026-08-18
 
 First release. Everything below is relative to the pre-release state of the repository, which was
