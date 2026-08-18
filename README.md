@@ -130,4 +130,6 @@ never stalls request serving. The result is one static binary plus one database 
 
 ## License
 
-TBD.
+AGPL-3.0-or-later — see [LICENSE](LICENSE).
+
+Copyright © 2026 0xzerolight.
