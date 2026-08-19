@@ -87,6 +87,92 @@
     return gradient;
   }
 
+  var MONTHS = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+
+  /*
+   * Bucket keys are "YYYY-MM-DD" (day, and a week's Monday) or "YYYY-MM"
+   * (month); dispatch on shape, not chart state — ticks render during
+   * construction, before `$wp` exists. Week ticks read as their Monday
+   * ("May 18"); the tooltip title still says "Week of 2026-05-18".
+   */
+  function shortTick(label) {
+    var day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(label);
+    if (day) {
+      return MONTHS[Number(day[2]) - 1] + " " + Number(day[3]);
+    }
+    var month = /^(\d{4})-(\d{2})$/.exec(label);
+    if (month) {
+      return MONTHS[Number(month[2]) - 1] + " " + month[1];
+    }
+    return label;
+  }
+
+  var COMPACT =
+    typeof Intl !== "undefined" && Intl.NumberFormat
+      ? new Intl.NumberFormat("en", {
+          notation: "compact",
+          maximumFractionDigits: 1,
+        })
+      : null;
+
+  /* Y ticks: "12.3K" past five digits, the plain number below. */
+  function compactTick(value) {
+    if (typeof value !== "number") {
+      return value;
+    }
+    return COMPACT && Math.abs(value) >= 10000
+      ? COMPACT.format(value)
+      : String(value);
+  }
+
+  function chromeColors() {
+    return {
+      grid: css("--wp-chart-grid", "#eceef2"),
+      tick: css("--wp-chart-tick", "#6b7280"),
+      ink: css("--pico-color", "#373c44"),
+      card: css("--pico-card-background-color", "#ffffff"),
+      cardBorder: css("--pico-card-border-color", "#d0d5dd"),
+    };
+  }
+
+  /*
+   * Chart.js resolves these once from options, never from CSS — a scheme flip
+   * has to write the re-read values back onto every live repo chart.
+   */
+  function applyChartChrome(chart) {
+    var c = chromeColors();
+    chart.options.scales.x.ticks.color = c.tick;
+    chart.options.scales.y.ticks.color = c.tick;
+    chart.options.scales.y.grid.color = c.grid;
+    chart.options.plugins.legend.labels.color = c.tick;
+    var tooltip = chart.options.plugins.tooltip;
+    tooltip.backgroundColor = c.card;
+    tooltip.borderColor = c.cardBorder;
+    tooltip.titleColor = c.ink;
+    tooltip.bodyColor = c.ink;
+  }
+
+  /*
+   * Legend boxes draw the dataset backgroundColor; for an area dataset that is
+   * a chart-area gradient, which clamps to near-transparent above the plot.
+   * Force solid dots in the series colour instead.
+   */
+  function solidLegendLabels(chart) {
+    var items = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+    items.forEach(function (item) {
+      var dataset = chart.data.datasets[item.datasetIndex];
+      if (dataset) {
+        item.fillStyle = dataset.borderColor;
+        item.strokeStyle = dataset.borderColor;
+        item.lineWidth = 0;
+      }
+    });
+    return items;
+  }
+
   /*
    * Charts this file owns and has not destroyed. Needed because a theme change
    * has to reach every live chart, and because a marker redraw must not walk
@@ -101,6 +187,12 @@
     }
     Chart.defaults.color = css("--pico-color", "#373c44");
     Chart.defaults.borderColor = css("--pico-muted-border-color", "#dfe3eb");
+    // `boot()` runs this before any chart exists, so the page font is in the
+    // defaults before the first construction.
+    Chart.defaults.font.family = css(
+      "--pico-font-family",
+      Chart.defaults.font.family,
+    );
     var card = css("--pico-card-background-color", "#ffffff");
     live.forEach(function (chart) {
       if (!chart.canvas) {
@@ -123,6 +215,9 @@
           dataset.pointHoverBorderColor = card;
         }
       });
+      if (chart.$wp) {
+        applyChartChrome(chart); // sparklines have no scales/tooltip to write
+      }
       chart.update("none");
     });
   }
@@ -427,7 +522,7 @@
       tipEl = document.createElement("div");
       tipEl.id = "marker-tip";
       // On the body rather than inside `.chart-box`: the box is
-      // `overflow`-clipped and only 220px tall, so a tip anchored in it would
+      // `overflow`-clipped and only 240px tall, so a tip anchored in it would
       // be cut off. Absolute positioning against the initial containing block
       // means page coordinates place it, which is exactly what a mouse event
       // reports.
@@ -622,26 +717,33 @@
         return;
       }
       var ctx = chart.ctx;
+      var ring = css("--pico-card-background-color", "#ffffff");
       ctx.save();
-      ctx.lineWidth = 1.5;
       placed.forEach(function (item) {
         if (!isFinite(item.x)) {
           return;
         }
         var colour = kindColor(item.event.kind);
-        ctx.strokeStyle = colour;
-        ctx.fillStyle = colour;
+        // The drop line is context, not data: half-strength so it sits behind
+        // the series lines it crosses.
+        ctx.strokeStyle = hexToRgba(colour, 0.5);
+        ctx.lineWidth = 1;
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
         ctx.moveTo(item.x, area.top);
         ctx.lineTo(item.x, area.bottom);
         ctx.stroke();
-        // The dot is the hover target's advertisement — a dashed hairline alone
-        // reads as grid decoration.
+        // The dot is the hover target's advertisement — a dashed hairline
+        // alone reads as grid decoration. Full colour, ringed in the card
+        // surface so it separates from whatever it lands on.
         ctx.setLineDash([]);
         ctx.beginPath();
         ctx.arc(item.x, area.top + 3, 3, 0, Math.PI * 2);
+        ctx.fillStyle = colour;
         ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = ring;
+        ctx.stroke();
       });
       ctx.restore();
     },
@@ -933,6 +1035,8 @@
         // positions, so a tweening axis would leave every dashed line standing
         // beside the column it belongs to until the animation settled.
         animation: false,
+        // Room for the event-marker dots painted at `area.top`.
+        layout: { padding: { top: 8 } },
         // Hovering anywhere in a column reports every series in it, which is
         // what a reader comparing count against uniques wants.
         interaction: { mode: "index", intersect: false },
@@ -940,22 +1044,57 @@
           x: {
             type: "category",
             grid: { display: false },
+            border: { display: false },
             // Horizontal ticks only — a tilted date is harder to read than a
             // sparser axis. The padding is what buys the sparseness: a bare
-            // `autoSkip` packs `YYYY-MM-DD` labels shoulder to shoulder in a
+            // `autoSkip` packs date labels shoulder to shoulder in a
             // card-width chart and they run together.
-            ticks: { maxRotation: 0, autoSkip: true, autoSkipPadding: 16 },
+            ticks: {
+              maxRotation: 0,
+              autoSkip: true,
+              autoSkipPadding: 16,
+              font: { size: 11 },
+              callback: function (value) {
+                // Category axis hands the index; the label is looked up.
+                return shortTick(this.getLabelForValue(value));
+              },
+            },
           },
           y: {
             beginAtZero: spec.zeroBased,
-            ticks: { precision: 0 },
+            grid: { drawTicks: false },
+            border: { display: false },
+            ticks: {
+              precision: 0,
+              maxTicksLimit: 5,
+              font: { size: 11 },
+              callback: compactTick,
+            },
           },
         },
         plugins: {
           // A legend earns its space only where there are two series to tell
           // apart.
-          legend: { display: spec.datasets.length > 1 },
+          legend: {
+            display: spec.datasets.length > 1,
+            align: "end",
+            labels: {
+              usePointStyle: true,
+              pointStyle: "circle",
+              boxWidth: 6,
+              boxHeight: 6,
+              font: { size: 11 },
+              generateLabels: solidLegendLabels,
+            },
+          },
           tooltip: {
+            usePointStyle: true,
+            boxWidth: 6,
+            boxHeight: 6,
+            boxPadding: 4,
+            cornerRadius: 6,
+            padding: 10,
+            borderWidth: 1,
             callbacks: {
               title: function (items) {
                 // Read off the chart, not off a captured array: the titles
@@ -965,13 +1104,22 @@
               label: function (item) {
                 var name = item.dataset.label ? item.dataset.label + ": " : "";
                 // Chart.js formats a null as "0". Leaving that alone would
-                // undo the whole point of plotting gaps as gaps: the bar is
+                // undo the whole point of plotting gaps as gaps: the point is
                 // correctly absent, and then the tooltip tells the reader the
                 // repo got zero views that day.
                 if (item.raw === null || item.raw === undefined) {
                   return name + "not observed";
                 }
                 return name + item.formattedValue;
+              },
+              // The dataset backgroundColor is a gradient; the tooltip box
+              // must be the solid series colour.
+              labelColor: function (item) {
+                var colour = item.dataset.borderColor;
+                return { borderColor: colour, backgroundColor: colour };
+              },
+              labelPointStyle: function () {
+                return { pointStyle: "circle", rotation: 0 };
               },
             },
           },
@@ -1001,7 +1149,11 @@
     };
 
     live.add(chart);
-    chart.draw();
+    // The constructor's synchronous render ran before `$wp` existed and
+    // before the chrome colours below; this update paints markers and puts
+    // the CSS-derived greys onto ticks, grid and tooltip in one pass.
+    applyChartChrome(chart);
+    chart.update("none");
     return chart;
   }
 
@@ -1257,8 +1409,9 @@
       }),
       bucketOf: bucketOf,
       kind: kind,
-      // At day zoom the uniques bar is that day's unique count; wider buckets
-      // cannot sum it (see `agg`), so the label says what the number really is.
+      // At day zoom the uniques point is that day's unique count; wider
+      // buckets cannot sum it (see `agg`), so the label says what the number
+      // really is.
       uniquesLabel: kind === "day" ? "Unique" : "Peak daily unique",
       values: values,
     };
