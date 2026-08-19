@@ -113,6 +113,7 @@ async fn report_lists_schema_version_and_table_counts() {
         "repo_referrers",
         "repo_popular_paths",
         "release_assets",
+        "container_pulls",
         "events",
         "settings",
     ] {

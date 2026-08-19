@@ -7,7 +7,7 @@ use crate::errors::DbError;
 /// `const` array — migrations never need captured state.
 pub type Migration = fn(&rusqlite::Transaction) -> Result<(), DbError>;
 
-pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2, migrate_v3];
+pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
 
 /// Run all pending migrations against `conn`, bringing `PRAGMA user_version`
 /// up to `MIGRATIONS.len()`.
@@ -157,6 +157,21 @@ fn migrate_v3(tx: &rusqlite::Transaction) -> Result<(), DbError> {
     Ok(())
 }
 
+/// v4 — daily GHCR container pull counts, scraped from the public package
+/// page. One cumulative value per repo per day; an unobserved day has no row
+/// (carry-forward happens at render). No extra index: every read leads
+/// `repo_id` then ranges `date` — the primary key's own order (the v2 lesson).
+fn migrate_v4(tx: &rusqlite::Transaction) -> Result<(), DbError> {
+    tx.execute_batch(
+        "CREATE TABLE container_pulls (
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  pull_count INTEGER NOT NULL,
+  PRIMARY KEY (repo_id, date));",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +287,19 @@ mod tests {
         migrate(&mut c).unwrap();
         c.execute("INSERT INTO settings (key, value) VALUES ('k', 'v')", [])
             .unwrap();
+    }
+
+    #[test]
+    fn v4_adds_the_container_pulls_table() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&mut c).unwrap();
+        c.execute("INSERT INTO repos (id, name) VALUES (1, 'o/r')", [])
+            .unwrap();
+        c.execute(
+            "INSERT INTO container_pulls (repo_id, date, pull_count) VALUES (1, '2026-08-19', 5)",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]

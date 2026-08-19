@@ -26,6 +26,7 @@ const TABLES: &[&str] = &[
     "repo_referrers",
     "repo_popular_paths",
     "release_assets",
+    "container_pulls",
     "events",
     "settings",
 ];

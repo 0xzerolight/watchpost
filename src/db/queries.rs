@@ -226,6 +226,26 @@ pub fn upsert_release_assets(
     Ok(())
 }
 
+/// Record the day's cumulative GHCR pull count for a repo. Monotonic MAX on
+/// conflict, like [`upsert_release_assets`]: a scrape racing an earlier one
+/// on the same day must never move the counter backwards.
+pub fn upsert_container_pulls(
+    conn: &Connection,
+    repo_id: i64,
+    date: &str,
+    pull_count: i64,
+) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO container_pulls AS t (repo_id, date, pull_count)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(repo_id, date) DO UPDATE SET
+           -- pull_count is NOT NULL; scalar MAX is safe here.
+           pull_count = MAX(t.pull_count, excluded.pull_count)",
+        params![repo_id, date, pull_count],
+    )?;
+    Ok(())
+}
+
 /// Backfill `stars` from replayed stargazer pages. Deliberately keeps the
 /// monotonic MAX rule that [`upsert_stats`] no longer uses: these totals are
 /// truncated wherever the page budget ran out, so the larger of the two
@@ -709,6 +729,61 @@ pub fn dense_downloads_total(
     Ok(out)
 }
 
+/// Per-day cumulative GHCR pull count, dense over the trailing `days` window
+/// ending today — the `pulls_total` chart series.
+///
+/// One value per repo per day, so this is the snapshot carry-forward of
+/// [`dense_series`] against a different table: seed from the newest row
+/// strictly before the window, fill unobserved days with the last observed
+/// value, `None` only before the first observation ever.
+///
+/// `days == 0` is an empty range, matching [`dense_series`].
+pub fn dense_container_pulls(
+    conn: &Connection,
+    repo_id: i64,
+    days: u32,
+) -> Result<Vec<(String, Option<i64>)>, DbError> {
+    if days == 0 {
+        return Ok(Vec::new());
+    }
+    let today = chrono::Utc::now().date_naive();
+    let start = today - chrono::Duration::days(i64::from(days) - 1);
+    let (start_str, end_str) = (start.to_string(), today.to_string());
+
+    // Observed rows inside the window, keyed by date for O(1) lookup while
+    // walking the calendar below.
+    let mut stmt = conn.prepare(
+        "SELECT date, pull_count FROM container_pulls
+         WHERE repo_id = ?1 AND date >= ?2 AND date <= ?3",
+    )?;
+    let observed: std::collections::HashMap<String, i64> = stmt
+        .query_map(params![repo_id, start_str, end_str], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    // The pre-window seed: the newest reading before the window opens.
+    let mut carried = conn
+        .query_row(
+            "SELECT pull_count FROM container_pulls
+             WHERE repo_id = ?1 AND date < ?2
+             ORDER BY date DESC LIMIT 1",
+            params![repo_id, start_str],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+
+    let mut out = Vec::with_capacity(days as usize);
+    for offset in 0..i64::from(days) {
+        let date = (start + chrono::Duration::days(offset)).to_string();
+        if let Some(count) = observed.get(&date) {
+            carried = Some(*count);
+        }
+        out.push((date, carried));
+    }
+    Ok(out)
+}
+
 /// The earliest day watchpost has any chartable observation for, or `None` for
 /// a repo that has never been synced. Backs the "All" period, which spans from
 /// here to today.
@@ -718,6 +793,8 @@ pub fn first_observed_date(conn: &Connection, repo_id: i64) -> Result<Option<Str
              SELECT MIN(date) AS d FROM repo_stats WHERE repo_id = ?1
              UNION ALL
              SELECT MIN(date) FROM release_assets WHERE repo_id = ?1
+             UNION ALL
+             SELECT MIN(date) FROM container_pulls WHERE repo_id = ?1
          )",
         params![repo_id],
         |r| r.get::<_, Option<String>>(0),
@@ -1981,6 +2058,71 @@ mod tests {
             first_observed_date(&c, 1).unwrap(),
             Some("2026-07-01".into())
         );
+        // Container pulls count too: a docker-only repo has nothing else.
+        upsert_container_pulls(&c, 1, "2026-06-15", 8).unwrap();
+        assert_eq!(
+            first_observed_date(&c, 1).unwrap(),
+            Some("2026-06-15".into())
+        );
+    }
+
+    #[test]
+    fn container_pulls_upsert_is_monotonic() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_container_pulls(&c, 1, "2026-08-19", 100).unwrap();
+        upsert_container_pulls(&c, 1, "2026-08-19", 90).unwrap();
+        let count: i64 = c
+            .query_row(
+                "SELECT pull_count FROM container_pulls WHERE repo_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 100, "a lower same-day reading must not win");
+        upsert_container_pulls(&c, 1, "2026-08-19", 120).unwrap();
+        let count: i64 = c
+            .query_row(
+                "SELECT pull_count FROM container_pulls WHERE repo_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 120);
+    }
+
+    #[test]
+    fn dense_container_pulls_carries_forward() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_container_pulls(&c, 1, &days_ago(5), 40).unwrap();
+        upsert_container_pulls(&c, 1, &days_ago(2), 70).unwrap();
+        let rows = dense_container_pulls(&c, 1, 10).unwrap();
+        assert_eq!(rows.len(), 10);
+        assert_eq!(rows[0].1, None, "before the first observation stays None");
+        assert_eq!(rows[4].1, Some(40), "observation day");
+        assert_eq!(rows[6].1, Some(40), "a gap carries the last value");
+        assert_eq!(rows[9].1, Some(70), "today carries the newest value");
+    }
+
+    #[test]
+    fn dense_container_pulls_seeds_from_before_the_window() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_container_pulls(&c, 1, &days_ago(30), 15).unwrap();
+        let rows = dense_container_pulls(&c, 1, 7).unwrap();
+        assert!(rows.iter().all(|(_, v)| *v == Some(15)), "{rows:?}");
+        assert!(dense_container_pulls(&c, 1, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dense_container_pulls_ignores_other_repos() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_repo(&c, 2);
+        upsert_container_pulls(&c, 2, &days_ago(1), 99).unwrap();
+        let rows = dense_container_pulls(&c, 1, 3).unwrap();
+        assert!(rows.iter().all(|(_, v)| v.is_none()), "{rows:?}");
     }
 
     #[test]
