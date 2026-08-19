@@ -292,6 +292,18 @@ async fn sync_one_repo(
         return Err(AppError::Gh(errs.remove(0).1));
     }
 
+    // GHCR container pulls: supplementary, deliberately outside `attempted` —
+    // a gone repo must still read as a total failure, and its package page
+    // 404ing (a success here) must not soften that verdict. No gate check:
+    // `GhcrClient` never returns a rate-limit variant.
+    let mut ghcr_pulls: Option<i64> = None;
+    if let Some(ghcr) = &state.ghcr {
+        match ghcr.container_pulls(name).await {
+            Ok(found) => ghcr_pulls = found,
+            Err(e) => errs.push(("ghcr", e)),
+        }
+    }
+
     let stats = meta.as_ref().map(|m| {
         // `open_issues_count` counts PRs too. Without a PR count both derived
         // values are unknown — writing NULL keeps whatever an earlier sync
@@ -371,6 +383,9 @@ async fn sync_one_repo(
             }
             if let Some(rows) = &assets {
                 queries::upsert_release_assets(&tx, repo_id, &date, rows)?;
+            }
+            if let Some(count) = ghcr_pulls {
+                queries::upsert_container_pulls(&tx, repo_id, &date, count)?;
             }
             tx.commit()?;
             Ok(())

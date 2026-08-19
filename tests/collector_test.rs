@@ -1015,3 +1015,108 @@ async fn the_star_backfill_without_a_token_is_a_no_op() {
 
     assert!(backfill_stars_with_budget(&state, 10).await.is_ok());
 }
+
+// ---- GHCR container pulls ---------------------------------------------------
+
+/// Mount the public package page the scraper reads, with the markup shape
+/// GitHub renders: "Total downloads" then the exact count in a title attr.
+async fn mount_ghcr_page(server: &MockServer, name: &str, count: i64) {
+    let short = name.split_once('/').unwrap().1;
+    Mock::given(method("GET"))
+        .and(path(format!("/{name}/pkgs/container/{short}")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "<span>Total downloads</span>\n<h3 title=\"{count}\">{count}</h3>"
+        )))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn container_pulls_are_scraped_and_stored() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+    mount_ghcr_page(&server, REPO_A, 4321).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    let report = run_cycle(state.clone()).await;
+    assert_eq!(report.repos_ok, 1);
+    assert_eq!(report.repos_failed, 0);
+
+    assert_eq!(
+        scalar::<i64>(&state, "SELECT pull_count FROM container_pulls").await,
+        4321
+    );
+    assert_eq!(
+        repo_field::<Option<String>>(&state, ID_A, "last_error").await,
+        None
+    );
+}
+
+/// Most repos ship no container image; their package page 404s and that must
+/// be an ordinary clean sync, not a partial failure.
+#[tokio::test]
+async fn a_missing_container_package_is_a_clean_no_op() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+    // No page mounted: wiremock answers 404.
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    let report = run_cycle(state.clone()).await;
+    assert_eq!(report.repos_ok, 1);
+    assert_eq!(report.repos_failed, 0);
+
+    assert_eq!(count(&state, "container_pulls").await, 0);
+    assert_eq!(
+        repo_field::<Option<String>>(&state, ID_A, "last_error").await,
+        None
+    );
+}
+
+/// A failing scrape behaves like any failing endpoint: the sync is partial,
+/// everything else still lands, and the repo is not locked out of the next
+/// cycle.
+#[tokio::test]
+async fn a_ghcr_failure_is_partial_not_fatal() {
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+    let short = REPO_A.split_once('/').unwrap().1;
+    Mock::given(method("GET"))
+        .and(path(format!("/{REPO_A}/pkgs/container/{short}")))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    let report = run_cycle(state.clone()).await;
+    assert_eq!(report.repos_failed, 1);
+
+    // The API data still landed …
+    assert_eq!(stars_on(&state, ID_A, &today()).await, Some(10));
+    assert_eq!(
+        scalar::<i64>(&state, "SELECT download_count FROM release_assets").await,
+        12
+    );
+    // … only the pulls did not.
+    assert_eq!(count(&state, "container_pulls").await, 0);
+
+    let err = repo_field::<Option<String>>(&state, ID_A, "last_error")
+        .await
+        .expect("a failed scrape must record a partial error");
+    assert!(err.contains("partial"), "got {err}");
+    assert!(err.contains("ghcr"), "got {err}");
+    assert!(!err.contains("http"), "page url leaked: {err}");
+    assert_eq!(
+        repo_field::<Option<String>>(&state, ID_A, "backoff_until").await,
+        None
+    );
+    assert_eq!(repo_field::<i64>(&state, ID_A, "error_streak").await, 0);
+}
