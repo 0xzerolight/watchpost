@@ -743,13 +743,13 @@
   };
 
   /*
-   * The four repo charts, as data.
+   * The repo charts, as data.
    *
    * These are descriptors and nothing here is ever written to. Chart.js owns
    * the objects it is handed — it stores the dataset object itself and
    * `applyTheme` writes resolved colours onto it — so `buildDataset` copies
    * what it needs onto a fresh object per chart, and one shared style constant
-   * cannot end up wearing four charts' colours in turn.
+   * cannot end up wearing every chart's colours in turn.
    *
    * The two policies that used to be restated per chart live here once:
    *
@@ -828,6 +828,20 @@
           label: "Downloads",
           mode: "last",
           cssVar: "--wp-marker-6",
+          style: LINE_STYLE,
+        },
+      ],
+    },
+    {
+      canvasId: "chart_pulls",
+      type: "line",
+      zeroBased: false,
+      datasets: [
+        {
+          source: "pulls_total",
+          label: "Container pulls",
+          mode: "last",
+          cssVar: "--wp-marker-1",
           style: LINE_STYLE,
         },
       ],
@@ -953,7 +967,7 @@
    * Bring the chart on `spec`'s canvas up to date with `view`.
    *
    * The update path is the point of the whole arrangement: a period change
-   * re-labels and re-fills four live charts instead of destroying them, which
+   * re-labels and re-fills the live charts instead of destroying them, which
    * is what it takes for the cards not to blank for a frame on every zoom.
    * Building from scratch is left for the canvas that has no chart yet — a
    * first render, or an htmx swap that brought new canvas elements with it.
@@ -997,7 +1011,7 @@
    * The `#chart-data` island the current charts were built from. The
    * `htmx:afterSwap` handler compares against it so that a swap which left the
    * island alone — every event mutation does — does not destroy and rebuild
-   * four charts that are already showing the right data.
+   * charts that are already showing the right data.
    */
   var chartSource = null;
 
@@ -1159,7 +1173,7 @@
   }
 
   /*
-   * Everything the four charts plot at the trailing `days` of `payload`, and
+   * Everything the charts plot at the trailing `days` of `payload`, and
    * nothing about the charts themselves.
    *
    * Returns `{keys, titles, bucketOf, kind, uniquesLabel, values}` — axis
@@ -1208,10 +1222,10 @@
     };
   }
 
-  /* Show the trailing `days` of `payload` on the four repo charts. */
+  /* Show the trailing `days` of `payload` on the repo charts. */
   function renderCharts(payload, days) {
     var view = computeView(payload, days);
-    // One read for all four charts, and the array each of them goes on holding
+    // One read for all charts, and the array each of them goes on holding
     // — `refreshMarkers` swaps it out on every chart at once.
     var events = readJson("events-data") || [];
     CHART_SPECS.forEach(function (spec) {
@@ -1223,7 +1237,7 @@
   /*
    * Re-read `#events-data` after an event was added, edited or deleted.
    *
-   * Deliberately not a re-init: destroying and rebuilding four charts to move
+   * Deliberately not a re-init: destroying and rebuilding every chart to move
    * one dashed line makes the whole section blink on every save. The markers
    * are drawn from `chart.$wp.events` on each frame, so swapping that array and
    * asking for a redraw is the entire update.

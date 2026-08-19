@@ -205,6 +205,7 @@ fn chart_payload(
             clones_count: metric(Metric::ClonesCount)?,
             clones_uniques: metric(Metric::ClonesUniques)?,
             downloads_total: values(queries::dense_downloads_total(conn, repo_id, window)?),
+            pulls_total: values(queries::dense_container_pulls(conn, repo_id, window)?),
         },
     })
 }

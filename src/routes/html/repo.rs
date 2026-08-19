@@ -74,7 +74,7 @@ pub struct ChartPayload {
     pub series: ChartSeries,
 }
 
-/// The six plotted series. `None` is a genuine "not observed" gap the client
+/// The seven plotted series. `None` is a genuine "not observed" gap the client
 /// renders as a break (`spanGaps: false`); it is never a stand-in for zero.
 ///
 /// Field names are the wire contract with `assets/app.js` — renaming one here
@@ -87,25 +87,50 @@ pub struct ChartSeries {
     pub clones_count: Vec<Option<i64>>,
     pub clones_uniques: Vec<Option<i64>>,
     pub downloads_total: Vec<Option<i64>>,
+    pub pulls_total: Vec<Option<i64>>,
 }
 
 impl ChartSeries {
+    fn observed(series: &[&[Option<i64>]]) -> bool {
+        series.iter().any(|s| s.iter().any(|v| v.is_some()))
+    }
+
+    /// The chart cards in render order: title, canvas id, and whether any of
+    /// the card's series was ever observed. A card with nothing observed is
+    /// not rendered at all — a blank axis-less pane says nothing.
+    fn cards(&self) -> [(&'static str, &'static str, bool); 5] {
+        [
+            ("Stars", "chart_stars", Self::observed(&[&self.stars])),
+            (
+                "Views",
+                "chart_views",
+                Self::observed(&[&self.views_count, &self.views_uniques]),
+            ),
+            (
+                "Clones",
+                "chart_clones",
+                Self::observed(&[&self.clones_count, &self.clones_uniques]),
+            ),
+            (
+                "Downloads",
+                "chart_downloads",
+                Self::observed(&[&self.downloads_total]),
+            ),
+            (
+                "Container pulls",
+                "chart_pulls",
+                Self::observed(&[&self.pulls_total]),
+            ),
+        ]
+    }
+
     /// Whether any day of any series was actually observed.
     ///
     /// `labels` cannot answer this: the window is floored at a month, so a repo
     /// that has never been synced still gets thirty labelled days of nothing.
     /// Only a `Some` anywhere means there is something to plot.
     fn any_observed(&self) -> bool {
-        [
-            &self.stars,
-            &self.views_count,
-            &self.views_uniques,
-            &self.clones_count,
-            &self.clones_uniques,
-            &self.downloads_total,
-        ]
-        .iter()
-        .any(|series| series.iter().any(Option::is_some))
+        self.cards().iter().any(|&(_, _, observed)| observed)
     }
 }
 
@@ -396,10 +421,11 @@ fn charts_section(view: &RepoView) -> Markup {
             }
             @if observed {
                 div class="wp-cards" {
-                    (chart_card("Stars", "chart_stars"))
-                    (chart_card("Views", "chart_views"))
-                    (chart_card("Clones", "chart_clones"))
-                    (chart_card("Downloads", "chart_downloads"))
+                    @for (title, canvas_id, card_observed) in view.payload.series.cards() {
+                        @if card_observed {
+                            (chart_card(title, canvas_id))
+                        }
+                    }
                 }
                 // Data only — the charts are built by app.js on
                 // `DOMContentLoaded`, and rebuilt from this island if a swap
@@ -1144,6 +1170,7 @@ mod tests {
                 clones_count: vec![None],
                 clones_uniques: vec![None],
                 downloads_total: vec![None],
+                pulls_total: vec![None],
             },
         }
     }
@@ -1215,10 +1242,15 @@ mod tests {
     fn each_canvas_is_a_named_graphic() {
         // A bare <canvas> is an unnamed element with no role: without these two
         // attributes a screenreader announces nothing for a whole panel.
-        let payload = payload(-1, Some(3));
+        // Every series observed, so every card renders its canvas.
+        let mut payload = payload(-1, Some(3));
+        payload.series.views_count = vec![Some(1)];
+        payload.series.clones_count = vec![Some(1)];
+        payload.series.downloads_total = vec![Some(1)];
+        payload.series.pulls_total = vec![Some(1)];
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &repo)).into_string();
-        assert_eq!(out.matches(r#"role="img""#).count(), 4, "out was {out}");
+        assert_eq!(out.matches(r#"role="img""#).count(), 5, "out was {out}");
         assert!(
             out.contains(
                 r#"<canvas id="chart_stars" role="img" aria-label="Stars over time"></canvas>"#
@@ -1229,6 +1261,28 @@ mod tests {
             out.contains(r#"aria-label="Downloads over time""#),
             "out was {out}"
         );
+        assert!(
+            out.contains(r#"aria-label="Container pulls over time""#),
+            "out was {out}"
+        );
+    }
+
+    /// A card whose series was never observed is not rendered: a blank
+    /// axis-less pane says nothing.
+    #[test]
+    fn a_card_with_nothing_observed_is_not_rendered() {
+        let payload = payload(-1, Some(3));
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        assert!(out.contains("chart_stars"), "out was {out}");
+        for canvas in [
+            "chart_views",
+            "chart_clones",
+            "chart_downloads",
+            "chart_pulls",
+        ] {
+            assert!(!out.contains(canvas), "{canvas} must be hidden: {out}");
+        }
     }
 
     #[test]

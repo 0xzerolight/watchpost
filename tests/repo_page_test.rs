@@ -171,6 +171,33 @@ impl Harness {
             .unwrap();
     }
 
+    async fn seed_clones(&self, id: i64, date: String, count: i64, uniques: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                queries::upsert_traffic_days(
+                    c,
+                    id,
+                    TrafficKind::Clones,
+                    &[TrafficDay {
+                        timestamp: format!("{date}T00:00:00Z"),
+                        count,
+                        uniques,
+                    }],
+                )
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn seed_pulls(&self, id: i64, date: String, count: i64) {
+        self.state
+            .db
+            .call(move |c| queries::upsert_container_pulls(c, id, &date, count))
+            .await
+            .unwrap();
+    }
+
     /// Referrer rows are written with their deltas already set: `popular_items`
     /// sums `count_delta`, and going through `update_deltas_recent` would make
     /// the expected totals depend on its window rather than on this seed.
@@ -302,6 +329,7 @@ async fn chart_payload_is_dense_across_every_series() {
         "clones_count",
         "clones_uniques",
         "downloads_total",
+        "pulls_total",
     ] {
         assert_eq!(
             series(&payload, name).len(),
@@ -412,6 +440,76 @@ async fn downloads_total_carries_from_the_first_asset_observation() {
         series(&island(&body, "chart-data"), "downloads_total"),
         vec![Some(400); 61]
     );
+}
+
+#[tokio::test]
+async fn pulls_total_carries_forward() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_pulls(ID_A, days_ago(5), 40).await;
+    h.seed_pulls(ID_A, days_ago(2), 70).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    let payload = island(&body, "chart-data");
+    let pulls = series(&payload, "pulls_total");
+    assert_eq!(
+        tail(&pulls, 6),
+        vec![
+            Some(40), // -5d: first observation
+            Some(40), // -4d: carried
+            Some(40), // -3d: carried
+            Some(70), // -2d: new reading
+            Some(70), // -1d: carried
+            Some(70), // today: carried
+        ]
+    );
+    // The window is floored at a month; everything before the first
+    // observation stays a genuine gap.
+    assert!(pulls[..pulls.len() - 6].iter().all(Option::is_none));
+    assert!(body.contains("Container pulls"), "card missing: {body}");
+    assert!(body.contains("chart_pulls"), "canvas missing: {body}");
+}
+
+/// A blank axis-less pane says nothing: a card whose series was never
+/// observed is not rendered at all.
+#[tokio::test]
+async fn empty_chart_cards_are_hidden() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(3), 12).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(body.contains("chart_stars"), "body was {body}");
+    for canvas in [
+        "chart_views",
+        "chart_clones",
+        "chart_downloads",
+        "chart_pulls",
+    ] {
+        assert!(!body.contains(canvas), "{canvas} must be hidden: {body}");
+    }
+    // The payload still carries every series, dense at the window's length
+    // (floored at a month) — the client zooms over it and skips canvases
+    // that are not on the page.
+    let payload = island(&body, "chart-data");
+    let len = labels(&payload).len();
+    assert_eq!(series(&payload, "pulls_total").len(), len);
+    assert_eq!(series(&payload, "downloads_total").len(), len);
+}
+
+#[tokio::test]
+async fn pulls_only_repo_charts_from_first_pull_observation() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_pulls(ID_A, days_ago(60), 400).await;
+
+    let body = body_string(h.get("/repos/1?days=7").await).await;
+    // A pull row is an observation like any other, so "all" starts there —
+    // not at the 30-day floor, and not at the empty state.
+    let payload = island(&body, "chart-data");
+    assert_eq!(labels(&payload).len(), 61);
+    assert_eq!(series(&payload, "pulls_total"), vec![Some(400); 61]);
+    assert!(!body.contains("No metrics yet"), "body was {body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +645,13 @@ async fn homepage_with_non_http_scheme_is_not_rendered() {
 async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
+    // Every source seeded: the full page shows every card, and a card with
+    // nothing observed would be hidden.
     h.seed_stars(ID_A, days_ago(10), 3).await;
+    h.seed_views(ID_A, days_ago(2), 5, 3).await;
+    h.seed_clones(ID_A, days_ago(2), 2, 1).await;
+    h.seed_asset(ID_A, days_ago(2), "v1", "app.bin", 7).await;
+    h.seed_pulls(ID_A, days_ago(2), 40).await;
 
     let body = body_string(h.get("/repos/1").await).await;
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
@@ -564,6 +668,7 @@ async fn full_page_when_htmx_does_not_ask_for_a_fragment() {
         "chart_views",
         "chart_clones",
         "chart_downloads",
+        "chart_pulls",
     ] {
         assert!(body.contains(canvas), "{canvas} missing: {body}");
     }
