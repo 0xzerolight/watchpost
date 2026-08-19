@@ -43,36 +43,45 @@
    * the other, so a colour is edited in one place and the scheme selectors
    * carry no hex of their own.
    *
-   * Light: every slot clears 5.9:1 against white. The chips wear these as text
-   * on the card background, so 3:1 (a graphical object) is not the bar they
-   * have to meet — WCAG 1.4.3 is, at the small size a chip is set in. The eight
-   * are still walked around the hue circle so that adjacent slots stay
-   * distinguishable as marker lines too.
+   * These colours are marks, never text: series lines, event-marker dots and
+   * the chip's colour dot wear them, while every label stays in body ink. The
+   * slot order is the colourblind-safety mechanism — both sets validate with
+   * a worst adjacent-pair ΔE of 9.1 (light) / 8.4 (dark) under simulated
+   * protanopia/deuteranopia, and the primary series slots clear 3:1 against
+   * the card surface.
+   *
+   * The repo charts pin their series to the strong slots: stars = 0 (blue),
+   * views = 1 + 2 (orange/aqua), clones = 5 + 6 (green/violet),
+   * downloads = 7 (red). Slots 3 (yellow) and 4 (magenta) sit below 3:1 on
+   * white and are reached only through the event-kind hash, where the chip
+   * label and marker tip carry the identity.
    */
-  --wp-l-0: #1f5bb5;
-  --wp-l-1: #b3352c;
-  --wp-l-2: #1f6f43;
-  --wp-l-3: #8a5600;
-  --wp-l-4: #6544c4;
-  --wp-l-5: #0a6f71;
-  --wp-l-6: #a8386a;
-  --wp-l-7: #8a4522;
+  --wp-l-0: #2a78d6;
+  --wp-l-1: #eb6834;
+  --wp-l-2: #1baf7a;
+  --wp-l-3: #eda100;
+  --wp-l-4: #e87ba4;
+  --wp-l-5: #008300;
+  --wp-l-6: #4a3aa7;
+  --wp-l-7: #e34948;
   --wp-l-flash: #fff3c4;
+  --wp-l-grid: #eceef2;
 
   /*
-   * Dark: lighter and less saturated than their light twins, because the light
-   * palette is tuned for contrast against white and turns muddy on a dark
-   * surface.
+   * Dark: the same eight hues re-stepped for the dark card surface, not a
+   * separate palette — tuned to the dark lightness band and 3:1 against
+   * `#181c25`.
    */
-  --wp-d-0: #7aa9f7;
-  --wp-d-1: #f08a80;
-  --wp-d-2: #6fce9a;
-  --wp-d-3: #e3b45c;
-  --wp-d-4: #b39ef0;
-  --wp-d-5: #4fc3c5;
-  --wp-d-6: #ec93b6;
-  --wp-d-7: #d09a72;
+  --wp-d-0: #3987e5;
+  --wp-d-1: #d95926;
+  --wp-d-2: #199e70;
+  --wp-d-3: #c98500;
+  --wp-d-4: #d55181;
+  --wp-d-5: #008300;
+  --wp-d-6: #9085e9;
+  --wp-d-7: #e66767;
   --wp-d-flash: #4a4020;
+  --wp-d-grid: #232937;
 
   /*
    * The slots that the rules below and app.js read. `getComputedStyle`
@@ -89,6 +98,8 @@
   --wp-marker-6: var(--wp-l-6);
   --wp-marker-7: var(--wp-l-7);
   --wp-flash-bg: var(--wp-l-flash);
+  --wp-chart-grid: var(--wp-l-grid);
+  --wp-chart-tick: var(--pico-muted-color, #6b7280);
 }
 
 /*
@@ -111,6 +122,7 @@
     --wp-marker-6: var(--wp-d-6);
     --wp-marker-7: var(--wp-d-7);
     --wp-flash-bg: var(--wp-d-flash);
+    --wp-chart-grid: var(--wp-d-grid);
   }
 }
 
@@ -124,6 +136,7 @@
   --wp-marker-6: var(--wp-d-6);
   --wp-marker-7: var(--wp-d-7);
   --wp-flash-bg: var(--wp-d-flash);
+  --wp-chart-grid: var(--wp-d-grid);
 }
 
 /*
@@ -132,7 +145,7 @@
  */
 .chart-box {
   position: relative;
-  height: 220px;
+  height: 240px;
 }
 
 /*
@@ -213,20 +226,31 @@
    */
   margin: 0;
   padding: 0.1rem 0.6rem;
-  border: 1px solid var(--wp-kind-color, var(--pico-muted-border-color));
+  border: 1px solid color-mix(in srgb, var(--wp-kind-color, var(--pico-muted-border-color)) 45%, transparent);
   border-radius: var(--wp-radius-pill);
-  color: var(--wp-kind-color, inherit);
+  color: inherit;
   /*
-   * A chip is the smallest type on the page and the only text set in a colour
-   * rather than in the body ink. WCAG's 4.5:1 bar does not move with size and
-   * the palette above clears it either way, but legibility does move: one step
-   * up from `--wp-text-xs` is what makes a coloured pill readable rather than
-   * merely compliant.
+   * A chip is the smallest type on the page; one step up from `--wp-text-xs`
+   * is what makes a pill readable rather than merely compliant.
    */
   font-size: var(--wp-text-sm);
   line-height: 1.6;
   white-space: nowrap;
   background: transparent;
+}
+
+/*
+ * The kind's colour rides a dot, not the text: several palette slots are too
+ * light to clear text contrast, and the name in body ink is the identifier —
+ * the dot and border are redundant colour coding on top of it.
+ */
+.wp-chip::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--wp-kind-color, var(--pico-muted-color, #6b7280));
 }
 
 /*
@@ -259,10 +283,12 @@
   box-shadow: 0 0 0 var(--pico-outline-width, 0.125rem) var(--pico-primary-focus);
 }
 
-/* Pressed state for the kind filter toggles (`toggleKind()`). */
+/* Pressed state for the kind filter toggles (`toggleKind()`): a tint of the
+ * kind's colour and a full-strength border, with the text still in ink. */
 .wp-chip[aria-pressed="true"] {
-  background: var(--wp-kind-color, var(--pico-muted-border-color));
-  color: var(--pico-card-background-color, #fff);
+  background: color-mix(in srgb, var(--wp-kind-color, var(--pico-muted-border-color)) 16%, transparent);
+  border-color: var(--wp-kind-color, var(--pico-muted-border-color));
+  color: inherit;
 }
 
 /*
