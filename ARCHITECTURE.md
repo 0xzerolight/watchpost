@@ -30,6 +30,10 @@ file, the WAL sidecars beside it, and whatever pre-migration backups it has take
 - Per tracked repo it calls `repos/{name}`, `/pulls`, `/traffic/views`, `/traffic/clones`,
   `/traffic/popular/referrers`, `/traffic/popular/paths`, `/releases` and — once, on first sync —
   `/stargazers` to backfill star history.
+- It also fetches the repo's public GHCR package page
+  (`github.com/{owner}/{repo}/pkgs/container/{name}`) unauthenticated and reads the container pull
+  count off it — no API exposes that number. A 404 means the repo ships no such package and is
+  skipped; the package must be named after the repo for this to find it.
 - A per-repo failure records `last_error` and an exponential `backoff_until` and the loop moves on;
   one broken repo does not cost the others their pass. Partial success still writes what it got.
 - A rate-limit response is different: it closes the rate gate and aborts the whole cycle, because
@@ -44,8 +48,9 @@ The schema is deliberately opinionated about what a missing number means:
 - `NULL` is "not observed". `0` is "observed zero". They are not the same and the charts do not
   treat them the same.
 - A daily row holds the last observation of that day, not a sum of the day's polls.
-- Cumulative columns (`repo_stats.stars`, `release_assets.download_count`) carry forward across
-  gaps at render time. Rate columns (views, clones) do not.
+- Cumulative columns (`repo_stats.stars`, `release_assets.download_count`,
+  `container_pulls.pull_count`) carry forward across gaps at render time. Rate columns (views,
+  clones) do not.
 - Before any schema upgrade the database is copied through SQLite's backup API to
   `data/watchpost.v{schema}.{timestamp}.bak`, newest three kept. A database written by a newer
   build is refused rather than opened.

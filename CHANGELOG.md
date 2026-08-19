@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **GHCR container pull counts, auto-detected.** Every sync also fetches each tracked repo's
+  public package page (`github.com/{owner}/{repo}/pkgs/container/{name}`) and charts the
+  cumulative pull count as a "Container pulls" card on the repo page. Scraped, because no GitHub
+  API exposes the number; unauthenticated, so it costs no token scope and no rate budget. A repo
+  without a package named after it 404s and is skipped — zero configuration. A failed scrape is a
+  partial sync like any failing endpoint, and deliberately does not count toward the total-failure
+  verdict that backs a repo off. Schema migration v4 adds the `container_pulls` table (day-keyed,
+  monotonic MAX, same rules as release assets).
+
+### Changed
+
+- **Chart cards with no observed data are hidden.** A repo that ships only docker images no longer
+  shows a blank Downloads pane, and repos without container packages don't get a blank pulls pane;
+  the same rule covers views/clones cards where the token lacks traffic permissions. A repo with
+  nothing observed at all keeps its existing empty state.
+
 ## [1.0.0] - 2026-08-18
 
 First release. Everything below is relative to the pre-release state of the repository, which was
