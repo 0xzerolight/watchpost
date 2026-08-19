@@ -52,9 +52,10 @@
    *
    * The repo charts pin their series to the strong slots: stars = 0 (blue),
    * views = 1 + 2 (orange/aqua), clones = 5 + 6 (green/violet),
-   * downloads = 7 (red). Slots 3 (yellow) and 4 (magenta) sit below 3:1 on
-   * white and are reached only through the event-kind hash, where the chip
-   * label and marker tip carry the identity.
+   * downloads = 7 (red), container pulls = 4 (magenta). Slot 3 (yellow) sits
+   * below 3:1 on white and is reached only through the event-kind hash, where
+   * the chip label and marker tip carry the identity; magenta is also shy of
+   * 3:1 in light mode, which the axis ticks and tooltip relieve.
    */
   --wp-l-0: #2a78d6;
   --wp-l-1: #eb6834;
