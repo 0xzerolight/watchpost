@@ -4,6 +4,7 @@
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL v3"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88+-blue.svg" alt="Rust 1.88+"></a>
   <a href="https://github.com/0xzerolight/watchpost/releases"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2F0xzerolight%2Fwatchpost%2Fmain%2FCargo.toml&query=%24.package.version&label=release&prefix=v&color=blue" alt="Latest release"></a>
+  <a href="https://github.com/0xzerolight/watchpost/pkgs/container/watchpost"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F0xzerolight%2Fwatchpost%2Fbadges%2Fdownloads.json" alt="Docker pulls"></a>
   <a href="https://github.com/0xzerolight/watchpost/stargazers"><img src="https://img.shields.io/github/stars/0xzerolight/watchpost?style=social" alt="GitHub stars"></a>
 </p>
 
