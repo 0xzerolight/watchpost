@@ -47,7 +47,8 @@ fn config_for(base: Url) -> Config {
         host: "127.0.0.1".into(),
         port: 8080,
         log_level: "info".into(),
-        github_api_base: base,
+        github_api_base: base.clone(),
+        github_page_base: base,
         timezone: Tz::UTC,
     }
 }

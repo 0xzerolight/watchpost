@@ -13,6 +13,10 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_LOG: &str = "info";
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
+/// Where public package pages are scraped from (container pull counts).
+/// Constant on purpose: the page layout is GitHub.com's, so a GitHub
+/// Enterprise API base gets no equivalent here, and no env var reads it.
+const DEFAULT_GITHUB_PAGE_BASE: &str = "https://github.com";
 /// Display zone for user-facing instants. UTC keeps an install that sets
 /// nothing rendering exactly as it did before this setting existed.
 const DEFAULT_TZ: &str = "UTC";
@@ -31,6 +35,10 @@ pub struct Config {
     pub port: u16,
     pub log_level: String,
     pub github_api_base: Url,
+    /// Base for scraping public package pages (container pull counts). Always
+    /// [`DEFAULT_GITHUB_PAGE_BASE`] in production; only tests point it at a
+    /// mock server.
+    pub github_page_base: Url,
     /// Zone the UI formats instants in. Collection, the stored day keys and the
     /// cron schedule are deliberately not affected — GitHub aggregates traffic
     /// per UTC day, so those buckets have to stay UTC to mean anything.
@@ -74,6 +82,10 @@ impl Config {
             &env::var(API_BASE_VAR).unwrap_or_else(|_| DEFAULT_GITHUB_API_BASE.to_string()),
         )?;
 
+        // Same normalization as the API base so `Url::join` behaves; the
+        // input is a constant, so the error path cannot fire.
+        let github_page_base = parse_api_base(DEFAULT_GITHUB_PAGE_BASE)?;
+
         // Fatal rather than a fallback, unlike WATCHPOST_CRON: a cron typo is
         // visible as "collection never ran", but a timezone typo silently
         // renders UTC — indistinguishable from the setting working.
@@ -93,6 +105,7 @@ impl Config {
             port,
             log_level,
             github_api_base,
+            github_page_base,
             timezone,
         })
     }

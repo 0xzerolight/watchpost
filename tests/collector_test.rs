@@ -61,6 +61,7 @@ fn state_for(server: &MockServer) -> Arc<AppState> {
         port: 8080,
         log_level: "info".into(),
         github_api_base: base.clone(),
+        github_page_base: base.clone(),
         timezone: Tz::UTC,
     };
     Arc::new(AppState::new(
@@ -82,7 +83,8 @@ fn state_without_a_token() -> Arc<AppState> {
         host: "127.0.0.1".into(),
         port: 8080,
         log_level: "info".into(),
-        github_api_base: base,
+        github_api_base: base.clone(),
+        github_page_base: base,
         timezone: Tz::UTC,
     };
     Arc::new(AppState::new(

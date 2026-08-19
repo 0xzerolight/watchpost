@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use crate::config::{Config, TokenSource, token_last4};
 use crate::db::Db;
 use crate::gh_client::GhClient;
+use crate::ghcr::GhcrClient;
 use crate::ratelimit::RateGate;
 
 /// Progress of the most recent collector cycle, for the UI's sync banner.
@@ -46,6 +47,9 @@ pub struct AppState {
     /// `Mutex`, like `sync` below: only ever held for a clone or a swap, never
     /// across an await.
     gh: Mutex<GhSlot>,
+    /// GHCR page scraper. `None` only if reqwest fails to build a client at
+    /// boot, which no configuration can cause; syncing simply skips pulls.
+    pub ghcr: Option<GhcrClient>,
     pub cfg: Config,
     /// Global GitHub rate limit gate — one limit response stops every repo,
     /// not just the one that tripped it.
@@ -69,6 +73,13 @@ impl AppState {
         token: Option<&str>,
         source: TokenSource,
     ) -> Self {
+        let ghcr = match GhcrClient::new(cfg.github_page_base.clone()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!(error = %e, "ghcr client unavailable; container pulls disabled");
+                None
+            }
+        };
         Self {
             db,
             gh: Mutex::new(GhSlot {
@@ -76,6 +87,7 @@ impl AppState {
                 source,
                 hint: token.map(token_last4),
             }),
+            ghcr,
             cfg,
             gate: RateGate::new(),
             sync: Mutex::new(SyncStatus::Idle),
@@ -128,7 +140,8 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 8080,
             log_level: "info".into(),
-            github_api_base: base,
+            github_api_base: base.clone(),
+            github_page_base: base,
             timezone: chrono_tz::Tz::UTC,
         }
     }

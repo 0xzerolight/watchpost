@@ -29,6 +29,7 @@ fn config_for(api_base: &str) -> Config {
         port: 8080,
         log_level: "info".to_string(),
         github_api_base: api_base.parse().unwrap(),
+        github_page_base: api_base.parse().unwrap(),
         timezone: Tz::UTC,
     }
 }

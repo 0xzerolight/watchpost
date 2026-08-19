@@ -121,6 +121,7 @@ mod tests {
             port: 8080,
             log_level: "info".into(),
             github_api_base: base.clone(),
+            github_page_base: base.clone(),
             timezone: chrono_tz::Tz::UTC,
         };
         Arc::new(AppState::new(
