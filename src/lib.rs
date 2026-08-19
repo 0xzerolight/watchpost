@@ -10,6 +10,7 @@ pub mod db;
 pub mod doctor;
 pub mod errors;
 pub mod gh_client;
+pub mod ghcr;
 pub mod ratelimit;
 pub mod routes;
 pub mod state;
