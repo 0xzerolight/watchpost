@@ -4,8 +4,9 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::errors::DbError;
 use crate::types::{
-    AssetSnapshot, Event, GhRepo, Metric, NewEvent, PopularDay, PopularItem, PopularKind,
-    RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
+    AssetSnapshot, ChangeMetric, ContainerPullRow, Event, GhRepo, Metric, NewEvent, PopularDay,
+    PopularItem, PopularKind, PopularRow, ReleaseAssetRow, RepoChange, RepoOverview, RepoRow,
+    StatRow, StatSnapshot, TrafficDay, TrafficKind,
 };
 
 /// Settings key holding the GitHub PAT the setup page saved.
@@ -328,6 +329,168 @@ fn update_deltas_table(
     let window = format!("-{window_days} day");
     conn.execute(&sql, params![lag_window, window])?;
     Ok(())
+}
+
+/// The five `repo_stats` columns a day-over-day difference means something
+/// for. Literals, spliced into SQL below — never caller input.
+const CHANGE_STAT_COLUMNS: [ChangeMetric; 5] = [
+    ChangeMetric::Stars,
+    ChangeMetric::Forks,
+    ChangeMetric::Watchers,
+    ChangeMetric::Issues,
+    ChangeMetric::Prs,
+];
+
+/// What moved, per tracked repo per UTC day, over the trailing `days` window,
+/// newest day first and capped at `limit` rows.
+///
+/// The dashboard shows levels — 41 stars, 3 forks — so noticing that three
+/// stars arrived yesterday otherwise means having memorised the old number.
+/// This is the difference the database has always held and nothing surfaced.
+///
+/// Four rules decide what counts as a change:
+///
+/// * **The predecessor is the last *observed* value, not the previous
+///   calendar day.** Each `WHERE <col> IS NOT NULL` runs before its `LAG`
+///   (SQLite evaluates `WHERE` ahead of the window functions), so a repo
+///   synced Monday and Thursday reports one change on Thursday rather than a
+///   phantom pair. `dense_series` renders the same gap as a flat line for
+///   exactly this reason.
+/// * **A first observation is not a change.** `prev IS NULL` rows are dropped:
+///   the first sync of a 400-star repo is a reading, and reporting it as
+///   "+400 stars" would open every fresh install with a fiction.
+/// * **Zero deltas are not entries**, so a quiet day produces no row at all
+///   rather than a row of noughts.
+/// * **The four traffic columns are excluded.** They are per-day rates — the
+///   day's value already is the change — which is the snapshot-versus-rate
+///   split [`Metric::carries_forward`] draws, seen from the other side.
+///
+/// The `days` filter sits in the outer `SELECT`, never in the CTE. Filtering
+/// before the `LAG` would strip the predecessor of the window's first row and
+/// turn a level into a delta — the fake-spike-at-the-window-edge trap
+/// [`update_deltas_table`] documents at length. That one can bound its CTE by
+/// doubling the window because its rows are a rolling 14-day count; these are
+/// running totals with no such horizon, so the CTE reads full history and the
+/// outer `LIMIT` is what bounds the work that reaches the page.
+///
+/// `days == 0` is an empty range, not "all time" — matching [`dense_series`].
+pub fn recent_changes(
+    conn: &Connection,
+    days: u32,
+    limit: usize,
+) -> Result<Vec<RepoChange>, DbError> {
+    use std::collections::HashMap;
+
+    if days == 0 || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let today = chrono::Utc::now().date_naive();
+    let start = (today - chrono::Duration::days(i64::from(days) - 1)).to_string();
+
+    // (repo_id, date) -> (name, deltas). Grouped here rather than in SQL: the
+    // three sources have different shapes and only agree once they are five
+    // columns wide.
+    type Grouped = HashMap<(i64, String), (String, Vec<(ChangeMetric, i64)>)>;
+    let mut grouped: Grouped = HashMap::new();
+    let mut collect = |sql: &str| -> Result<(), DbError> {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![start], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (repo_id, name, date, tag, delta) = row?;
+            // An unknown tag cannot happen — every one is a literal from this
+            // module — so a mismatch is a bug here, not bad data, and dropping
+            // the row is the containable answer.
+            let Some(metric) = ChangeMetric::from_tag(&tag) else {
+                continue;
+            };
+            grouped
+                .entry((repo_id, date))
+                .or_insert_with(|| (name, Vec::new()))
+                .1
+                .push((metric, delta));
+        }
+        Ok(())
+    };
+
+    // repo_stats: one UNION ALL branch per column, each with its own LAG.
+    let branches = CHANGE_STAT_COLUMNS
+        .iter()
+        .map(|m| {
+            let col = m.tag();
+            format!(
+                "SELECT repo_id, date, '{col}' AS metric, {col} AS v,
+                        LAG({col}) OVER (PARTITION BY repo_id ORDER BY date) AS prev
+                 FROM repo_stats WHERE {col} IS NOT NULL"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n             UNION ALL\n             ");
+    collect(&format!(
+        "WITH obs AS (
+             {branches}
+         )
+         SELECT o.repo_id, r.name, o.date, o.metric, o.v - o.prev
+         FROM obs o JOIN repos r ON r.id = o.repo_id
+         WHERE r.tracked = 1 AND r.hidden = 0
+           AND o.prev IS NOT NULL AND o.v <> o.prev AND o.date >= ?1"
+    ))?;
+
+    // container_pulls: one cumulative value per repo per day.
+    collect(
+        "WITH obs AS (
+             SELECT repo_id, date, pull_count AS v,
+                    LAG(pull_count) OVER (PARTITION BY repo_id ORDER BY date) AS prev
+             FROM container_pulls
+         )
+         SELECT o.repo_id, r.name, o.date, 'pulls', o.v - o.prev
+         FROM obs o JOIN repos r ON r.id = o.repo_id
+         WHERE r.tracked = 1 AND r.hidden = 0
+           AND o.prev IS NOT NULL AND o.v <> o.prev AND o.date >= ?1",
+    )?;
+
+    // release_assets: per-(tag, asset) counters, summed. Only the total is a
+    // fact about the repo, so rows that did not move stay in the SUM as zero
+    // and the `HAVING` drops a day whose assets cancelled each other out.
+    collect(
+        "WITH obs AS (
+             SELECT repo_id, date, download_count AS v,
+                    LAG(download_count) OVER (
+                        PARTITION BY repo_id, release_tag, asset_name ORDER BY date
+                    ) AS prev
+             FROM release_assets
+         )
+         SELECT o.repo_id, r.name, o.date, 'downloads', SUM(o.v - o.prev) AS delta
+         FROM obs o JOIN repos r ON r.id = o.repo_id
+         WHERE r.tracked = 1 AND r.hidden = 0
+           AND o.prev IS NOT NULL AND o.date >= ?1
+         GROUP BY o.repo_id, r.name, o.date
+         HAVING delta <> 0",
+    )?;
+
+    let mut out: Vec<RepoChange> = grouped
+        .into_iter()
+        .map(|((repo_id, date), (name, mut deltas))| {
+            deltas.sort_by_key(|(metric, _)| *metric);
+            RepoChange {
+                repo_id,
+                name,
+                date,
+                deltas,
+            }
+        })
+        .collect();
+    // Newest day first, then by name so a day with several repos is stable.
+    out.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| a.name.cmp(&b.name)));
+    out.truncate(limit);
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -969,6 +1132,140 @@ pub fn event_kinds(conn: &Connection, repo_id: i64) -> Result<Vec<String>, DbErr
     )?;
     let rows = stmt
         .query_map(params![repo_id], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// How many days of history a repo has, counting both ends — a repo first
+/// observed today spans one day, and one never synced spans none.
+///
+/// The measure both full-history readers share: the repo page floors it so a
+/// one-column chart does not look broken, the export does not because a data
+/// file has no such problem. Keeping the span itself in one place is what
+/// stops the two drifting apart.
+///
+/// A stored date in the future (clock skew) would give a negative span; the
+/// `unwrap_or(0)` catches that along with the never-synced case.
+pub fn history_span(conn: &Connection, repo_id: i64) -> Result<u32, DbError> {
+    let today = chrono::Utc::now().date_naive();
+    let span = first_observed_date(conn, repo_id)?
+        .and_then(|date| chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
+        .map_or(0, |first| (today - first).num_days() + 1);
+    Ok(u32::try_from(span).unwrap_or(0))
+}
+
+/// `PRAGMA user_version` — which migration the file is at. Stamped into the
+/// JSON export so a later reader can tell which shape it is holding.
+pub fn schema_version(conn: &Connection) -> Result<i64, DbError> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+/// Every observed `repo_stats` row, oldest first.
+///
+/// Raw: no carry-forward and no dense calendar, unlike [`dense_series`]. An
+/// unobserved column stays `NULL` and an unobserved day has no row at all,
+/// which is what the storage actually holds — filling either in is a render
+/// decision, and the JSON export is deliberately not a render.
+pub fn export_stats(conn: &Connection, repo_id: i64) -> Result<Vec<StatRow>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT date, stars, forks, watchers, issues, prs,
+                views_count, views_uniques, clones_count, clones_uniques
+         FROM repo_stats WHERE repo_id = ?1 ORDER BY date",
+    )?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(StatRow {
+                date: r.get(0)?,
+                stars: r.get(1)?,
+                forks: r.get(2)?,
+                watchers: r.get(3)?,
+                issues: r.get(4)?,
+                prs: r.get(5)?,
+                views_count: r.get(6)?,
+                views_uniques: r.get(7)?,
+                clones_count: r.get(8)?,
+                clones_uniques: r.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every observed release-asset reading, oldest first.
+pub fn export_release_assets(
+    conn: &Connection,
+    repo_id: i64,
+) -> Result<Vec<ReleaseAssetRow>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT date, release_tag, asset_name, download_count
+         FROM release_assets WHERE repo_id = ?1
+         ORDER BY date, release_tag, asset_name",
+    )?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(ReleaseAssetRow {
+                date: r.get(0)?,
+                release_tag: r.get(1)?,
+                asset_name: r.get(2)?,
+                download_count: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every observed GHCR pull reading, oldest first.
+pub fn export_container_pulls(
+    conn: &Connection,
+    repo_id: i64,
+) -> Result<Vec<ContainerPullRow>, DbError> {
+    let mut stmt = conn
+        .prepare("SELECT date, pull_count FROM container_pulls WHERE repo_id = ?1 ORDER BY date")?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(ContainerPullRow {
+                date: r.get(0)?,
+                pull_count: r.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every observed referrer or path row, oldest first, deltas included.
+///
+/// Unlike [`popular_items`] this aggregates nothing: the daily rows are the
+/// record, and the all-time rollup that page shows is one reading of them.
+pub fn export_popular(
+    conn: &Connection,
+    repo_id: i64,
+    kind: PopularKind,
+) -> Result<Vec<PopularRow>, DbError> {
+    // Table and key are chosen here from a two-variant enum, never from input.
+    let (table, key, title) = match kind {
+        PopularKind::Referrers => ("repo_referrers", "referrer", "NULL"),
+        PopularKind::Paths => ("repo_popular_paths", "path", "title"),
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT date, {key}, {title}, count, uniques, count_delta, uniques_delta
+         FROM {table} WHERE repo_id = ?1 ORDER BY date, {key}"
+    ))?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(PopularRow {
+                date: r.get(0)?,
+                name: r.get(1)?,
+                title: r.get(2)?,
+                count: r.get(3)?,
+                uniques: r.get(4)?,
+                count_delta: r.get(5)?,
+                uniques_delta: r.get(6)?,
+            })
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -2155,5 +2452,288 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    // ---- recent_changes ----------------------------------------------------
+
+    /// `seed_repo` leaves a repo untracked, which the feed filters out. Most
+    /// of these tests want a repo the dashboard would actually show.
+    fn seed_tracked_repo(conn: &Connection, id: i64) {
+        seed_repo(conn, id);
+        set_tracked(conn, id, true).unwrap();
+    }
+
+    /// The deltas of the one row for `date`, or an empty vec if there is none.
+    fn deltas_on(rows: &[RepoChange], date: &str) -> Vec<(ChangeMetric, i64)> {
+        rows.iter()
+            .find(|r| r.date == date)
+            .map(|r| r.deltas.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_change_reports_the_delta_not_the_level() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(40))).unwrap();
+        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(43))).unwrap();
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].name, "owner/repo1");
+        assert_eq!(rows[0].date, days_ago(1));
+        assert_eq!(rows[0].deltas, vec![(ChangeMetric::Stars, 3)]);
+    }
+
+    #[test]
+    fn a_first_observation_is_not_a_change() {
+        // The first sync of a 400-star repo is a reading, not news. Without
+        // this the feed opens with a fictional "+400 stars".
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(400))).unwrap();
+
+        assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_counter_is_not_a_change() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(40))).unwrap();
+        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(40))).unwrap();
+
+        assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_gap_compares_against_the_last_observed_day() {
+        // Synced 10 days ago and again 2 days ago: one change on the day the
+        // second observation landed, not a phantom on every day between.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(10), &snap!(stars: Some(40))).unwrap();
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(43))).unwrap();
+
+        let rows = recent_changes(&c, 14, 20).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].date, days_ago(2));
+        assert_eq!(rows[0].deltas, vec![(ChangeMetric::Stars, 3)]);
+    }
+
+    #[test]
+    fn a_fall_is_reported() {
+        // Closing issues is the useful half of an issue tracker.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(2), &snap!(issues: Some(5))).unwrap();
+        upsert_stats(&c, 1, &days_ago(1), &snap!(issues: Some(3))).unwrap();
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(rows[0].deltas, vec![(ChangeMetric::Issues, -2)]);
+    }
+
+    #[test]
+    fn the_window_edge_reads_its_predecessor_from_outside_the_window() {
+        // 40 stars at -20d (outside a 7-day window), 43 at -3d (inside). The
+        // LAG must reach past the window edge or the first in-window row reads
+        // as "+43 stars" — the same trap `update_deltas_recent` documents.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(20), &snap!(stars: Some(40))).unwrap();
+        upsert_stats(&c, 1, &days_ago(3), &snap!(stars: Some(43))).unwrap();
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].deltas, vec![(ChangeMetric::Stars, 3)]);
+    }
+
+    #[test]
+    fn rate_metrics_never_appear() {
+        // Views and clones are per-day rates: the day's value already is the
+        // change, so a difference between two of them describes nothing.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_traffic_days(
+            &c,
+            1,
+            TrafficKind::Views,
+            &traffic_days(&[(&days_ago(2), 10, 5), (&days_ago(1), 90, 40)]),
+        )
+        .unwrap();
+        upsert_traffic_days(
+            &c,
+            1,
+            TrafficKind::Clones,
+            &traffic_days(&[(&days_ago(2), 3, 2), (&days_ago(1), 11, 7)]),
+        )
+        .unwrap();
+
+        assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn everything_that_moved_on_one_day_is_one_row_in_metric_order() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let before = days_ago(2);
+        let after = days_ago(1);
+        upsert_stats(
+            &c,
+            1,
+            &before,
+            &snap!(stars: Some(40), forks: Some(2), issues: Some(5)),
+        )
+        .unwrap();
+        upsert_stats(
+            &c,
+            1,
+            &after,
+            &snap!(stars: Some(43), forks: Some(2), issues: Some(4)),
+        )
+        .unwrap();
+        upsert_container_pulls(&c, 1, &before, 100).unwrap();
+        upsert_container_pulls(&c, 1, &after, 142).unwrap();
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        // Declaration order of ChangeMetric, and forks (unchanged) absent.
+        assert_eq!(
+            rows[0].deltas,
+            vec![
+                (ChangeMetric::Stars, 3),
+                (ChangeMetric::Issues, -1),
+                (ChangeMetric::ContainerPulls, 42),
+            ]
+        );
+    }
+
+    #[test]
+    fn download_deltas_sum_the_assets_that_moved() {
+        // Two assets under one tag; only the sum is a fact about the repo.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let before = days_ago(2);
+        let after = days_ago(1);
+        let assets = |linux: i64, mac: i64| {
+            vec![
+                AssetSnapshot {
+                    release_tag: "v1".into(),
+                    asset_name: "linux".into(),
+                    download_count: linux,
+                },
+                AssetSnapshot {
+                    release_tag: "v1".into(),
+                    asset_name: "mac".into(),
+                    download_count: mac,
+                },
+            ]
+        };
+        upsert_release_assets(&c, 1, &before, &assets(10, 5)).unwrap();
+        upsert_release_assets(&c, 1, &after, &assets(40, 17)).unwrap();
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(
+            deltas_on(&rows, &after),
+            vec![(ChangeMetric::Downloads, 42)]
+        );
+    }
+
+    #[test]
+    fn a_new_asset_enters_the_feed_on_its_second_reading() {
+        // A release first seen today has no predecessor, so its whole backlog
+        // is a reading rather than a day's downloads. It starts contributing
+        // once there are two observations to subtract.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let first = days_ago(2);
+        let second = days_ago(1);
+        let asset = |n: i64| {
+            vec![AssetSnapshot {
+                release_tag: "v1".into(),
+                asset_name: "linux".into(),
+                download_count: n,
+            }]
+        };
+        upsert_release_assets(&c, 1, &first, &asset(500)).unwrap();
+        upsert_release_assets(&c, 1, &second, &asset(507)).unwrap();
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert!(deltas_on(&rows, &first).is_empty(), "{rows:?}");
+        assert_eq!(
+            deltas_on(&rows, &second),
+            vec![(ChangeMetric::Downloads, 7)]
+        );
+    }
+
+    #[test]
+    fn download_moves_that_cancel_out_are_not_a_change() {
+        // Two assets, one up 5 and one down 5: nothing happened to the repo's
+        // downloads, so the day does not appear.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let before = days_ago(2);
+        let after = days_ago(1);
+        // Seeded directly: `upsert_release_assets` is monotonic and would
+        // refuse to record the fall this test needs.
+        for (date, linux, mac) in [(&before, 10, 20), (&after, 15, 15)] {
+            for (name, n) in [("linux", linux), ("mac", mac)] {
+                c.execute(
+                    "INSERT INTO release_assets (repo_id, date, release_tag, asset_name, download_count)
+                     VALUES (1, ?1, 'v1', ?2, ?3)",
+                    params![date, name, n],
+                )
+                .unwrap();
+            }
+        }
+
+        assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn untracked_and_hidden_repos_never_appear() {
+        let c = test_conn();
+        seed_repo(&c, 1); // tracked = 0
+        seed_tracked_repo(&c, 2);
+        mark_hidden(&c, &[2]).unwrap();
+        for id in [1, 2] {
+            upsert_stats(&c, id, &days_ago(2), &snap!(stars: Some(40))).unwrap();
+            upsert_stats(&c, id, &days_ago(1), &snap!(stars: Some(43))).unwrap();
+        }
+
+        assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rows_are_newest_first_and_bounded_by_the_limit() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        // Stars climbing by one a day for five days: four changes.
+        for (offset, stars) in (1..=5).rev().zip(40..) {
+            upsert_stats(&c, 1, &days_ago(offset), &snap!(stars: Some(stars))).unwrap();
+        }
+
+        let all = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(all.len(), 4, "{all:?}");
+        let dates: Vec<&str> = all.iter().map(|r| r.date.as_str()).collect();
+        let mut sorted = dates.clone();
+        sorted.sort_by(|a, b| b.cmp(a));
+        assert_eq!(dates, sorted, "newest first");
+
+        let capped = recent_changes(&c, 7, 2).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].date, all[0].date, "the limit keeps the newest");
+    }
+
+    #[test]
+    fn a_zero_day_window_is_empty() {
+        // Matches `dense_series`: 0 is an empty range, never an "all time"
+        // sentinel.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(2), &snap!(stars: Some(40))).unwrap();
+        upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(43))).unwrap();
+
+        assert!(recent_changes(&c, 0, 20).unwrap().is_empty());
     }
 }

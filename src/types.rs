@@ -2,7 +2,7 @@
 //! GitHub repo API response the db layer needs, and derives `Deserialize` so
 //! the http client can decode straight into it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One day's (or point-in-time's) observed counter snapshot. All fields are
 /// `Option`: `None` = not observed this sync, distinct from `Some(0)` =
@@ -93,7 +93,9 @@ pub struct NewEvent {
     pub kind: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Serialises straight into the JSON export — the events are as much a part
+/// of the record as the counters, since they are the only rows the user typed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Event {
     pub id: i64,
     pub repo_id: i64,
@@ -144,6 +146,86 @@ pub struct RepoOverview {
     pub event_count: i64,
 }
 
+/// A counter that moved, in the dashboard's recent-changes feed.
+///
+/// Only metrics whose day-over-day *difference* carries information appear
+/// here. The four traffic columns deliberately do not: they are per-day rates,
+/// so the day's own value already is the change and a difference between two
+/// of them describes nothing that happened. That is the same snapshot-versus-
+/// rate split [`Metric::carries_forward`] draws, read from the other side.
+///
+/// Declaration order is render order — [`recent_changes`] sorts each row's
+/// deltas by it, so a repo that gained stars and lost an issue always reads
+/// the same way round.
+///
+/// [`recent_changes`]: crate::db::queries::recent_changes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangeMetric {
+    Stars,
+    Forks,
+    Watchers,
+    Issues,
+    Prs,
+    Downloads,
+    ContainerPulls,
+}
+
+impl ChangeMetric {
+    /// The tag [`recent_changes`]'s SQL labels this metric's rows with. Also
+    /// the `repo_stats` column name for the five that have one, which is why
+    /// the query can build its `UNION ALL` branches from this list.
+    ///
+    /// [`recent_changes`]: crate::db::queries::recent_changes
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            ChangeMetric::Stars => "stars",
+            ChangeMetric::Forks => "forks",
+            ChangeMetric::Watchers => "watchers",
+            ChangeMetric::Issues => "issues",
+            ChangeMetric::Prs => "prs",
+            ChangeMetric::Downloads => "downloads",
+            ChangeMetric::ContainerPulls => "pulls",
+        }
+    }
+
+    pub(crate) fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "stars" => ChangeMetric::Stars,
+            "forks" => ChangeMetric::Forks,
+            "watchers" => ChangeMetric::Watchers,
+            "issues" => ChangeMetric::Issues,
+            "prs" => ChangeMetric::Prs,
+            "downloads" => ChangeMetric::Downloads,
+            "pulls" => ChangeMetric::ContainerPulls,
+            _ => return None,
+        })
+    }
+
+    /// Singular and plural nouns for the feed line, in the words the rest of
+    /// the UI already uses ("Open issues" on a dashboard card).
+    pub fn labels(self) -> (&'static str, &'static str) {
+        match self {
+            ChangeMetric::Stars => ("star", "stars"),
+            ChangeMetric::Forks => ("fork", "forks"),
+            ChangeMetric::Watchers => ("watcher", "watchers"),
+            ChangeMetric::Issues => ("open issue", "open issues"),
+            ChangeMetric::Prs => ("open PR", "open PRs"),
+            ChangeMetric::Downloads => ("download", "downloads"),
+            ChangeMetric::ContainerPulls => ("container pull", "container pulls"),
+        }
+    }
+}
+
+/// Everything that moved for one repo on one UTC day. `deltas` is never empty
+/// — a day with nothing to report produces no `RepoChange` at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoChange {
+    pub repo_id: i64,
+    pub name: String,
+    pub date: String,
+    pub deltas: Vec<(ChangeMetric, i64)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AssetSnapshot {
     pub release_tag: String,
@@ -175,6 +257,55 @@ pub struct PopularDay {
     pub title: Option<String>,
     pub count: i64,
     pub uniques: i64,
+}
+
+/// One observed `repo_stats` row, as the JSON export ships it.
+///
+/// Every counter is `Option`, and `None` serialises to `null` rather than `0`:
+/// the file has to carry the same "not observed" that the database does, or an
+/// importer would read a gap as a day of zero traffic.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StatRow {
+    pub date: String,
+    pub stars: Option<i64>,
+    pub forks: Option<i64>,
+    pub watchers: Option<i64>,
+    pub issues: Option<i64>,
+    pub prs: Option<i64>,
+    pub views_count: Option<i64>,
+    pub views_uniques: Option<i64>,
+    pub clones_count: Option<i64>,
+    pub clones_uniques: Option<i64>,
+}
+
+/// One observed release-asset reading. `download_count` is cumulative for that
+/// `(release_tag, asset_name)` on that day, not the day's downloads.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReleaseAssetRow {
+    pub date: String,
+    pub release_tag: String,
+    pub asset_name: String,
+    pub download_count: i64,
+}
+
+/// One observed GHCR pull reading, cumulative like the asset counters.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContainerPullRow {
+    pub date: String,
+    pub pull_count: i64,
+}
+
+/// One observed referrer or popular-path row. `name` is the referrer host or
+/// the path; `title` is only ever set for paths.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PopularRow {
+    pub date: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub count: i64,
+    pub uniques: i64,
+    pub count_delta: i64,
+    pub uniques_delta: i64,
 }
 
 /// Subset of GitHub's repo API response, shared by the http client (which

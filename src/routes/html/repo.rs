@@ -372,8 +372,11 @@ pub fn repo_body(view: &RepoView) -> Markup {
         (page_header(
             &repo.name,
             repo.description.as_ref().map(|description| html! { (description) }),
-            homepage.map(|homepage| html! {
-                a href=(homepage) rel="noopener noreferrer" { (homepage) }
+            Some(html! {
+                @if let Some(homepage) = homepage {
+                    a href=(homepage) rel="noopener noreferrer" { (homepage) }
+                }
+                (export_links(view.popular.repo_id))
             }),
         ))
         (charts_section(view))
@@ -385,6 +388,24 @@ pub fn repo_body(view: &RepoView) -> Markup {
             draft: None,
             tz: view.tz,
         }))
+    }
+}
+
+/// The two download links.
+///
+/// Plain anchors carrying `download`, deliberately without `hx-get`: htmx
+/// would swap a CSV body into the page instead of saving it, and the
+/// `Content-Disposition` the routes send is only honoured by a real
+/// navigation. They also carry no period — the file is the whole history,
+/// which is the reason it exists.
+fn export_links(repo_id: i64) -> Markup {
+    html! {
+        span class="wp-export wp-small wp-muted" {
+            "Export: "
+            a href=(format!("/repos/{repo_id}/export.csv")) download { "CSV" }
+            " · "
+            a href=(format!("/repos/{repo_id}/export.json")) download { "JSON" }
+        }
     }
 }
 

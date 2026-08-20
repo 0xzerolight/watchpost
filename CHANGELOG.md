@@ -7,6 +7,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Recent changes on the dashboard.** A feed above the repo cards lists what moved, one row per
+  repo per UTC day: stars, forks, watchers, open issues, open PRs, release downloads and container
+  pulls, each as a signed delta. The cards show levels, so noticing that three stars arrived
+  yesterday used to mean having memorised the old number — the difference was already in the
+  database and nothing surfaced it. Four rules decide what counts as a change. The predecessor is
+  the last *observed* value rather than the previous calendar day, so a sync gap produces one change
+  on the day the next observation landed instead of a phantom pair; a first observation is dropped,
+  because the first sync of a 400-star repo is a reading and "+400 stars" would be a fiction; a zero
+  delta produces no row at all; and views and clones are excluded, being per-day rates where the
+  day's own value already is the change. Day resolution is what `repo_stats` stores, so the feed
+  renders the entire existing history the moment it ships, backfilled star history included. No
+  schema migration, no new configuration and no new query per repo — one pass over three tables.
+- **CSV and JSON export per repo** (`Export: CSV · JSON` in the repo page header). Both span the
+  whole history and take no period, because the history is the point. The CSV is the chart data
+  flattened — one row per UTC day, built from the same dense readers the charts plot, so a cell and
+  the same day on a chart are the same number by construction rather than by agreement. The JSON is
+  the raw record: observed rows only, no carry-forward, plus the release assets, container pulls,
+  referrers, paths and events that have no place in a daily grid, stamped with the schema version
+  the file was written at. An unobserved counter is an empty field in the CSV and `null` in the
+  JSON, never a `0` — a file that filled gaps with zeroes would re-introduce on the way out the lie
+  watchpost refuses to tell on the way in. Sync errors, backoff state and the saved token are
+  operational rather than history and appear in neither. Both are plain read-only GETs, and like
+  every other page they are unauthenticated. The repo-name half of the filename is sanitised, since
+  it is upstream-owned and would otherwise be able to write the response's own headers.
+
 ## [1.1.0] - 2026-08-20
 
 ### Added

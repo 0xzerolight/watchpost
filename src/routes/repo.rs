@@ -164,15 +164,12 @@ fn parse_days(raw: Option<&str>) -> i64 {
 /// How many days the payload spans: the repo's whole history, measured from
 /// its first observation. Every render uses this window whatever period is
 /// selected, so the client can zoom without asking for more data.
+///
+/// [`queries::history_span`] is the measure itself, shared with the export;
+/// the [`ALL_MIN_DAYS`] floor is this caller's alone, because a one-column
+/// chart looks broken and a short data file does not.
 fn all_window(conn: &Connection, repo_id: i64) -> Result<u32, DbError> {
-    let today = chrono::Utc::now().date_naive();
-    let span = queries::first_observed_date(conn, repo_id)?
-        .and_then(|date| chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
-        // Inclusive of both ends: a repo first observed today spans one day.
-        .map_or(0, |first| (today - first).num_days() + 1);
-    // A stored date in the future (clock skew) gives a negative span; the floor
-    // catches it along with the never-synced case.
-    Ok(u32::try_from(span).unwrap_or(0).max(ALL_MIN_DAYS))
+    Ok(queries::history_span(conn, repo_id)?.max(ALL_MIN_DAYS))
 }
 
 /// Build the `#chart-data` payload over `window` days ending today, opening at

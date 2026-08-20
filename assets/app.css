@@ -202,6 +202,80 @@
   padding: 0;
 }
 
+/*
+ * Recent-changes feed. One row per repo per day, each row a date, a repo link
+ * and however many deltas moved that day. `flex-wrap` on the row rather than a
+ * grid: the delta count varies from one to seven, and a grid would either
+ * reserve seven columns of empty space or clip the seventh.
+ */
+.wp-changes {
+  margin-bottom: var(--wp-space-5);
+}
+
+.wp-changes h2 {
+  margin-bottom: var(--wp-space-3);
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.wp-changes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wp-changes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--wp-space-1) var(--wp-space-3);
+  padding: var(--wp-space-2) 0;
+  border-bottom: 1px solid var(--wp-chart-grid);
+}
+
+.wp-changes li:last-child {
+  border-bottom: 0;
+}
+
+/*
+ * The date column is fixed-width so the repo names line up down the list; it
+ * still grows past the basis if a non-current year pushes it wider.
+ */
+.wp-change-day {
+  flex: 0 0 auto;
+  min-width: 4.5rem;
+}
+
+.wp-change-repo {
+  flex: 1 1 auto;
+}
+
+.wp-change-deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wp-space-1) var(--wp-space-3);
+}
+
+/*
+ * Direction is carried by the sign character first and the colour second, so
+ * the row still reads on a monochrome screen and for a reader who cannot
+ * separate the two hues. Slots 5 and 7 are the palette's green and red, both
+ * already validated at 3:1 against the page surface in either scheme.
+ */
+.wp-delta {
+  font-size: var(--wp-text-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wp-delta-up {
+  color: var(--wp-marker-5);
+}
+
+.wp-delta-down {
+  color: var(--wp-marker-7);
+}
+
 /* Kind slots: set the colour, let `.wp-chip` and friends read it. */
 .wp-kind-0 { --wp-kind-color: var(--wp-marker-0); }
 .wp-kind-1 { --wp-kind-color: var(--wp-marker-1); }
