@@ -1270,6 +1270,72 @@ pub fn export_popular(
     Ok(rows)
 }
 
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+
+/// How many days of star history the tracked portfolio spans, counting both
+/// ends — the analytics chart's "All".
+///
+/// Deliberately not `SELECT MIN(date) FROM repo_stats`: migration v2 dropped
+/// `idx_repo_stats_date` because nothing reads that table `date`-first, and a
+/// bare `MIN(date)` would scan every row in it to find one value. The correlated
+/// subquery keeps one index seek per repo, which the `(repo_id, date)` primary
+/// key serves, driven by the handful of rows `idx_repos_tracked` supplies.
+///
+/// Stars only, and only tracked visible repos: the chart plots the portfolio's
+/// star total, so its "All" is the first day one of *those* repos had a star
+/// count. A repo the page does not chart must not stretch its axis.
+///
+/// Zero when nothing has been observed, and zero rather than a negative span if
+/// a stored date is somehow in the future — the same contract [`history_span`]
+/// keeps.
+pub fn portfolio_history_span(conn: &Connection) -> Result<u32, DbError> {
+    let first: Option<String> = conn.query_row(
+        "SELECT MIN(first) FROM (
+             SELECT (SELECT MIN(date) FROM repo_stats s
+                      WHERE s.repo_id = r.id AND s.stars IS NOT NULL) AS first
+               FROM repos r
+              WHERE r.tracked = 1 AND r.hidden = 0
+         )",
+        [],
+        |r| r.get(0),
+    )?;
+    let today = chrono::Utc::now().date_naive();
+    let span = first
+        .and_then(|date| chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
+        .map_or(0, |first| (today - first).num_days() + 1);
+    Ok(u32::try_from(span).unwrap_or(0))
+}
+
+/// Release downloads to date: the sum over every `(release_tag, asset_name)` of
+/// that pair's newest observed `download_count`.
+///
+/// Not `SUM(download_count)` over the table — that adds every day's snapshot of
+/// the same cumulative counter and reports a number several times the truth. Not
+/// one day's rows either: an asset with no row on the newest day was not
+/// re-read, and it did not lose its downloads. This is the same
+/// latest-row-per-group shape [`dense_downloads_total`] seeds itself with, which
+/// is what makes this figure and the last point of that chart the same number by
+/// construction rather than by agreement.
+///
+/// `None` for a repo whose releases have never been observed. `SUM` over no rows
+/// is already `NULL`, so the distinction survives the query rather than being
+/// reconstructed after it.
+pub fn latest_downloads_total(conn: &Connection, repo_id: i64) -> Result<Option<i64>, DbError> {
+    Ok(conn.query_row(
+        "SELECT SUM(download_count) FROM (
+             SELECT download_count,
+                    ROW_NUMBER() OVER (PARTITION BY release_tag, asset_name
+                                           ORDER BY date DESC) AS rn
+               FROM release_assets
+              WHERE repo_id = ?1
+         ) WHERE rn = 1",
+        params![repo_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2735,5 +2801,98 @@ mod tests {
         upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(43))).unwrap();
 
         assert!(recent_changes(&c, 0, 20).unwrap().is_empty());
+    }
+
+    // ---- portfolio_history_span / latest_downloads_total -------------------
+
+    /// One asset under a named release tag, for the cases that care which
+    /// group a row belongs to. [`seed_asset`] hardcodes `v1`.
+    fn seed_tagged_asset(conn: &Connection, repo_id: i64, date: &str, tag: &str, count: i64) {
+        upsert_release_assets(
+            conn,
+            repo_id,
+            date,
+            &[AssetSnapshot {
+                release_tag: tag.into(),
+                asset_name: "app.tar".into(),
+                download_count: count,
+            }],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn portfolio_span_covers_the_earliest_tracked_star_row() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        seed_tracked_repo(&c, 2);
+        upsert_stats(&c, 1, &days_ago(99), &snap!(stars: Some(10))).unwrap();
+        upsert_stats(&c, 2, &days_ago(9), &snap!(stars: Some(3))).unwrap();
+
+        // Both ends counted: 99 days back plus today is 100 slots.
+        assert_eq!(portfolio_history_span(&c).unwrap(), 100);
+    }
+
+    #[test]
+    fn portfolio_span_ignores_untracked_and_hidden_repos() {
+        let c = test_conn();
+        // Untracked: seeded but never `set_tracked`.
+        seed_repo(&c, 1);
+        upsert_stats(&c, 1, &days_ago(399), &snap!(stars: Some(900))).unwrap();
+        // Tracked upstream once, hidden since.
+        seed_tracked_repo(&c, 2);
+        mark_hidden(&c, &[2]).unwrap();
+        upsert_stats(&c, 2, &days_ago(299), &snap!(stars: Some(500))).unwrap();
+        seed_tracked_repo(&c, 3);
+        upsert_stats(&c, 3, &days_ago(9), &snap!(stars: Some(3))).unwrap();
+
+        // A repo the page does not chart must not stretch its axis.
+        assert_eq!(portfolio_history_span(&c).unwrap(), 10);
+    }
+
+    #[test]
+    fn portfolio_span_is_zero_with_nothing_observed() {
+        let c = test_conn();
+        assert_eq!(portfolio_history_span(&c).unwrap(), 0);
+
+        seed_tracked_repo(&c, 1);
+        assert_eq!(portfolio_history_span(&c).unwrap(), 0);
+
+        // A row exists but its star count does not: not observed is not zero.
+        upsert_stats(&c, 1, &days_ago(5), &snap!(forks: Some(2))).unwrap();
+        assert_eq!(portfolio_history_span(&c).unwrap(), 0);
+    }
+
+    #[test]
+    fn latest_downloads_total_sums_the_newest_row_per_asset() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        for (day, one, two) in [(3, 10, 100), (2, 12, 100), (1, 15, 140)] {
+            seed_asset(&c, 1, &days_ago(day), "a.tar", one);
+            seed_asset(&c, 1, &days_ago(day), "b.tar", two);
+        }
+
+        // 15 + 140, not the 377 a bare SUM over six cumulative snapshots gives.
+        assert_eq!(latest_downloads_total(&c, 1).unwrap(), Some(155));
+    }
+
+    #[test]
+    fn latest_downloads_total_carries_an_asset_that_stopped_being_read() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        seed_tagged_asset(&c, 1, &days_ago(9), "v1", 500);
+        seed_tagged_asset(&c, 1, &days_ago(1), "v2", 4);
+
+        // The tag is part of the group, so an old release with no row on the
+        // newest day was not re-read — it did not lose its downloads.
+        assert_eq!(latest_downloads_total(&c, 1).unwrap(), Some(504));
+    }
+
+    #[test]
+    fn latest_downloads_total_is_none_without_releases() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        // An empty cell, not a confident zero.
+        assert_eq!(latest_downloads_total(&c, 1).unwrap(), None);
     }
 }
