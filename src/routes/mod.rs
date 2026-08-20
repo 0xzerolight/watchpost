@@ -11,6 +11,7 @@ use tower_http::trace::TraceLayer;
 use crate::csrf::csrf_middleware;
 use crate::state::AppState;
 
+pub mod analytics;
 pub mod assets;
 pub mod events;
 pub mod export;
@@ -56,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = extra
         .route("/", get(index::index_page))
+        .route("/analytics", get(analytics::analytics_page))
         .route("/health", get(health::health))
         .route("/repos/{id}", get(repo::repo_page))
         // Downloads, not pages: read-only GETs that answer with a

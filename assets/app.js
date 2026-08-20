@@ -14,10 +14,15 @@
  * lets a category axis double as a date index. A `null` is a genuine "not
  * observed" gap and is never plotted as zero.
  *
- * `#chart-data` always spans the repo's whole history; `days` is only the
+ * `#chart-data` always spans the whole history it covers; `days` is only the
  * period to open on. Zooming is therefore a tail slice of arrays already in the
  * page (`setPeriod`), not a request — the server never re-renders for a period
  * change.
+ *
+ * A page may ship a subset of that island: the analytics page sends `stars`
+ * alone, for the portfolio total, on the same canvas id the repo page uses. A
+ * series that is absent rolls up to nulls and a canvas that is absent is
+ * skipped, so one code path serves both pages.
  */
 (function () {
   "use strict";
@@ -1298,7 +1303,14 @@
   }
 
   /*
-   * Build the repo charts from the `#chart-data` island, if there is one.
+   * Build the charts from the `#chart-data` island, if there is one.
+   *
+   * Named for the repo page because that is where it started; the analytics
+   * page ships the same island shape on one of the same canvas ids, which is
+   * what lets one function serve both. `CHART_SPECS` names seven series across
+   * five canvases, and a page that ships fewer of either gets exactly the ones
+   * it has: `syncChart` skips a canvas it cannot find, and `computeView` rolls
+   * a series that is not in the payload up to nulls.
    *
    * Answers whether it rendered, which also says whether `applyFilter` has
    * already run this pass — `renderCharts` ends with one, and callers use that
@@ -1431,7 +1443,28 @@
     };
   }
 
-  /* Show the trailing `days` of `payload` on the repo charts. */
+  /*
+   * Show the figure that belongs to the period on screen.
+   *
+   * The analytics leaderboard renders every period's number and hides all but
+   * one, rather than having the client compute them — see `period_cell` in
+   * src/routes/html/analytics.rs for why. This is the whole client-side half: a
+   * `hidden` flip, no text written and nothing parsed.
+   *
+   * Called from `renderCharts` so a first render and every later zoom share one
+   * call site — put it in `setPeriod` instead and a `?days=30` page load would
+   * zoom the chart while leaving the table on "All". A page with no
+   * `[data-period-value]` — every page but this one — loops zero times.
+   */
+  function updatePeriodValues(days) {
+    var cells = document.querySelectorAll("[data-period-value]");
+    for (var i = 0; i < cells.length; i++) {
+      cells[i].hidden =
+        normalisePeriod(cells[i].getAttribute("data-period-value")) !== days;
+    }
+  }
+
+  /* Show the trailing `days` of `payload` on the charts. */
   function renderCharts(payload, days) {
     var view = computeView(payload, days);
     // One read for all charts, and the array each of them goes on holding
@@ -1440,6 +1473,7 @@
     CHART_SPECS.forEach(function (spec) {
       syncChart(spec, view, events);
     });
+    updatePeriodValues(days);
     applyFilter();
   }
 

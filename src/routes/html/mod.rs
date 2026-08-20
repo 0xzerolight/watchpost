@@ -8,11 +8,14 @@ use serde::Serialize;
 use crate::csrf::{CSRF_HEADER, CsrfToken};
 use crate::routes::assets;
 
+pub mod analytics;
 pub mod index;
+pub mod period;
 pub mod repo;
 pub mod settings;
 pub mod ui;
 
+pub use period::*;
 pub use ui::*;
 
 /// The document shell every page renders into.
@@ -72,6 +75,14 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                         li {
                             a href="/" aria-current=[matches!(nav, NavItem::Home).then_some("page")] {
                                 "Repositories"
+                            }
+                        }
+                        // Analytics sits between the two: it reads about the
+                        // repos, and settings administers them.
+                        li {
+                            a href="/analytics"
+                                aria-current=[matches!(nav, NavItem::Analytics).then_some("page")] {
+                                "Analytics"
                             }
                         }
                         li {

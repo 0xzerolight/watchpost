@@ -17,6 +17,7 @@ use crate::csrf::CsrfToken;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavItem {
     Home,
+    Analytics,
     Settings,
     None,
 }
@@ -175,6 +176,15 @@ pub fn timestamp(at: Option<&str>, tz: Tz) -> Markup {
     html! {
         time datetime=(at) title=(exact) { (relative_time(Some(at))) }
     }
+}
+
+/// The singular or plural noun for `n`.
+///
+/// Here rather than beside either caller: the dashboard cards and the changes
+/// feed live on different pages now, and a helper this small is exactly the kind
+/// that gets quietly reimplemented with a different rule for zero.
+pub fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
 }
 
 /// A stored `YYYY-MM-DD` day, rendered short.

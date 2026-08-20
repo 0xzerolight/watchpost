@@ -72,7 +72,18 @@ because those are events.
 **The period selector is a zoom, not a query.** A repo page opens on its whole history and ships
 every day of it to the browser, so switching to 7, 30, 90 days or a year is instant and offline;
 the `?days=` in the address bar is only a starting zoom, and the referrer and path tables ignore it
-entirely (they are always all-time).
+entirely (they are always all-time). The analytics page works the same way, and its repo table
+takes it one step further: every period's growth and views figure is rendered into the page at
+once and all but one hidden, so switching periods moves the table with the chart at no request —
+and the figures are still correct with JavaScript off, which the chart above them cannot manage.
+
+**A portfolio total is the sum of what was observed, never a sum with zeroes in it.** The analytics
+star curve adds each tracked repo's carried-forward daily level. A repo watchpost had not started
+watching yet contributes nothing to the days before its first reading rather than a zero, so the
+curve on those days is the other repos alone; the day that repo is first read is a genuine step up
+in the total. The same rule makes the growth column honest: it measures from a repo's first
+*observed* value inside the window, not from the window's edge, so a repo first seen halfway
+through reports the movement between two real readings instead of its entire star count.
 
 **Gaps mean "not observed".** If the app was down for a day, that day has no row, and rate metrics
 (views, clones) render as a gap rather than as zero — an honest hole beats an invented zero.
