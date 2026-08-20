@@ -9,18 +9,28 @@
 use chrono_tz::Tz;
 use maud::{Markup, html};
 
-use crate::routes::html::{empty_state, error_glyph, json_script_class, page_header, timestamp};
-use crate::types::RepoOverview;
+use crate::routes::html::{
+    date_stamp, empty_state, error_glyph, json_script_class, page_header, timestamp,
+};
+use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
 /// How many days of stars a card's sparkline shows. The array embedded per
 /// card is exactly this long, gaps included.
 pub const SPARK_DAYS: u32 = 30;
 
+/// How far back the recent-changes feed looks.
+pub const CHANGES_DAYS: u32 = 14;
+
+/// How many days-with-movement the feed lists. A bound, not a page size:
+/// there is no "show more", because the repo pages are where the full history
+/// already lives.
+pub const CHANGES_MAX_ROWS: usize = 20;
+
 /// A card and the sparkline values behind it, in `repo_overview` order.
 pub type Card = (RepoOverview, Vec<Option<i64>>);
 
 /// The dashboard body, for wrapping in [`super::base`].
-pub fn index_body(cards: &[Card], tz: Tz) -> Markup {
+pub fn index_body(cards: &[Card], changes: &[RepoChange], tz: Tz) -> Markup {
     html! {
         (page_header("Repositories", None, None))
         @if cards.is_empty() {
@@ -29,11 +39,74 @@ pub fn index_body(cards: &[Card], tz: Tz) -> Markup {
                 Some(("/settings", "Pick repos to watch")),
             ))
         } @else {
+            // Only once there is something to have changed. On an install with
+            // nothing tracked the picker CTA above is the whole message, and a
+            // second empty state under it would bury it.
+            (changes_section(changes))
             div class="wp-cards" {
                 @for (repo, spark) in cards {
                     (repo_card(repo, spark, tz))
                 }
             }
+        }
+    }
+}
+
+/// What moved lately, newest day first.
+///
+/// The cards above show levels, so a reader who has not memorised yesterday's
+/// star count cannot tell one apart from three days ago. Each row is one repo
+/// on one UTC day, and a day with nothing to report is simply absent — see
+/// [`crate::db::queries::recent_changes`] for what counts as a change.
+pub fn changes_section(changes: &[RepoChange]) -> Markup {
+    html! {
+        section class="wp-changes" {
+            h2 { "Recent changes" }
+            @if changes.is_empty() {
+                (empty_state(
+                    "Nothing changed in the last 14 days.",
+                    None,
+                ))
+            } @else {
+                ul {
+                    @for change in changes {
+                        li {
+                            span class="wp-change-day wp-muted wp-small" { (date_stamp(&change.date)) }
+                            a class="wp-change-repo" href=(format!("/repos/{}", change.repo_id)) {
+                                (change.name)
+                            }
+                            span class="wp-change-deltas" {
+                                @for (metric, delta) in &change.deltas {
+                                    (delta_chip(*metric, *delta))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One "+3 stars" / "-1 open issue".
+///
+/// The sign is spelled out rather than left to colour alone, so the direction
+/// survives a monochrome screen and a reader who cannot separate the two hues.
+/// It is U+2212 MINUS SIGN, not a hyphen: at this size a hyphen next to a
+/// digit reads as punctuation.
+fn delta_chip(metric: ChangeMetric, delta: i64) -> Markup {
+    let (one, many) = metric.labels();
+    let class = if delta > 0 {
+        "wp-delta wp-delta-up"
+    } else {
+        "wp-delta wp-delta-down"
+    };
+    html! {
+        span class=(class) {
+            (if delta > 0 { "+" } else { "\u{2212}" })
+            (delta.abs())
+            " "
+            (plural(delta.abs(), one, many))
         }
     }
 }
@@ -159,7 +232,7 @@ mod tests {
 
     #[test]
     fn dashboard_leads_with_the_shared_page_header() {
-        let out = index_body(&[], Tz::UTC).into_string();
+        let out = index_body(&[], &[], Tz::UTC).into_string();
         assert!(
             out.starts_with(
                 r#"<header class="wp-page-header"><hgroup><h1>Repositories</h1></hgroup></header>"#
@@ -206,9 +279,69 @@ mod tests {
         );
     }
 
+    fn change(deltas: Vec<(ChangeMetric, i64)>) -> RepoChange {
+        RepoChange {
+            repo_id: 7,
+            name: "octo/x".into(),
+            date: "2026-08-19".into(),
+            deltas,
+        }
+    }
+
+    #[test]
+    fn a_delta_spells_out_its_direction_and_pluralises() {
+        let out = changes_section(&[change(vec![
+            (ChangeMetric::Stars, 3),
+            (ChangeMetric::Issues, -1),
+        ])])
+        .into_string();
+        assert!(
+            out.contains(r#"<span class="wp-delta wp-delta-up">+3 stars</span>"#),
+            "out was {out}"
+        );
+        // U+2212 MINUS SIGN, not a hyphen, and the singular noun for one.
+        assert!(
+            out.contains("<span class=\"wp-delta wp-delta-down\">\u{2212}1 open issue</span>"),
+            "out was {out}"
+        );
+        assert!(out.contains(r#"href="/repos/7""#), "out was {out}");
+        assert!(
+            out.contains(r#"<time datetime="2026-08-19">"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn a_quiet_fortnight_says_so_instead_of_rendering_an_empty_list() {
+        let out = changes_section(&[]).into_string();
+        assert!(
+            out.contains("<p>Nothing changed in the last 14 days.</p>"),
+            "out was {out}"
+        );
+        assert!(!out.contains("<ul>"), "out was {out}");
+    }
+
+    #[test]
+    fn the_feed_sits_above_the_cards_and_only_when_there_are_cards() {
+        let repo = RepoOverview {
+            repo_id: 7,
+            name: "octo/x".into(),
+            ..RepoOverview::default()
+        };
+        let with_cards = index_body(&[(repo, vec![])], &[], Tz::UTC).into_string();
+        let feed = with_cards.find("wp-changes").expect("feed rendered");
+        let cards = with_cards.find("wp-cards").expect("cards rendered");
+        assert!(feed < cards, "out was {with_cards}");
+
+        // Nothing tracked: the picker CTA is the whole message, so a second
+        // empty state under it would only bury it.
+        let untracked = index_body(&[], &[], Tz::UTC).into_string();
+        assert!(!untracked.contains("wp-changes"), "out was {untracked}");
+    }
+
     #[test]
     fn empty_state_points_at_settings_and_draws_nothing() {
-        let out = index_body(&[], Tz::UTC).into_string();
+        let out = index_body(&[], &[], Tz::UTC).into_string();
         assert!(
             out.contains("<p>No repos tracked yet — stats start collecting on the next sync.</p>"),
             "out was {out}"

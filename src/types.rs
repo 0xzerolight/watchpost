@@ -144,6 +144,86 @@ pub struct RepoOverview {
     pub event_count: i64,
 }
 
+/// A counter that moved, in the dashboard's recent-changes feed.
+///
+/// Only metrics whose day-over-day *difference* carries information appear
+/// here. The four traffic columns deliberately do not: they are per-day rates,
+/// so the day's own value already is the change and a difference between two
+/// of them describes nothing that happened. That is the same snapshot-versus-
+/// rate split [`Metric::carries_forward`] draws, read from the other side.
+///
+/// Declaration order is render order — [`recent_changes`] sorts each row's
+/// deltas by it, so a repo that gained stars and lost an issue always reads
+/// the same way round.
+///
+/// [`recent_changes`]: crate::db::queries::recent_changes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangeMetric {
+    Stars,
+    Forks,
+    Watchers,
+    Issues,
+    Prs,
+    Downloads,
+    ContainerPulls,
+}
+
+impl ChangeMetric {
+    /// The tag [`recent_changes`]'s SQL labels this metric's rows with. Also
+    /// the `repo_stats` column name for the five that have one, which is why
+    /// the query can build its `UNION ALL` branches from this list.
+    ///
+    /// [`recent_changes`]: crate::db::queries::recent_changes
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            ChangeMetric::Stars => "stars",
+            ChangeMetric::Forks => "forks",
+            ChangeMetric::Watchers => "watchers",
+            ChangeMetric::Issues => "issues",
+            ChangeMetric::Prs => "prs",
+            ChangeMetric::Downloads => "downloads",
+            ChangeMetric::ContainerPulls => "pulls",
+        }
+    }
+
+    pub(crate) fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "stars" => ChangeMetric::Stars,
+            "forks" => ChangeMetric::Forks,
+            "watchers" => ChangeMetric::Watchers,
+            "issues" => ChangeMetric::Issues,
+            "prs" => ChangeMetric::Prs,
+            "downloads" => ChangeMetric::Downloads,
+            "pulls" => ChangeMetric::ContainerPulls,
+            _ => return None,
+        })
+    }
+
+    /// Singular and plural nouns for the feed line, in the words the rest of
+    /// the UI already uses ("Open issues" on a dashboard card).
+    pub fn labels(self) -> (&'static str, &'static str) {
+        match self {
+            ChangeMetric::Stars => ("star", "stars"),
+            ChangeMetric::Forks => ("fork", "forks"),
+            ChangeMetric::Watchers => ("watcher", "watchers"),
+            ChangeMetric::Issues => ("open issue", "open issues"),
+            ChangeMetric::Prs => ("open PR", "open PRs"),
+            ChangeMetric::Downloads => ("download", "downloads"),
+            ChangeMetric::ContainerPulls => ("container pull", "container pulls"),
+        }
+    }
+}
+
+/// Everything that moved for one repo on one UTC day. `deltas` is never empty
+/// — a day with nothing to report produces no `RepoChange` at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoChange {
+    pub repo_id: i64,
+    pub name: String,
+    pub date: String,
+    pub deltas: Vec<(ChangeMetric, i64)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AssetSnapshot {
     pub release_tag: String,

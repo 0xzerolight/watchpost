@@ -177,6 +177,30 @@ pub fn timestamp(at: Option<&str>, tz: Tz) -> Markup {
     }
 }
 
+/// A stored `YYYY-MM-DD` day, rendered short.
+///
+/// The date-only sibling of [`timestamp`], and deliberately without its `Tz`
+/// parameter: these are GitHub's own UTC day buckets, which cannot be re-cut
+/// into another zone without inventing traffic that landed on neither day. The
+/// `datetime` attribute carries the stored value untouched.
+///
+/// The year is dropped for the current one and kept otherwise, so a feed of
+/// recent days is short while an older row still says which year it belongs
+/// to. Anything that does not parse falls back to the stored string, visible
+/// rather than silently blank — the same contract [`timestamp`] keeps.
+pub fn date_stamp(date: &str) -> Markup {
+    let Ok(day) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+        return html! { span class="wp-muted" { (date) } };
+    };
+    let this_year = chrono::Utc::now().date_naive().format("%Y").to_string();
+    let fmt = if day.format("%Y").to_string() == this_year {
+        "%b %-d"
+    } else {
+        "%b %-d, %Y"
+    };
+    html! { time datetime=(date) { (day.format(fmt).to_string()) } }
+}
+
 /// A coarse "3h ago" for a stored RFC 3339 timestamp.
 ///
 /// Deliberately lossy: on a dashboard the useful question is whether a repo
