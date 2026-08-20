@@ -9,10 +9,12 @@ use crate::csrf::{CSRF_HEADER, CsrfToken};
 use crate::routes::assets;
 
 pub mod index;
+pub mod period;
 pub mod repo;
 pub mod settings;
 pub mod ui;
 
+pub use period::*;
 pub use ui::*;
 
 /// The document shell every page renders into.

@@ -18,27 +18,11 @@ use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    empty_row, empty_state, field, field_compact, json_script, kind_class, page_header,
-    render_markdown, spinner, table_wrap,
+    ALL_DAYS, empty_row, empty_state, field, field_compact, json_script, kind_class, page_header,
+    period_select, render_markdown, spinner, table_wrap,
 };
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
-
-/// The `days` value meaning "all history", and the default period. Not a
-/// length — the handler turns it into a real window from the repo's first
-/// observed day.
-pub const ALL_DAYS: i64 = -1;
-
-/// The period selector's options, and by construction the `days` allowlist:
-/// the handler validates against this same table, so an option can never be
-/// offered that the parser then rejects.
-pub const PERIODS: [(i64, &str); 5] = [
-    (7, "7 days"),
-    (30, "30 days"),
-    (90, "90 days"),
-    (365, "1 year"),
-    (ALL_DAYS, "All"),
-];
 
 /// The three sort indicators. Inline SVG rather than arrow characters: `↕`
 /// renders as an emoji on some platforms, and `▲`/`▼` sit on a different
@@ -66,7 +50,8 @@ const SORT_IDLE_PATH: &str = r#"<path d="M3 4.5 6 1.5 9 4.5M3 7.5 6 10.5 9 7.5"/
 /// `labels` and `series` always cover the repo's whole history ("All"),
 /// whatever period is selected — the client zooms by slicing their tail, so a
 /// period change costs no request. `days` is the *selected* period (one of
-/// [`PERIODS`]), i.e. how much of that tail to show on first render.
+/// [`crate::routes::html::PERIODS`]), i.e. how much of that tail to show on
+/// first render.
 #[derive(Debug, Serialize)]
 pub struct ChartPayload {
     pub days: i64,
@@ -430,14 +415,7 @@ fn charts_section(view: &RepoView) -> Markup {
             div class="wp-section-head" {
                 h2 { "Metrics" }
                 @if observed {
-                    div class="wp-field-inline" {
-                        label for="wp-period" { "Period" }
-                        select #wp-period name="days" data-period-select {
-                            @for (value, label) in PERIODS {
-                                option value=(value) selected[value == selected] { (label) }
-                            }
-                        }
-                    }
+                    (period_select(selected))
                 }
             }
             @if observed {
@@ -466,7 +444,7 @@ fn charts_section(view: &RepoView) -> Markup {
 /// nothing at all. `role="img"` plus the label makes it a single object with a
 /// name, which is the honest description — the plotted values themselves are
 /// not exposed here, and no `aria-label` could carry them.
-fn chart_card(title: &str, canvas_id: &str) -> Markup {
+pub fn chart_card(title: &str, canvas_id: &str) -> Markup {
     html! {
         article class="wp-card" {
             h3 class="wp-card-title" { (title) }

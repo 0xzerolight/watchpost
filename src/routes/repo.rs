@@ -25,20 +25,11 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::routes::html::repo::{
-    ALL_DAYS, ChartPayload, ChartSeries, PERIODS, PopularParams, RepoView, Sort, popular_table,
-    repo_body,
+    ChartPayload, ChartSeries, PopularParams, RepoView, Sort, popular_table, repo_body,
 };
-use crate::routes::html::{NavItem, base, get_hx_target};
+use crate::routes::html::{ALL_MIN_DAYS, NavItem, base, get_hx_target, parse_days};
 use crate::state::AppState;
 use crate::types::{Event, Metric, PopularItem, PopularKind, RepoOverview};
-
-/// The period used when `days` is absent or not one of [`PERIODS`]: all of it.
-const DEFAULT_DAYS: i64 = ALL_DAYS;
-
-/// The shortest window "All" ever produces. A repo synced for the first time
-/// today has one observed day; charting a one-column window would look broken,
-/// so "All" opens on at least a month of context.
-const ALL_MIN_DAYS: u32 = 30;
 
 #[derive(Debug, Deserialize)]
 pub struct RepoParams {
@@ -153,14 +144,6 @@ fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageDat
     }))
 }
 
-/// The `days` allowlist. Validated against the same table the period selector
-/// renders, so the two can never disagree.
-fn parse_days(raw: Option<&str>) -> i64 {
-    raw.and_then(|s| s.trim().parse::<i64>().ok())
-        .filter(|days| PERIODS.iter().any(|(value, _)| value == days))
-        .unwrap_or(DEFAULT_DAYS)
-}
-
 /// How many days the payload spans: the repo's whole history, measured from
 /// its first observation. Every render uses this window whatever period is
 /// selected, so the client can zoom without asking for more data.
@@ -220,31 +203,5 @@ fn fragment(headers: &HeaderMap) -> Fragment {
         Some("refs-table") => Fragment::Table(PopularKind::Referrers),
         Some("paths-table") => Fragment::Table(PopularKind::Paths),
         _ => Fragment::Full,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn days_is_an_allowlist_not_a_clamp() {
-        // The default is "all", so a bare /repos/{id} opens on the whole
-        // history rather than on a window that hides it.
-        assert_eq!(DEFAULT_DAYS, ALL_DAYS);
-        assert_eq!(parse_days(None), DEFAULT_DAYS);
-        assert_eq!(parse_days(Some("")), DEFAULT_DAYS);
-        assert_eq!(parse_days(Some("abc")), DEFAULT_DAYS);
-        // Off-allowlist values take the default rather than the nearest legal
-        // window — 45 is not "30ish", it is a URL nobody meant to write.
-        assert_eq!(parse_days(Some("45")), DEFAULT_DAYS);
-        assert_eq!(parse_days(Some("100000")), DEFAULT_DAYS);
-        assert_eq!(parse_days(Some("-2")), DEFAULT_DAYS);
-        assert_eq!(parse_days(Some("0")), DEFAULT_DAYS);
-
-        for (value, _) in PERIODS {
-            assert_eq!(parse_days(Some(&value.to_string())), value);
-        }
-        assert_eq!(parse_days(Some(" 7 ")), 7);
     }
 }
