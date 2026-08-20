@@ -13,6 +13,7 @@ use crate::state::AppState;
 
 pub mod assets;
 pub mod events;
+pub mod export;
 pub mod health;
 pub mod html;
 pub mod index;
@@ -57,6 +58,10 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/", get(index::index_page))
         .route("/health", get(health::health))
         .route("/repos/{id}", get(repo::repo_page))
+        // Downloads, not pages: read-only GETs that answer with a
+        // `Content-Disposition` attachment rather than markup.
+        .route("/repos/{id}/export.csv", get(export::export_csv))
+        .route("/repos/{id}/export.json", get(export::export_json))
         .route("/repos/{id}/events", post(events::event_create))
         // One path, three methods: the display row a cancelled edit swaps back
         // in, and the two mutations that name an existing event.

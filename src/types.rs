@@ -2,7 +2,7 @@
 //! GitHub repo API response the db layer needs, and derives `Deserialize` so
 //! the http client can decode straight into it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One day's (or point-in-time's) observed counter snapshot. All fields are
 /// `Option`: `None` = not observed this sync, distinct from `Some(0)` =
@@ -93,7 +93,9 @@ pub struct NewEvent {
     pub kind: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Serialises straight into the JSON export — the events are as much a part
+/// of the record as the counters, since they are the only rows the user typed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Event {
     pub id: i64,
     pub repo_id: i64,
@@ -255,6 +257,55 @@ pub struct PopularDay {
     pub title: Option<String>,
     pub count: i64,
     pub uniques: i64,
+}
+
+/// One observed `repo_stats` row, as the JSON export ships it.
+///
+/// Every counter is `Option`, and `None` serialises to `null` rather than `0`:
+/// the file has to carry the same "not observed" that the database does, or an
+/// importer would read a gap as a day of zero traffic.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StatRow {
+    pub date: String,
+    pub stars: Option<i64>,
+    pub forks: Option<i64>,
+    pub watchers: Option<i64>,
+    pub issues: Option<i64>,
+    pub prs: Option<i64>,
+    pub views_count: Option<i64>,
+    pub views_uniques: Option<i64>,
+    pub clones_count: Option<i64>,
+    pub clones_uniques: Option<i64>,
+}
+
+/// One observed release-asset reading. `download_count` is cumulative for that
+/// `(release_tag, asset_name)` on that day, not the day's downloads.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReleaseAssetRow {
+    pub date: String,
+    pub release_tag: String,
+    pub asset_name: String,
+    pub download_count: i64,
+}
+
+/// One observed GHCR pull reading, cumulative like the asset counters.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContainerPullRow {
+    pub date: String,
+    pub pull_count: i64,
+}
+
+/// One observed referrer or popular-path row. `name` is the referrer host or
+/// the path; `title` is only ever set for paths.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PopularRow {
+    pub date: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub count: i64,
+    pub uniques: i64,
+    pub count_delta: i64,
+    pub uniques_delta: i64,
 }
 
 /// Subset of GitHub's repo API response, shared by the http client (which

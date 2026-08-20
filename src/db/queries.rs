@@ -4,8 +4,9 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::errors::DbError;
 use crate::types::{
-    AssetSnapshot, ChangeMetric, Event, GhRepo, Metric, NewEvent, PopularDay, PopularItem,
-    PopularKind, RepoChange, RepoOverview, RepoRow, StatSnapshot, TrafficDay, TrafficKind,
+    AssetSnapshot, ChangeMetric, ContainerPullRow, Event, GhRepo, Metric, NewEvent, PopularDay,
+    PopularItem, PopularKind, PopularRow, ReleaseAssetRow, RepoChange, RepoOverview, RepoRow,
+    StatRow, StatSnapshot, TrafficDay, TrafficKind,
 };
 
 /// Settings key holding the GitHub PAT the setup page saved.
@@ -1131,6 +1132,140 @@ pub fn event_kinds(conn: &Connection, repo_id: i64) -> Result<Vec<String>, DbErr
     )?;
     let rows = stmt
         .query_map(params![repo_id], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// How many days of history a repo has, counting both ends — a repo first
+/// observed today spans one day, and one never synced spans none.
+///
+/// The measure both full-history readers share: the repo page floors it so a
+/// one-column chart does not look broken, the export does not because a data
+/// file has no such problem. Keeping the span itself in one place is what
+/// stops the two drifting apart.
+///
+/// A stored date in the future (clock skew) would give a negative span; the
+/// `unwrap_or(0)` catches that along with the never-synced case.
+pub fn history_span(conn: &Connection, repo_id: i64) -> Result<u32, DbError> {
+    let today = chrono::Utc::now().date_naive();
+    let span = first_observed_date(conn, repo_id)?
+        .and_then(|date| chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
+        .map_or(0, |first| (today - first).num_days() + 1);
+    Ok(u32::try_from(span).unwrap_or(0))
+}
+
+/// `PRAGMA user_version` — which migration the file is at. Stamped into the
+/// JSON export so a later reader can tell which shape it is holding.
+pub fn schema_version(conn: &Connection) -> Result<i64, DbError> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+/// Every observed `repo_stats` row, oldest first.
+///
+/// Raw: no carry-forward and no dense calendar, unlike [`dense_series`]. An
+/// unobserved column stays `NULL` and an unobserved day has no row at all,
+/// which is what the storage actually holds — filling either in is a render
+/// decision, and the JSON export is deliberately not a render.
+pub fn export_stats(conn: &Connection, repo_id: i64) -> Result<Vec<StatRow>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT date, stars, forks, watchers, issues, prs,
+                views_count, views_uniques, clones_count, clones_uniques
+         FROM repo_stats WHERE repo_id = ?1 ORDER BY date",
+    )?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(StatRow {
+                date: r.get(0)?,
+                stars: r.get(1)?,
+                forks: r.get(2)?,
+                watchers: r.get(3)?,
+                issues: r.get(4)?,
+                prs: r.get(5)?,
+                views_count: r.get(6)?,
+                views_uniques: r.get(7)?,
+                clones_count: r.get(8)?,
+                clones_uniques: r.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every observed release-asset reading, oldest first.
+pub fn export_release_assets(
+    conn: &Connection,
+    repo_id: i64,
+) -> Result<Vec<ReleaseAssetRow>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT date, release_tag, asset_name, download_count
+         FROM release_assets WHERE repo_id = ?1
+         ORDER BY date, release_tag, asset_name",
+    )?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(ReleaseAssetRow {
+                date: r.get(0)?,
+                release_tag: r.get(1)?,
+                asset_name: r.get(2)?,
+                download_count: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every observed GHCR pull reading, oldest first.
+pub fn export_container_pulls(
+    conn: &Connection,
+    repo_id: i64,
+) -> Result<Vec<ContainerPullRow>, DbError> {
+    let mut stmt = conn
+        .prepare("SELECT date, pull_count FROM container_pulls WHERE repo_id = ?1 ORDER BY date")?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(ContainerPullRow {
+                date: r.get(0)?,
+                pull_count: r.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every observed referrer or path row, oldest first, deltas included.
+///
+/// Unlike [`popular_items`] this aggregates nothing: the daily rows are the
+/// record, and the all-time rollup that page shows is one reading of them.
+pub fn export_popular(
+    conn: &Connection,
+    repo_id: i64,
+    kind: PopularKind,
+) -> Result<Vec<PopularRow>, DbError> {
+    // Table and key are chosen here from a two-variant enum, never from input.
+    let (table, key, title) = match kind {
+        PopularKind::Referrers => ("repo_referrers", "referrer", "NULL"),
+        PopularKind::Paths => ("repo_popular_paths", "path", "title"),
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT date, {key}, {title}, count, uniques, count_delta, uniques_delta
+         FROM {table} WHERE repo_id = ?1 ORDER BY date, {key}"
+    ))?;
+    let rows = stmt
+        .query_map(params![repo_id], |r| {
+            Ok(PopularRow {
+                date: r.get(0)?,
+                name: r.get(1)?,
+                title: r.get(2)?,
+                count: r.get(3)?,
+                uniques: r.get(4)?,
+                count_delta: r.get(5)?,
+                uniques_delta: r.get(6)?,
+            })
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
