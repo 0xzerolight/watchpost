@@ -373,39 +373,6 @@ async fn a_db_failure_is_a_page_not_a_stack_trace() {
     assert!(!body.contains("repo_stats"), "schema leaked: {body}");
 }
 
-/// The feed's whole reason to exist: the cards show a level, this shows the
-/// difference between two of them, over data already collected.
-#[tokio::test]
-async fn the_feed_reports_what_moved_since_the_last_observation() {
-    let h = harness();
-    h.seed_repo(ID_A, REPO_A, true).await;
-    h.seed_stats(ID_A, days_ago(2), 137, 42, 7).await;
-    h.seed_stats(ID_A, days_ago(1), 140, 42, 6).await;
-
-    let body = body_string(h.get("/").await).await;
-    assert!(body.contains("Recent changes"), "body was {body}");
-    assert!(body.contains("+3 stars"), "body was {body}");
-    assert!(body.contains("\u{2212}1 open issue"), "body was {body}");
-    // Forks did not move, so they are not a line.
-    assert!(!body.contains("forks</span>"), "body was {body}");
-}
-
-/// One observation is a reading, not news — an install whose first sync has
-/// just landed must not open with a fictional "+137 stars".
-#[tokio::test]
-async fn a_freshly_synced_repo_reports_no_changes() {
-    let h = harness();
-    h.seed_repo(ID_A, REPO_A, true).await;
-    h.seed_stats(ID_A, days_ago(1), 137, 42, 7).await;
-
-    let body = body_string(h.get("/").await).await;
-    assert!(
-        body.contains("Nothing changed in the last 14 days."),
-        "body was {body}"
-    );
-    assert!(!body.contains("+137"), "body was {body}");
-}
-
 /// A repo name is user-controlled enough to be worth pinning: maud escapes it,
 /// and the `spark-data` island must not be breakable by one either.
 #[tokio::test]
@@ -417,4 +384,24 @@ async fn markup_escapes_repo_names() {
     let body = body_string(h.get("/").await).await;
     assert!(!body.contains("<script>alert(1)"), "body was {body}");
     assert!(body.contains("&lt;script&gt;"), "body was {body}");
+}
+
+/// The demotion, pinned at the router: the dashboard is the repos, and what
+/// moved lives on /analytics.
+#[tokio::test]
+async fn the_dashboard_is_cards_only() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    // Two days of moving stars, so the feed would have something to say.
+    h.seed_stats(ID_A, days_ago(2), 137, 42, 7).await;
+    h.seed_stats(ID_A, days_ago(1), 140, 42, 6).await;
+
+    let body = body_string(h.get("/").await).await;
+
+    assert!(!body.contains("Recent changes"), "body was {body}");
+    assert!(!body.contains("wp-changes"), "body was {body}");
+    assert!(!body.contains("+3 stars"), "body was {body}");
+    // The cards it was burying are still there.
+    assert!(body.contains(r#"class="wp-cards""#), "body was {body}");
+    assert!(body.contains(REPO_A), "body was {body}");
 }

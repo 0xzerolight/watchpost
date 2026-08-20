@@ -16,11 +16,12 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::routes::html::analytics::{
-    AnalyticsView, LeaderRow, PortfolioPayload, PortfolioSeries, Totals, analytics_body,
+    AnalyticsView, CHANGES_DAYS, CHANGES_MAX_ROWS, LeaderRow, PortfolioPayload, PortfolioSeries,
+    Totals, analytics_body,
 };
 use crate::routes::html::{ALL_MIN_DAYS, NavItem, PERIOD_COUNT, PERIODS, base, parse_days};
 use crate::state::AppState;
-use crate::types::Metric;
+use crate::types::{Metric, RepoChange};
 
 #[derive(Debug, Deserialize)]
 pub struct AnalyticsParams {
@@ -50,6 +51,7 @@ pub async fn analytics_page(
             totals: &page.totals,
             payload: &page.payload,
             leaders: &page.leaders,
+            changes: &page.changes,
             days: selected,
         }),
     ))
@@ -60,6 +62,7 @@ struct PageData {
     totals: Totals,
     payload: PortfolioPayload,
     leaders: Vec<LeaderRow>,
+    changes: Vec<RepoChange>,
 }
 
 /// The portfolio series is built from one [`queries::dense_series`] call per
@@ -121,6 +124,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             series: PortfolioSeries { stars: stars_total },
         },
         leaders,
+        changes: queries::recent_changes(conn, CHANGES_DAYS, CHANGES_MAX_ROWS)?,
     })
 }
 

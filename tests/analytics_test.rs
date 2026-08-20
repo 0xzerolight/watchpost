@@ -124,6 +124,26 @@ impl Harness {
             .unwrap();
     }
 
+    async fn seed_stats(&self, id: i64, date: String, stars: i64, forks: i64, issues: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                queries::upsert_stats(
+                    c,
+                    id,
+                    &date,
+                    &StatSnapshot {
+                        stars: Some(stars),
+                        forks: Some(forks),
+                        issues: Some(issues),
+                        ..StatSnapshot::default()
+                    },
+                )
+            })
+            .await
+            .unwrap();
+    }
+
     async fn seed_asset(&self, id: i64, date: String, tag: &str, name: &str, count: i64) {
         let rows = vec![AssetSnapshot {
             release_tag: tag.to_owned(),
@@ -463,4 +483,41 @@ async fn downloads_are_the_newest_count_per_asset_not_a_sum_of_rows() {
 
     // 15 + 140, not the 377 a bare SUM over six cumulative snapshots gives.
     assert_eq!(total, Some(155));
+}
+
+// ---------------------------------------------------------------------------
+// The changes feed
+// ---------------------------------------------------------------------------
+
+/// The feed's whole reason to exist: the cards show a level, this shows the
+/// difference between two of them, over data already collected.
+#[tokio::test]
+async fn the_feed_reports_what_moved_since_the_last_observation() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stats(ID_A, days_ago(2), 137, 42, 7).await;
+    h.seed_stats(ID_A, days_ago(1), 140, 42, 6).await;
+
+    let body = h.body("/analytics").await;
+    assert!(body.contains("Recent changes"), "body was {body}");
+    assert!(body.contains("+3 stars"), "body was {body}");
+    assert!(body.contains("\u{2212}1 open issue"), "body was {body}");
+    // Forks did not move, so they are not a line.
+    assert!(!body.contains("forks</span>"), "body was {body}");
+}
+
+/// One observation is a reading, not news — an install whose first sync has
+/// just landed must not open with a fictional "+137 stars".
+#[tokio::test]
+async fn a_freshly_synced_repo_reports_no_changes() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stats(ID_A, days_ago(1), 137, 42, 7).await;
+
+    let body = h.body("/analytics").await;
+    assert!(
+        body.contains("Nothing changed in the last 14 days."),
+        "body was {body}"
+    );
+    assert!(!body.contains("+137"), "body was {body}");
 }

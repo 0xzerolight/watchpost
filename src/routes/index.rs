@@ -11,14 +11,14 @@ use maud::Markup;
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
-use crate::routes::html::index::{CHANGES_DAYS, CHANGES_MAX_ROWS, Card, SPARK_DAYS, index_body};
+use crate::routes::html::index::{Card, SPARK_DAYS, index_body};
 use crate::routes::html::{NavItem, base};
 use crate::state::AppState;
-use crate::types::{Metric, RepoChange};
+use crate::types::Metric;
 
-/// GET / — the recent-changes feed, then one card per tracked, visible repo.
+/// GET / — one card per tracked, visible repo.
 ///
-/// The overview, every sparkline and the feed are gathered inside a single
+/// The overview and every sparkline are gathered inside a single
 /// [`crate::db::Db::call`]: the per-repo star series is one query each, and
 /// hopping to the blocking pool once per repo would cost more than the queries
 /// do. There is no htmx fragment variant — the page has no swap targets.
@@ -26,10 +26,10 @@ pub async fn index_page(
     State(state): State<Arc<AppState>>,
     csrf: CsrfToken,
 ) -> Result<Markup, AppError> {
-    let (cards, changes): (Vec<Card>, Vec<RepoChange>) = state
+    let cards: Vec<Card> = state
         .db
         .call(|c| {
-            let cards: Vec<Card> = queries::repo_overview(c)?
+            queries::repo_overview(c)?
                 .into_iter()
                 .map(|repo| {
                     let spark = queries::dense_series(c, repo.repo_id, Metric::Stars, SPARK_DAYS)?
@@ -38,9 +38,7 @@ pub async fn index_page(
                         .collect();
                     Ok((repo, spark))
                 })
-                .collect::<Result<_, DbError>>()?;
-            let changes = queries::recent_changes(c, CHANGES_DAYS, CHANGES_MAX_ROWS)?;
-            Ok((cards, changes))
+                .collect::<Result<_, DbError>>()
         })
         .await?;
 
@@ -48,6 +46,6 @@ pub async fn index_page(
         "Repositories",
         NavItem::Home,
         &csrf,
-        index_body(&cards, &changes, state.cfg.timezone),
+        index_body(&cards, state.cfg.timezone),
     ))
 }

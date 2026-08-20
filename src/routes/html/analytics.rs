@@ -1,5 +1,6 @@
 //! Markup for the analytics page: the portfolio's totals and its combined star
-//! curve, then one ranked table over every tracked repo.
+//! curve, then one ranked table over every tracked repo, then the
+//! recent-changes feed.
 //!
 //! The whole page is a single render — there are no swap targets here, so
 //! nothing needs its own wrapper id. The period selector sits in the page header
@@ -12,9 +13,18 @@ use serde::Serialize;
 
 use crate::routes::html::repo::chart_card;
 use crate::routes::html::{
-    PERIOD_COUNT, PERIODS, empty_state, json_script, page_header, period_select, table_wrap,
+    PERIOD_COUNT, PERIODS, date_stamp, empty_state, json_script, page_header, period_select,
+    plural, table_wrap,
 };
-use crate::types::RepoOverview;
+use crate::types::{ChangeMetric, RepoChange, RepoOverview};
+
+/// How far back the recent-changes feed looks.
+pub const CHANGES_DAYS: u32 = 14;
+
+/// How many days-with-movement the feed lists. A bound, not a page size: there
+/// is no "show more", because the repo pages are where the full history already
+/// lives.
+pub const CHANGES_MAX_ROWS: usize = 20;
 
 /// The `#chart-data` island, in the one shape `assets/app.js` reads.
 ///
@@ -106,6 +116,7 @@ pub struct AnalyticsView<'a> {
     pub totals: &'a Totals,
     pub payload: &'a PortfolioPayload,
     pub leaders: &'a [LeaderRow],
+    pub changes: &'a [RepoChange],
     pub days: i64,
 }
 
@@ -128,6 +139,7 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
         } @else {
             (portfolio_section(view))
             (leaders_section(view.leaders, view.days))
+            (changes_section(view.changes))
         }
     }
 }
@@ -234,6 +246,65 @@ fn level(value: Option<i64>) -> Markup {
     html! { @match value { Some(n) => (n), None => "—" } }
 }
 
+/// What moved lately, newest day first.
+///
+/// Last on the page by design: the sections above answer how the portfolio is
+/// doing, and this answers what changed to get it there. Each row is one repo on
+/// one UTC day, and a day with nothing to report is simply absent — see
+/// [`crate::db::queries::recent_changes`] for what counts as a change.
+pub fn changes_section(changes: &[RepoChange]) -> Markup {
+    html! {
+        section class="wp-changes" {
+            h2 { "Recent changes" }
+            @if changes.is_empty() {
+                (empty_state(
+                    "Nothing changed in the last 14 days.",
+                    None,
+                ))
+            } @else {
+                ul {
+                    @for change in changes {
+                        li {
+                            span class="wp-change-day wp-muted wp-small" { (date_stamp(&change.date)) }
+                            a class="wp-change-repo" href=(format!("/repos/{}", change.repo_id)) {
+                                (change.name)
+                            }
+                            span class="wp-change-deltas" {
+                                @for (metric, delta) in &change.deltas {
+                                    (delta_chip(*metric, *delta))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One "+3 stars" / "-1 open issue".
+///
+/// The sign is spelled out rather than left to colour alone, so the direction
+/// survives a monochrome screen and a reader who cannot separate the two hues.
+/// It is U+2212 MINUS SIGN, not a hyphen: at this size a hyphen next to a
+/// digit reads as punctuation.
+fn delta_chip(metric: ChangeMetric, delta: i64) -> Markup {
+    let (one, many) = metric.labels();
+    let class = if delta > 0 {
+        "wp-delta wp-delta-up"
+    } else {
+        "wp-delta wp-delta-down"
+    };
+    html! {
+        span class=(class) {
+            (if delta > 0 { "+" } else { "\u{2212}" })
+            (delta.abs())
+            " "
+            (plural(delta.abs(), one, many))
+        }
+    }
+}
+
 fn portfolio_section(view: &AnalyticsView) -> Markup {
     html! {
         section {
@@ -319,6 +390,7 @@ mod tests {
             totals,
             payload,
             leaders,
+            changes: &[],
             days: ALL_DAYS,
         }
     }
@@ -462,5 +534,71 @@ mod tests {
             out.find("octo/b").unwrap() < out.find("octo/a").unwrap(),
             "out was {out}"
         );
+    }
+
+    fn change(deltas: Vec<(ChangeMetric, i64)>) -> RepoChange {
+        RepoChange {
+            repo_id: 7,
+            name: "octo/x".into(),
+            date: "2026-08-19".into(),
+            deltas,
+        }
+    }
+
+    #[test]
+    fn a_delta_spells_out_its_direction_and_pluralises() {
+        let out = changes_section(&[change(vec![
+            (ChangeMetric::Stars, 3),
+            (ChangeMetric::Issues, -1),
+        ])])
+        .into_string();
+        assert!(
+            out.contains(r#"<span class="wp-delta wp-delta-up">+3 stars</span>"#),
+            "out was {out}"
+        );
+        // U+2212 MINUS SIGN, not a hyphen, and the singular noun for one.
+        assert!(
+            out.contains("<span class=\"wp-delta wp-delta-down\">\u{2212}1 open issue</span>"),
+            "out was {out}"
+        );
+        assert!(out.contains(r#"href="/repos/7""#), "out was {out}");
+        assert!(
+            out.contains(r#"<time datetime="2026-08-19">"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn a_quiet_fortnight_says_so_instead_of_rendering_an_empty_list() {
+        let out = changes_section(&[]).into_string();
+        assert!(
+            out.contains("<p>Nothing changed in the last 14 days.</p>"),
+            "out was {out}"
+        );
+        assert!(!out.contains("<ul>"), "out was {out}");
+    }
+
+    #[test]
+    fn the_feed_is_the_last_section_on_the_page() {
+        // The demotion, pinned: the feed supports the numbers above it rather
+        // than standing in front of them.
+        let payload = payload(vec![Some(12)]);
+        let totals = Totals::default();
+        let leaders = [leader("octo/a", Some(3))];
+        let changes = [change(vec![(ChangeMetric::Stars, 3)])];
+        let out = analytics_body(&AnalyticsView {
+            totals: &totals,
+            payload: &payload,
+            leaders: &leaders,
+            changes: &changes,
+            days: ALL_DAYS,
+        })
+        .into_string();
+
+        let totals_at = out.find("wp-totals").expect("totals rendered");
+        let leaders_at = out.find("wp-leaders").expect("leaderboard rendered");
+        let changes_at = out.find("wp-changes").expect("feed rendered");
+        assert!(totals_at < leaders_at, "out was {out}");
+        assert!(leaders_at < changes_at, "out was {out}");
     }
 }
