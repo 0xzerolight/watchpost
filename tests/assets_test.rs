@@ -118,6 +118,9 @@ async fn app_js_defines_the_watchpost_namespace() {
         // The period selector carries no inline handler, so this delegated
         // listener is the only thing that makes it do anything.
         "data-period-select",
+        // The analytics leaderboard ships every period's figure and hides all
+        // but one; this attribute is the only thing that moves them.
+        "data-period-value",
         // Same for the kind chips: these two attributes are how the delegated
         // click listener finds them and how it tells a kind from the reset.
         "data-chip-kind",

@@ -351,6 +351,99 @@ async fn a_tracked_repo_with_no_history_says_so_instead_of_charting_nothing() {
     assert!(!body.contains("wp-period"), "{body}");
 }
 
+// ---------------------------------------------------------------------------
+// The leaderboard
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_leaderboard_reports_growth_over_the_selected_period() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    // 100 stars 89 days back, 147 a week back, 150 today: +3 over the last
+    // seven days, +50 over the last ninety.
+    h.seed_stars(ID_A, days_ago(89), 100).await;
+    h.seed_stars(ID_A, days_ago(7), 147).await;
+    h.seed_stars(ID_A, days_ago(0), 150).await;
+
+    let body = h.body("/analytics?days=7").await;
+
+    // Every period is in the markup; only the requested one is visible.
+    assert!(
+        body.contains(r#"<span data-period-value="7">+3</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<span data-period-value="90" hidden>+50</span>"#),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_repo_first_seen_inside_the_window_reports_no_growth_not_its_whole_count() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    // Only ever read once, at 400 stars. "+400 in 7 days" would be a fiction.
+    h.seed_stars(ID_A, days_ago(2), 400).await;
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(
+        body.contains(r#"<span data-period-value="7">0</span>"#),
+        "{body}"
+    );
+    assert!(!body.contains("+400"), "{body}");
+}
+
+#[tokio::test]
+async fn the_leaderboard_is_ranked_by_stars() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    // A sorts first by name, B has more stars — so a name-ordered table would
+    // put them the other way round.
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    h.seed_stars(ID_B, days_ago(0), 90).await;
+
+    let body = h.body("/analytics").await;
+    let table = body
+        .split("wp-leaders")
+        .nth(1)
+        .expect("leaderboard rendered");
+
+    assert!(
+        table.find(REPO_B).unwrap() < table.find(REPO_A).unwrap(),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_repo_with_no_releases_gets_no_downloads_column() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+
+    let body = h.body("/analytics").await;
+
+    // A column that is an em dash in every row is furniture.
+    assert!(!body.contains("<th scope=\"col\">Downloads</th>"), "{body}");
+}
+
+#[tokio::test]
+async fn a_repo_name_cannot_break_out_of_the_leaderboard() {
+    let h = harness();
+    h.seed_repo(ID_A, "octo/<script>alert(1)</script>", true)
+        .await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+
+    let body = h.body("/analytics").await;
+
+    assert!(!body.contains("<script>alert(1)</script>"), "{body}");
+    assert!(
+        body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn downloads_are_the_newest_count_per_asset_not_a_sum_of_rows() {
     let h = harness();

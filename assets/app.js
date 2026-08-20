@@ -1443,7 +1443,28 @@
     };
   }
 
-  /* Show the trailing `days` of `payload` on the repo charts. */
+  /*
+   * Show the figure that belongs to the period on screen.
+   *
+   * The analytics leaderboard renders every period's number and hides all but
+   * one, rather than having the client compute them — see `period_cell` in
+   * src/routes/html/analytics.rs for why. This is the whole client-side half: a
+   * `hidden` flip, no text written and nothing parsed.
+   *
+   * Called from `renderCharts` so a first render and every later zoom share one
+   * call site — put it in `setPeriod` instead and a `?days=30` page load would
+   * zoom the chart while leaving the table on "All". A page with no
+   * `[data-period-value]` — every page but this one — loops zero times.
+   */
+  function updatePeriodValues(days) {
+    var cells = document.querySelectorAll("[data-period-value]");
+    for (var i = 0; i < cells.length; i++) {
+      cells[i].hidden =
+        normalisePeriod(cells[i].getAttribute("data-period-value")) !== days;
+    }
+  }
+
+  /* Show the trailing `days` of `payload` on the charts. */
   function renderCharts(payload, days) {
     var view = computeView(payload, days);
     // One read for all charts, and the array each of them goes on holding
@@ -1452,6 +1473,7 @@
     CHART_SPECS.forEach(function (spec) {
       syncChart(spec, view, events);
     });
+    updatePeriodValues(days);
     applyFilter();
   }
 

@@ -16,9 +16,9 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::routes::html::analytics::{
-    AnalyticsView, PortfolioPayload, PortfolioSeries, Totals, analytics_body,
+    AnalyticsView, LeaderRow, PortfolioPayload, PortfolioSeries, Totals, analytics_body,
 };
-use crate::routes::html::{ALL_MIN_DAYS, NavItem, base, parse_days};
+use crate::routes::html::{ALL_MIN_DAYS, NavItem, PERIOD_COUNT, PERIODS, base, parse_days};
 use crate::state::AppState;
 use crate::types::Metric;
 
@@ -49,6 +49,7 @@ pub async fn analytics_page(
         analytics_body(&AnalyticsView {
             totals: &page.totals,
             payload: &page.payload,
+            leaders: &page.leaders,
             days: selected,
         }),
     ))
@@ -58,6 +59,7 @@ pub async fn analytics_page(
 struct PageData {
     totals: Totals,
     payload: PortfolioPayload,
+    leaders: Vec<LeaderRow>,
 }
 
 /// The portfolio series is built from one [`queries::dense_series`] call per
@@ -78,6 +80,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
     // there is no first repo to take a calendar from.
     let mut labels: Vec<String> = Vec::new();
     let mut stars_total: Vec<Option<i64>> = Vec::new();
+    let mut leaders = Vec::with_capacity(repos.len());
 
     for repo in &repos {
         let rows = queries::dense_series(conn, repo.repo_id, Metric::Stars, window)?;
@@ -85,8 +88,30 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             labels = rows.iter().map(|(date, _)| date.clone()).collect();
             stars_total = vec![None; labels.len()];
         }
-        add_into(&mut stars_total, rows.iter().map(|(_, value)| *value));
+        let stars: Vec<Option<i64>> = rows.into_iter().map(|(_, value)| value).collect();
+        add_into(&mut stars_total, stars.iter().copied());
+
+        let views: Vec<Option<i64>> =
+            queries::dense_series(conn, repo.repo_id, Metric::ViewsCount, window)?
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect();
+
+        leaders.push(LeaderRow {
+            repo_id: repo.repo_id,
+            name: repo.name.clone(),
+            stars: repo.stars,
+            star_growth: per_period(&stars, growth),
+            views: per_period(&views, sum_observed),
+            downloads: queries::latest_downloads_total(conn, repo.repo_id)?,
+        });
     }
+
+    // Ranked here rather than in SQL: the ordering is over three sources that
+    // only agree once they are one row wide, and this is the same handful of
+    // repos the dashboard already renders as cards. Name breaks a tie so the
+    // order is stable across renders.
+    leaders.sort_by(|a, b| b.stars.cmp(&a.stars).then_with(|| a.name.cmp(&b.name)));
 
     Ok(PageData {
         totals: Totals::of(&repos),
@@ -95,6 +120,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             labels,
             series: PortfolioSeries { stars: stars_total },
         },
+        leaders,
     })
 }
 
@@ -113,6 +139,52 @@ fn add_into(total: &mut [Option<i64>], part: impl Iterator<Item = Option<i64>>) 
     }
 }
 
+/// One figure per entry of [`PERIODS`], in that order, from the whole-history
+/// series `values`.
+///
+/// The tail slices are the same ones `tail()` in assets/app.js takes to zoom a
+/// chart, which is what keeps "last 30 days" in the table and the 30-day view of
+/// the chart above it describing the same thirty days.
+fn per_period(
+    values: &[Option<i64>],
+    figure: impl Fn(&[Option<i64>]) -> Option<i64>,
+) -> [Option<i64>; PERIOD_COUNT] {
+    PERIODS.map(|(days, _)| {
+        let from = if days > 0 {
+            values.len().saturating_sub(days as usize)
+        } else {
+            0
+        };
+        figure(&values[from..])
+    })
+}
+
+/// How far a carried-forward level moved across the window: its last observed
+/// value minus its first.
+///
+/// The first *observed* value, not the window's opening slot. A repo watchpost
+/// started watching halfway through the window has no reading at the open, and
+/// treating that gap as a zero would report the repo's entire star count as
+/// growth — the fiction [`queries::recent_changes`] refuses when it drops a
+/// first observation. Anchoring on the first reading instead always reports a
+/// real difference between two real readings; it is simply measured over a
+/// shorter span than the column heading names, which is the honest answer when a
+/// shorter span is all there is.
+///
+/// `None` when nothing in the window was observed at all — an empty cell, not a
+/// confident zero.
+fn growth(values: &[Option<i64>]) -> Option<i64> {
+    let first = values.iter().find_map(|value| *value)?;
+    let last = values.iter().rev().find_map(|value| *value)?;
+    Some(last - first)
+}
+
+/// A rate series summed over the window, `None` only when nothing in it was
+/// observed — the same distinction `agg`'s "sum" mode keeps client-side.
+fn sum_observed(values: &[Option<i64>]) -> Option<i64> {
+    values.iter().flatten().copied().reduce(|a, b| a + b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +201,52 @@ mod tests {
         let mut total = vec![None, None];
         add_into(&mut total, [Some(1), Some(2), Some(3)].into_iter());
         assert_eq!(total, vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn growth_anchors_on_the_first_reading_not_the_window_edge() {
+        // One reading in the window: nothing is known to have moved, and the
+        // repo's whole star count is not growth.
+        assert_eq!(growth(&[None, None, Some(400)]), Some(0));
+        assert_eq!(growth(&[None, Some(100), Some(140)]), Some(40));
+        assert_eq!(growth(&[Some(100), Some(100), Some(140)]), Some(40));
+    }
+
+    #[test]
+    fn growth_is_none_when_nothing_in_the_window_was_observed() {
+        // An empty cell, not a confident zero.
+        assert_eq!(growth(&[None, None]), None);
+        assert_eq!(growth(&[]), None);
+    }
+
+    #[test]
+    fn growth_reports_a_fall() {
+        assert_eq!(growth(&[Some(140), Some(137)]), Some(-3));
+    }
+
+    #[test]
+    fn sum_observed_is_none_only_when_nothing_was_observed() {
+        assert_eq!(sum_observed(&[None, None]), None);
+        // An observed zero is a number, not a gap.
+        assert_eq!(sum_observed(&[None, Some(0)]), Some(0));
+        assert_eq!(sum_observed(&[Some(3), None, Some(4)]), Some(7));
+    }
+
+    #[test]
+    fn per_period_slices_the_same_tails_the_client_zooms_to() {
+        let values: Vec<Option<i64>> = (0..400).map(|i| Some(i as i64)).collect();
+        let figures = per_period(&values, |slice| Some(slice.len() as i64));
+        for (i, (days, _)) in PERIODS.iter().enumerate() {
+            let expected = if *days > 0 { (*days).min(400) } else { 400 };
+            assert_eq!(figures[i], Some(expected), "period {days}");
+        }
+    }
+
+    #[test]
+    fn per_period_does_not_overrun_a_short_series() {
+        let values = vec![Some(1), Some(2)];
+        let figures = per_period(&values, |slice| Some(slice.len() as i64));
+        // The 7-day column over two days of history is two days, not a panic.
+        assert_eq!(figures[0], Some(2));
     }
 }

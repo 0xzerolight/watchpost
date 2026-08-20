@@ -243,6 +243,17 @@
 }
 
 /*
+ * The leaderboard's figures. Right-aligned and tabular so a column reads as a
+ * ranking down its digits rather than as ragged words; the repo name keeps the
+ * default alignment because it is the row's label, not one of its numbers.
+ */
+.wp-leaders td:not(:first-child),
+.wp-leaders th:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
  * Recent-changes feed. One row per repo per day, each row a date, a repo link
  * and however many deltas moved that day. `flex-wrap` on the row rather than a
  * grid: the delta count varies from one to seven, and a grid would either
