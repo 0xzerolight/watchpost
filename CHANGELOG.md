@@ -9,18 +9,47 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Recent changes on the dashboard.** A feed above the repo cards lists what moved, one row per
-  repo per UTC day: stars, forks, watchers, open issues, open PRs, release downloads and container
-  pulls, each as a signed delta. The cards show levels, so noticing that three stars arrived
-  yesterday used to mean having memorised the old number — the difference was already in the
-  database and nothing surfaced it. Four rules decide what counts as a change. The predecessor is
-  the last *observed* value rather than the previous calendar day, so a sync gap produces one change
-  on the day the next observation landed instead of a phantom pair; a first observation is dropped,
-  because the first sync of a 400-star repo is a reading and "+400 stars" would be a fiction; a zero
-  delta produces no row at all; and views and clones are excluded, being per-day rates where the
-  day's own value already is the change. Day resolution is what `repo_stats` stores, so the feed
-  renders the entire existing history the moment it ships, backfilled star history included. No
-  schema migration, no new configuration and no new query per repo — one pass over three tables.
+- **An Analytics page** (third nav entry, `/analytics`), answering how the tracked repos are doing
+  where the dashboard answers which ones they are. Three sections, and one period selector in the
+  header scoping the first two.
+
+  The **portfolio** opens with the current totals — stars, forks, open issues, open PRs, each the
+  sum of every tracked repo's latest observed row — over a combined star curve. The curve is built
+  by summing each repo's dense carried-forward series in Rust rather than by a cross-repo query:
+  `dense_series` is the single definition of what a gap and a carried-forward level mean, and a
+  second reader would have been a second definition. It is also faster here, because migration v2
+  deliberately dropped the index a `date`-leading scan of `repo_stats` would need. A repo watchpost
+  had not started watching contributes nothing to the days before its first reading rather than a
+  zero, so its arrival is a step up in the total and never a dip through it.
+
+  The **repo table** ranks every tracked repo by stars, with columns for star growth over the
+  selected period, views over it, and release downloads to date. One table with four columns rather
+  than four "top by X" lists: the portfolio is the same handful of repos the dashboard renders as
+  cards, four rankings over five names carry no information, and one table answers the
+  cross-question four cannot — that the repo with the most stars gets the fewest views. Growth
+  measures from a repo's first *observed* value inside the window, not from the window's edge, so a
+  repo first seen halfway through reports a real difference between two real readings instead of its
+  whole star count. Downloads are the newest count per release asset summed, not a sum of daily
+  rows, which would multiply the same cumulative counter by the number of days it was read. A
+  column nothing ever filled is not rendered at all.
+
+  The **recent-changes feed** lists what moved, one row per repo per UTC day: stars, forks,
+  watchers, open issues, open PRs, release downloads and container pulls, each as a signed delta.
+  Four rules decide what counts as a change. The predecessor is the last *observed* value rather
+  than the previous calendar day, so a sync gap produces one change on the day the next observation
+  landed instead of a phantom pair; a first observation is dropped, because the first sync of a
+  400-star repo is a reading and "+400 stars" would be a fiction; a zero delta produces no row at
+  all; and views and clones are excluded, being per-day rates where the day's own value already is
+  the change. Day resolution is what `repo_stats` stores, so the feed renders the entire existing
+  history the moment it ships, backfilled star history included.
+
+  No schema migration and no new configuration. The period selector is the repo page's, extracted
+  into a module that now owns the allowlist, the parser and the control together — so an option can
+  never be offered that the parser then rejects. The chart is the repo page's too: the page ships
+  the portfolio total under the series name and canvas id that page already uses, so the bucketing,
+  the zoom, the theme following, the tooltip and the gradient all arrive already written and the
+  only new client code is a six-line `hidden` flip for the table's period columns.
+
 - **CSV and JSON export per repo** (`Export: CSV · JSON` in the repo page header). Both span the
   whole history and take no period, because the history is the point. The CSV is the chart data
   flattened — one row per UTC day, built from the same dense readers the charts plot, so a cell and
@@ -33,6 +62,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   operational rather than history and appear in neither. Both are plain read-only GETs, and like
   every other page they are unauthenticated. The repo-name half of the filename is sanitised, since
   it is upstream-owned and would otherwise be able to write the response's own headers.
+
+### Changed
+
+- **The dashboard is repo cards again.** The recent-changes feed briefly sat above them; at up to
+  twenty full-width rows it pushed the repos the page is named after off the first screen, which is
+  the wrong trade for a supporting figure. It now lives on the Analytics page, last, under the
+  numbers it explains.
 
 ## [1.1.0] - 2026-08-20
 
