@@ -427,6 +427,7 @@ async fn index_renders_the_base_layout() {
     assert!(body.contains("/assets/app.css?v="), "{body}");
     assert!(body.contains("/assets/app.js?v="), "{body}");
 
+    assert!(body.contains(r#"href="/analytics""#), "{body}");
     assert!(body.contains(r#"href="/settings""#), "{body}");
     assert!(
         body.contains(r#"<main id="main" class="container" tabindex="-1">"#),
@@ -464,6 +465,21 @@ async fn settings_marks_only_its_own_nav_entry() {
     assert_eq!(body.matches(r#"aria-current="page""#).count(), 1, "{body}");
     assert!(
         body.contains(r#"<a href="/settings" aria-current="page">Settings</a>"#),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn analytics_marks_only_its_own_nav_entry() {
+    let body = body_string(get("/analytics").await).await;
+
+    assert!(
+        body.contains("<title>Analytics · watchpost</title>"),
+        "{body}"
+    );
+    assert_eq!(body.matches(r#"aria-current="page""#).count(), 1, "{body}");
+    assert!(
+        body.contains(r#"<a href="/analytics" aria-current="page">Analytics</a>"#),
         "{body}"
     );
 }

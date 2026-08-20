@@ -17,6 +17,7 @@ use crate::csrf::CsrfToken;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavItem {
     Home,
+    Analytics,
     Settings,
     None,
 }

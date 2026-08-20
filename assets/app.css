@@ -160,6 +160,15 @@
   gap: var(--wp-space-4);
 }
 
+/*
+ * A single wide card, for a chart that is the whole section rather than one of
+ * several. The 18rem track above would leave it sitting in a column with empty
+ * space beside it on a desktop.
+ */
+.wp-cards-wide {
+  grid-template-columns: 1fr;
+}
+
 /* Pico gives articles a generous default margin, which a grid already spaces. */
 .wp-card {
   margin: 0;
@@ -200,6 +209,37 @@
   display: flex;
   flex-direction: column;
   padding: 0;
+}
+
+/*
+ * Portfolio totals. `auto-fit` rather than the card grid's `auto-fill`: there
+ * are exactly four tiles and they should share the full width at any viewport
+ * instead of leaving a fifth column's worth of gap on a wide screen.
+ */
+.wp-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: var(--wp-space-4);
+  margin: 0 0 var(--wp-space-5);
+  padding: 0;
+  list-style: none;
+}
+
+.wp-totals li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wp-space-1);
+  padding: 0;
+}
+
+/*
+ * Tabular figures so the four totals line up on their digits. Large enough to
+ * be the section's headline number, not so large it competes with the h1.
+ */
+.wp-total-value {
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 /*
