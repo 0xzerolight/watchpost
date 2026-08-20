@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-20
+
 ### Added
 
 - **GHCR container pull counts, auto-detected.** Every sync also fetches each tracked repo's
@@ -19,6 +21,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   monotonic MAX, same rules as release assets).
 
 ### Changed
+
+- **The repo charts are redrawn on a validated palette.** Each series is a gradient-filled line on
+  a palette checked for colourblind separation and 3:1 contrast against the card surface. The axis
+  borders and vertical gridlines are gone, dates read `Aug 19` rather than `2026-08-19`, counts past
+  five digits read `12.3K`, and the tooltip takes the card's own surface and ink instead of the
+  library default. Event markers drop to a half-strength dashed line under a ringed dot, so a
+  marker sits behind the data it annotates rather than across it.
+
+- **Event-kind chips carry their colour on a dot, not in the text.** The label is body ink at every
+  size, which frees the palette from having to be readable as small text and lets its two lightest
+  slots be used as marks.
 
 - **Chart cards with no observed data are hidden.** A repo that ships only docker images no longer
   shows a blank Downloads pane, and repos without container packages don't get a blank pulls pane;
@@ -117,4 +130,5 @@ never tagged.
 - `compose.yml` publishes to `127.0.0.1:8080` rather than every interface, so the default deployment
   is not reachable from the network.
 
+[1.1.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.1.0
 [1.0.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.0.0
