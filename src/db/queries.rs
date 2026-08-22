@@ -1336,6 +1336,33 @@ pub fn latest_downloads_total(conn: &Connection, repo_id: i64) -> Result<Option<
     )?)
 }
 
+/// GHCR container pulls to date: the newest observed `pull_count`.
+///
+/// One row already carries the whole cumulative counter, so there is nothing to
+/// sum across — unlike [`latest_downloads_total`], where the figure is spread
+/// over one row per release asset and only the newest row of each pair counts.
+/// Summing here would add every day's snapshot of the same counter and report a
+/// number several times the truth.
+///
+/// This is the value [`dense_container_pulls`] carries into its last day, which
+/// is what makes this figure and the last point of that chart the same number by
+/// construction rather than by agreement.
+///
+/// `None` for a repo whose registry page has never been read — including every
+/// repo that publishes no image at all, since [`crate::ghcr::GhcrClient`] treats
+/// a 404 as "nothing to record" rather than a zero.
+pub fn latest_container_pulls(conn: &Connection, repo_id: i64) -> Result<Option<i64>, DbError> {
+    Ok(conn
+        .query_row(
+            "SELECT pull_count FROM container_pulls
+             WHERE repo_id = ?1
+             ORDER BY date DESC LIMIT 1",
+            params![repo_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2486,6 +2513,26 @@ mod tests {
         upsert_container_pulls(&c, 2, &days_ago(1), 99).unwrap();
         let rows = dense_container_pulls(&c, 1, 3).unwrap();
         assert!(rows.iter().all(|(_, v)| v.is_none()), "{rows:?}");
+    }
+
+    #[test]
+    fn latest_container_pulls_is_the_newest_reading_not_a_sum() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        assert_eq!(latest_container_pulls(&c, 1).unwrap(), None);
+        upsert_container_pulls(&c, 1, &days_ago(5), 40).unwrap();
+        upsert_container_pulls(&c, 1, &days_ago(2), 70).unwrap();
+        // 70, not the 110 a bare SUM over two cumulative snapshots gives.
+        assert_eq!(latest_container_pulls(&c, 1).unwrap(), Some(70));
+    }
+
+    #[test]
+    fn latest_container_pulls_ignores_other_repos() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_repo(&c, 2);
+        upsert_container_pulls(&c, 2, &days_ago(1), 99).unwrap();
+        assert_eq!(latest_container_pulls(&c, 1).unwrap(), None);
     }
 
     #[test]

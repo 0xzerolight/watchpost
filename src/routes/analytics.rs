@@ -107,6 +107,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             star_growth: per_period(&stars, growth),
             views: per_period(&views, sum_observed),
             downloads: queries::latest_downloads_total(conn, repo.repo_id)?,
+            pulls: queries::latest_container_pulls(conn, repo.repo_id)?,
         });
     }
 
