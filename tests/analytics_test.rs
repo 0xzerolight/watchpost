@@ -157,6 +157,14 @@ impl Harness {
             .unwrap();
     }
 
+    async fn seed_pulls(&self, id: i64, date: String, pulls: i64) {
+        self.state
+            .db
+            .call(move |c| queries::upsert_container_pulls(c, id, &date, pulls))
+            .await
+            .unwrap();
+    }
+
     async fn hide(&self, id: i64) {
         self.state
             .db
@@ -483,6 +491,42 @@ async fn downloads_are_the_newest_count_per_asset_not_a_sum_of_rows() {
 
     // 15 + 140, not the 377 a bare SUM over six cumulative snapshots gives.
     assert_eq!(total, Some(155));
+}
+
+#[tokio::test]
+async fn a_repo_that_ships_images_but_no_releases_still_gets_a_distribution_column() {
+    // The whole point of the column: a container project publishes no release
+    // assets, so `Downloads` says nothing about how far it has travelled.
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    h.seed_pulls(ID_A, days_ago(2), 40).await;
+    h.seed_pulls(ID_A, days_ago(0), 70).await;
+
+    let body = h.body("/analytics").await;
+
+    assert!(
+        body.contains("<th scope=\"col\">Container pulls</th>"),
+        "{body}"
+    );
+    // The newest reading, not the 110 a sum over two cumulative snapshots gives.
+    assert!(body.contains("<td>70</td>"), "{body}");
+    assert!(!body.contains("<th scope=\"col\">Downloads</th>"), "{body}");
+}
+
+#[tokio::test]
+async fn a_repo_with_no_image_gets_no_container_pulls_column() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+
+    let body = h.body("/analytics").await;
+
+    // A column that is an em dash in every row is furniture.
+    assert!(
+        !body.contains("<th scope=\"col\">Container pulls</th>"),
+        "{body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

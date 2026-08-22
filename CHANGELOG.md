@@ -23,15 +23,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   zero, so its arrival is a step up in the total and never a dip through it.
 
   The **repo table** ranks every tracked repo by stars, with columns for star growth over the
-  selected period, views over it, and release downloads to date. One table with four columns rather
-  than four "top by X" lists: the portfolio is the same handful of repos the dashboard renders as
-  cards, four rankings over five names carry no information, and one table answers the
-  cross-question four cannot — that the repo with the most stars gets the fewest views. Growth
-  measures from a repo's first *observed* value inside the window, not from the window's edge, so a
-  repo first seen halfway through reports a real difference between two real readings instead of its
-  whole star count. Downloads are the newest count per release asset summed, not a sum of daily
-  rows, which would multiply the same cumulative counter by the number of days it was read. A
-  column nothing ever filled is not rendered at all.
+  selected period, views over it, release downloads to date and GHCR container pulls to date. One
+  table with several columns rather than as many "top by X" lists: the portfolio is the same handful
+  of repos the dashboard renders as cards, four rankings over five names carry no information, and
+  one table answers the cross-question four cannot — that the repo with the most stars gets the
+  fewest views. Growth measures from a repo's first *observed* value inside the window, not from the
+  window's edge, so a repo first seen halfway through reports a real difference between two real
+  readings instead of its whole star count. Downloads are the newest count per release asset summed,
+  not a sum of daily rows, which would multiply the same cumulative counter by the number of days it
+  was read; container pulls are the newest reading outright, one row already being the whole
+  counter. The two distribution columns sit side by side because they answer the same question about
+  different distributions — a project shipping an image publishes no release assets, and downloads
+  alone said nothing about how far it had travelled. Both come from data the collector was already
+  writing and the repo pages were already charting. A column nothing ever filled is not rendered at
+  all.
 
   The **recent-changes feed** lists what moved, one row per repo per UTC day: stars, forks,
   watchers, open issues, open PRs, release downloads and container pulls, each as a signed delta.

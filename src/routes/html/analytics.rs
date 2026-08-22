@@ -109,6 +109,12 @@ pub struct LeaderRow {
     /// Release downloads to date. Period-independent: a cumulative total is a
     /// level, like the star count beside it, not a rate.
     pub downloads: Option<i64>,
+    /// GHCR container pulls to date. Period-independent for the reason
+    /// `downloads` is, and separate from it because the two answer the same
+    /// question about different distributions: a repo shipping an image
+    /// publishes no release assets, and one shipping binaries publishes no
+    /// image.
+    pub pulls: Option<i64>,
 }
 
 /// Everything the page renders, borrowed from the handler's one `db.call`.
@@ -167,6 +173,7 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                             th scope="col" { "Growth" }
                             @if cols.views { th scope="col" { "Views" } }
                             @if cols.downloads { th scope="col" { "Downloads" } }
+                            @if cols.pulls { th scope="col" { "Container pulls" } }
                         }
                     }
                     tbody {
@@ -179,6 +186,7 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                                 (period_cell(&row.star_growth, days, true))
                                 @if cols.views { (period_cell(&row.views, days, false)) }
                                 @if cols.downloads { td { (level(row.downloads)) } }
+                                @if cols.pulls { td { (level(row.pulls)) } }
                             }
                         }
                     }
@@ -198,6 +206,7 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
 struct Columns {
     views: bool,
     downloads: bool,
+    pulls: bool,
 }
 
 impl Columns {
@@ -207,6 +216,7 @@ impl Columns {
                 .iter()
                 .any(|row| row.views.iter().any(Option::is_some)),
             downloads: leaders.iter().any(|row| row.downloads.is_some()),
+            pulls: leaders.iter().any(|row| row.pulls.is_some()),
         }
     }
 }
@@ -375,6 +385,7 @@ mod tests {
             star_growth: [Some(1), Some(12), Some(30), Some(90), Some(120)],
             views: [Some(2), Some(20), Some(60), Some(200), Some(400)],
             downloads: Some(155),
+            pulls: Some(70),
         }
     }
 
@@ -515,13 +526,30 @@ mod tests {
     fn a_column_nothing_ever_filled_is_not_rendered() {
         let mut row = leader("octo/a", Some(3));
         row.downloads = None;
+        row.pulls = None;
         row.views = [None; PERIOD_COUNT];
         let out = leaders_section(&[row], 7).into_string();
         assert!(!out.contains("Downloads"), "out was {out}");
+        assert!(!out.contains("Container pulls"), "out was {out}");
         assert!(!out.contains("Views"), "out was {out}");
         // Stars and Growth are not optional — they are the ranking itself.
         assert!(out.contains("Stars"), "out was {out}");
         assert!(out.contains("Growth"), "out was {out}");
+    }
+
+    #[test]
+    fn container_pulls_sit_beside_downloads_and_drop_out_independently() {
+        // Two independent optional columns: a repo that ships images but no
+        // release assets gets one of them, not neither and not both.
+        let mut row = leader("octo/a", Some(3));
+        row.downloads = None;
+        let out = leaders_section(&[row], 7).into_string();
+        assert!(
+            out.contains(r#"<th scope="col">Container pulls</th>"#),
+            "out was {out}"
+        );
+        assert!(!out.contains(">Downloads<"), "out was {out}");
+        assert!(out.contains("<td>70</td>"), "out was {out}");
     }
 
     #[test]
