@@ -87,8 +87,8 @@
     }
     var dataset = context.dataset || chart.data.datasets[context.datasetIndex];
     var gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
-    gradient.addColorStop(0, hexToRgba(dataset.borderColor, 0.14));
-    gradient.addColorStop(1, hexToRgba(dataset.borderColor, 0.02));
+    gradient.addColorStop(0, hexToRgba(dataset.borderColor, 0.18));
+    gradient.addColorStop(1, hexToRgba(dataset.borderColor, 0));
     return gradient;
   }
 
@@ -203,16 +203,23 @@
       // re-reads borderColor on every draw, and overwriting it with a literal
       // would freeze it in the old scheme.
       chart.data.datasets.forEach(function (dataset) {
-        if (dataset.$wpVar) {
-          var colour = css(dataset.$wpVar, "#888888");
-          dataset.borderColor = colour;
-          if (!dataset.$wpArea) {
-            dataset.backgroundColor = colour;
-          }
-          dataset.pointBackgroundColor = colour;
-          dataset.pointHoverBackgroundColor = colour;
-          dataset.pointHoverBorderColor = card;
+        if (!dataset.$wpVar) {
+          return;
         }
+        var colour = css(dataset.$wpVar, "#888888");
+        dataset.borderColor = colour;
+        if (dataset.$wpBar) {
+          // Bars resolved their rest fill to a literal rgba at build time.
+          dataset.backgroundColor = hexToRgba(colour, 0.82);
+          dataset.hoverBackgroundColor = colour;
+          return;
+        }
+        if (!dataset.$wpArea) {
+          dataset.backgroundColor = colour;
+        }
+        dataset.pointBackgroundColor = colour;
+        dataset.pointHoverBackgroundColor = colour;
+        dataset.pointHoverBorderColor = card;
       });
       if (chart.$wp) {
         applyChartChrome(chart); // sparklines have no scales/tooltip to write
@@ -711,6 +718,20 @@
       });
   }
 
+  /*
+   * Remember which marker column the pointer is in, and repaint only when the
+   * set of hit events changes — keying on the ids rather than the pixel keeps
+   * a pointer sliding along one column from redrawing the chart per event.
+   */
+  function setHover(chart, x, key) {
+    if (chart.$wp.hoverKey === key) {
+      return;
+    }
+    chart.$wp.hoverKey = key;
+    chart.$wp.hoverX = x;
+    chart.draw();
+  }
+
   var eventMarkers = {
     id: "eventMarkers",
 
@@ -725,25 +746,32 @@
       }
       var ctx = chart.ctx;
       var ring = css("--pico-card-background-color", "#ffffff");
+      var hoverX = chart.$wp ? chart.$wp.hoverX : null;
       ctx.save();
       placed.forEach(function (item) {
         if (!isFinite(item.x)) {
           return;
         }
         var colour = kindColor(item.event.kind);
-        // The drop line is context, not data: half-strength so it sits behind
-        // the series lines it crosses.
-        ctx.strokeStyle = hexToRgba(colour, 0.5);
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.moveTo(item.x, area.top);
-        ctx.lineTo(item.x, area.bottom);
-        ctx.stroke();
-        // The dot is the hover target's advertisement — a dashed hairline
-        // alone reads as grid decoration. Full colour, ringed in the card
-        // surface so it separates from whatever it lands on.
-        ctx.setLineDash([]);
+        // The drop line is on demand: only the column under the pointer draws
+        // one, so a chart with a busy month rests as a row of dots instead of
+        // a fence through the data. Solid — a dash pattern is noise, and the
+        // dashes used to be the loudest thing on the plot.
+        if (
+          hoverX !== null &&
+          hoverX !== undefined &&
+          Math.abs(item.x - hoverX) <= HIT_PX
+        ) {
+          ctx.strokeStyle = hexToRgba(colour, 0.5);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(item.x, area.top);
+          ctx.lineTo(item.x, area.bottom);
+          ctx.stroke();
+        }
+        // The dot is the marker's whole resting presence and the hover
+        // target's advertisement. Full colour, ringed in the card surface so
+        // it separates from whatever it lands on.
         ctx.beginPath();
         ctx.arc(item.x, area.top + 3, 3, 0, Math.PI * 2);
         ctx.fillStyle = colour;
@@ -762,6 +790,7 @@
       }
       if (e.type === "mouseout") {
         hideTip();
+        setHover(chart, null, "");
         return;
       }
       if (e.type !== "mousemove" && e.type !== "click") {
@@ -781,9 +810,19 @@
         hideChartTip();
         showTip(hits, e.native);
         chart.canvas.style.cursor = "pointer";
+        setHover(
+          chart,
+          e.x,
+          hits
+            .map(function (ev) {
+              return ev.id;
+            })
+            .join(","),
+        );
       } else {
         hideTip();
         chart.canvas.style.cursor = "";
+        setHover(chart, null, "");
       }
     },
   };
@@ -1046,9 +1085,15 @@
    *     and it is a property of the series rather than of the chart: a
    *     carried-forward total takes its last observation, a count sums, and
    *     uniques can only peak.
-   *   - `area` marks the chart's primary series, which carries a soft
-   *     gradient wash under its line; a secondary series (uniques) stays a
-   *     bare line so two washes never muddy each other.
+   *   - `style: "bar"` marks a per-bucket count, which plots as columns:
+   *     ninety spiky daily points in a card-width line chart read as
+   *     scribble, where the same numbers as bars read as what they are —
+   *     discrete daily counts. Cumulative series stay lines.
+   *   - `area` marks the chart's primary line series, which carries a soft
+   *     gradient wash under it; a secondary series (uniques) stays a bare
+   *     line so two washes never muddy each other.
+   *   - `order` puts the bars behind the uniques line: Chart.js draws the
+   *     higher order first.
    */
   var CHART_SPECS = [
     {
@@ -1075,7 +1120,8 @@
           label: "Views",
           mode: "sum",
           cssVar: "--wp-marker-1",
-          area: true,
+          style: "bar",
+          order: 2,
         },
         {
           source: "views_uniques",
@@ -1084,6 +1130,7 @@
           labelKey: "uniquesLabel",
           mode: "max",
           cssVar: "--wp-marker-2",
+          order: 1,
         },
       ],
     },
@@ -1097,13 +1144,15 @@
           label: "Clones",
           mode: "sum",
           cssVar: "--wp-marker-5",
-          area: true,
+          style: "bar",
+          order: 2,
         },
         {
           source: "clones_uniques",
           labelKey: "uniquesLabel",
           mode: "max",
           cssVar: "--wp-marker-6",
+          order: 1,
         },
       ],
     },
@@ -1142,6 +1191,12 @@
   }
 
   function buildDataset(descriptor, view) {
+    return descriptor.style === "bar"
+      ? buildBarDataset(descriptor, view)
+      : buildLineDataset(descriptor, view);
+  }
+
+  function buildLineDataset(descriptor, view) {
     var colour = css(descriptor.cssVar, "#888888");
     var dataset = {
       label: datasetLabel(descriptor, view),
@@ -1153,6 +1208,7 @@
       // Marks the gradient fill so `applyTheme` leaves the scriptable
       // backgroundColor alone — it re-reads borderColor per draw by itself.
       $wpArea: !!descriptor.area,
+      order: descriptor.order,
       borderColor: colour,
       backgroundColor: descriptor.area ? areaGradient : colour,
       // Points would otherwise inherit the gradient as their fill.
@@ -1166,6 +1222,38 @@
       spanGaps: false,
     };
     return Object.assign(dataset, LINE_STYLE);
+  }
+
+  /*
+   * A per-bucket count as columns. A null bucket simply has no bar — the gap
+   * discipline costs nothing here — and the external tooltip still answers
+   * "not observed" for it.
+   */
+  function buildBarDataset(descriptor, view) {
+    var colour = css(descriptor.cssVar, "#888888");
+    return {
+      type: "bar",
+      label: datasetLabel(descriptor, view),
+      data: view.values[descriptor.source],
+      $wpVar: descriptor.cssVar,
+      // The flag `applyTheme` dispatches on: a bar's rest fill is a literal
+      // rgba, not a scriptable gradient, so a scheme flip must rewrite it.
+      $wpBar: true,
+      order: descriptor.order,
+      // Slightly translucent at rest so the hover state has somewhere to go.
+      // `borderColor` stays the solid series colour: the legend and the
+      // tooltip swatch read it, and bars draw no stroke of their own.
+      backgroundColor: hexToRgba(colour, 0.82),
+      hoverBackgroundColor: colour,
+      borderColor: colour,
+      borderWidth: 0,
+      // Rounded at the data end, square on the baseline.
+      borderRadius: { topLeft: 4, topRight: 4 },
+      borderSkipped: "bottom",
+      // A cap, not a width: one observed bucket in a wide plot must stay a
+      // mark, not a block the width of the chart.
+      maxBarThickness: 24,
+    };
   }
 
   function createChart(canvas, spec, view, events) {
@@ -1295,13 +1383,18 @@
 
     var chart = Chart.getChart(canvas);
     // Anything that is not already this spec's chart cannot be updated into
-    // one: a different plot type, a different number of series, or a chart
-    // this file did not build and therefore holds no `$wp` on.
+    // one: a different plot type, a different number of series, a series
+    // whose bar/line shape differs from its descriptor's, or a chart this
+    // file did not build and therefore holds no `$wp` on.
     if (
       !chart ||
       !chart.$wp ||
       chart.config.type !== spec.type ||
-      chart.data.datasets.length !== spec.datasets.length
+      chart.data.datasets.length !== spec.datasets.length ||
+      spec.datasets.some(function (descriptor, i) {
+        var built = chart.data.datasets[i].type === "bar";
+        return built !== (descriptor.style === "bar");
+      })
     ) {
       return createChart(canvas, spec, view, events);
     }

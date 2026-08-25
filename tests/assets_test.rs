@@ -181,6 +181,15 @@ async fn app_js_defines_the_watchpost_namespace() {
         "externalTooltip",
         // The hover crosshair is a plugin of ours, not a Chart.js feature.
         "wpCrosshair",
+        // Daily counts plot as bars; the flag is how `applyTheme` knows to
+        // recolour a bar dataset instead of a line one on a scheme flip.
+        "$wpBar",
+        // Bars stay marks, not blocks: lose the cap and a one-bucket window
+        // paints a bar as wide as the plot.
+        "maxBarThickness",
+        // Event markers rest as dots; the drop line only draws for the column
+        // under the pointer, and this field is how the plugin knows which.
+        "hoverX",
         // A null is a day watchpost did not observe, and the tooltip is where
         // that stops looking like a zero.
         "not observed",
