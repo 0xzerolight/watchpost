@@ -87,8 +87,8 @@
     }
     var dataset = context.dataset || chart.data.datasets[context.datasetIndex];
     var gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
-    gradient.addColorStop(0, hexToRgba(dataset.borderColor, 0.14));
-    gradient.addColorStop(1, hexToRgba(dataset.borderColor, 0.02));
+    gradient.addColorStop(0, hexToRgba(dataset.borderColor, 0.18));
+    gradient.addColorStop(1, hexToRgba(dataset.borderColor, 0));
     return gradient;
   }
 
@@ -135,11 +135,8 @@
 
   function chromeColors() {
     return {
-      grid: css("--wp-chart-grid", "#eceef2"),
+      grid: css("--wp-chart-grid", "#eff1f4"),
       tick: css("--wp-chart-tick", "#6b7280"),
-      ink: css("--pico-color", "#373c44"),
-      card: css("--pico-card-background-color", "#ffffff"),
-      cardBorder: css("--pico-card-border-color", "#d0d5dd"),
     };
   }
 
@@ -153,11 +150,8 @@
     chart.options.scales.y.ticks.color = c.tick;
     chart.options.scales.y.grid.color = c.grid;
     chart.options.plugins.legend.labels.color = c.tick;
-    var tooltip = chart.options.plugins.tooltip;
-    tooltip.backgroundColor = c.card;
-    tooltip.borderColor = c.cardBorder;
-    tooltip.titleColor = c.ink;
-    tooltip.bodyColor = c.ink;
+    // The tooltip is an HTML element now (`externalTooltip`); it takes its
+    // colours from the stylesheet and needs nothing written here.
   }
 
   /*
@@ -174,6 +168,11 @@
         item.strokeStyle = dataset.borderColor;
         item.lineWidth = 0;
       }
+    });
+    // Declaration order, not paint order: `order` puts the bars behind the
+    // uniques line, and without this the legend would read "Unique, Views".
+    items.sort(function (a, b) {
+      return a.datasetIndex - b.datasetIndex;
     });
     return items;
   }
@@ -209,16 +208,23 @@
       // re-reads borderColor on every draw, and overwriting it with a literal
       // would freeze it in the old scheme.
       chart.data.datasets.forEach(function (dataset) {
-        if (dataset.$wpVar) {
-          var colour = css(dataset.$wpVar, "#888888");
-          dataset.borderColor = colour;
-          if (!dataset.$wpArea) {
-            dataset.backgroundColor = colour;
-          }
-          dataset.pointBackgroundColor = colour;
-          dataset.pointHoverBackgroundColor = colour;
-          dataset.pointHoverBorderColor = card;
+        if (!dataset.$wpVar) {
+          return;
         }
+        var colour = css(dataset.$wpVar, "#888888");
+        dataset.borderColor = colour;
+        if (dataset.$wpBar) {
+          // Bars resolved their rest fill to a literal rgba at build time.
+          dataset.backgroundColor = hexToRgba(colour, 0.82);
+          dataset.hoverBackgroundColor = colour;
+          return;
+        }
+        if (!dataset.$wpArea) {
+          dataset.backgroundColor = colour;
+        }
+        dataset.pointBackgroundColor = colour;
+        dataset.pointHoverBackgroundColor = colour;
+        dataset.pointHoverBorderColor = card;
       });
       if (chart.$wp) {
         applyChartChrome(chart); // sparklines have no scales/tooltip to write
@@ -599,18 +605,19 @@
     });
   }
 
-  function showTip(events, native) {
-    var tip = markerTip();
-    fillTip(tip, events);
-    tip.classList.add("wp-visible");
-
-    // Both measurements are taken after the fill and the unhide: a hidden
-    // element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
-    // any earlier would decide it fits everywhere.
-    var x = native.pageX + 14;
+  /*
+   * Place an already-visible tip beside a page-coordinate point, flipped away
+   * from the viewport edges. Shared by the marker tip and the chart tooltip.
+   *
+   * Measurements have to happen after the fill and the unhide: a hidden
+   * element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
+   * any earlier would decide it fits everywhere.
+   */
+  function placeTip(tip, pageX, pageY) {
+    var x = pageX + 14;
     var maxX = window.scrollX + document.documentElement.clientWidth - 8;
     if (x + tip.offsetWidth > maxX) {
-      x = Math.max(window.scrollX + 8, native.pageX - tip.offsetWidth - 14);
+      x = Math.max(window.scrollX + 8, pageX - tip.offsetWidth - 14);
     }
     // Written before the height is read, not with the `top` below. The tip is
     // absolutely positioned with an automatic width, so the room between its
@@ -625,12 +632,19 @@
     // cursor keeps it beside the marker it belongs to; the `Math.max` pins a
     // tip taller than the viewport to the top edge, losing its last line rather
     // than its first.
-    var y = native.pageY + 14;
+    var y = pageY + 14;
     var maxY = window.scrollY + document.documentElement.clientHeight - 8;
     if (y + tip.offsetHeight > maxY) {
-      y = Math.max(window.scrollY + 8, native.pageY - tip.offsetHeight - 14);
+      y = Math.max(window.scrollY + 8, pageY - tip.offsetHeight - 14);
     }
     tip.style.top = y + "px";
+  }
+
+  function showTip(events, native) {
+    var tip = markerTip();
+    fillTip(tip, events);
+    tip.classList.add("wp-visible");
+    placeTip(tip, native.pageX, native.pageY);
   }
 
   /*
@@ -709,6 +723,20 @@
       });
   }
 
+  /*
+   * Remember which marker column the pointer is in, and repaint only when the
+   * set of hit events changes — keying on the ids rather than the pixel keeps
+   * a pointer sliding along one column from redrawing the chart per event.
+   */
+  function setHover(chart, x, key) {
+    if (chart.$wp.hoverKey === key) {
+      return;
+    }
+    chart.$wp.hoverKey = key;
+    chart.$wp.hoverX = x;
+    chart.draw();
+  }
+
   var eventMarkers = {
     id: "eventMarkers",
 
@@ -723,25 +751,32 @@
       }
       var ctx = chart.ctx;
       var ring = css("--pico-card-background-color", "#ffffff");
+      var hoverX = chart.$wp ? chart.$wp.hoverX : null;
       ctx.save();
       placed.forEach(function (item) {
         if (!isFinite(item.x)) {
           return;
         }
         var colour = kindColor(item.event.kind);
-        // The drop line is context, not data: half-strength so it sits behind
-        // the series lines it crosses.
-        ctx.strokeStyle = hexToRgba(colour, 0.5);
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.moveTo(item.x, area.top);
-        ctx.lineTo(item.x, area.bottom);
-        ctx.stroke();
-        // The dot is the hover target's advertisement — a dashed hairline
-        // alone reads as grid decoration. Full colour, ringed in the card
-        // surface so it separates from whatever it lands on.
-        ctx.setLineDash([]);
+        // The drop line is on demand: only the column under the pointer draws
+        // one, so a chart with a busy month rests as a row of dots instead of
+        // a fence through the data. Solid — a dash pattern is noise, and the
+        // dashes used to be the loudest thing on the plot.
+        if (
+          hoverX !== null &&
+          hoverX !== undefined &&
+          Math.abs(item.x - hoverX) <= HIT_PX
+        ) {
+          ctx.strokeStyle = hexToRgba(colour, 0.5);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(item.x, area.top);
+          ctx.lineTo(item.x, area.bottom);
+          ctx.stroke();
+        }
+        // The dot is the marker's whole resting presence and the hover
+        // target's advertisement. Full colour, ringed in the card surface so
+        // it separates from whatever it lands on.
         ctx.beginPath();
         ctx.arc(item.x, area.top + 3, 3, 0, Math.PI * 2);
         ctx.fillStyle = colour;
@@ -760,6 +795,7 @@
       }
       if (e.type === "mouseout") {
         hideTip();
+        setHover(chart, null, "");
         return;
       }
       if (e.type !== "mousemove" && e.type !== "click") {
@@ -774,13 +810,155 @@
       }
       if (hits.length && e.native) {
         // Several events on one day (or in one week) share a column, so the
-        // tip lists all of them rather than picking one arbitrarily.
+        // tip lists all of them rather than picking one arbitrarily. The
+        // chart tooltip yields — two tips over one point is noise.
+        hideChartTip();
         showTip(hits, e.native);
         chart.canvas.style.cursor = "pointer";
+        setHover(
+          chart,
+          e.x,
+          hits
+            .map(function (ev) {
+              return ev.id;
+            })
+            .join(","),
+        );
       } else {
         hideTip();
         chart.canvas.style.cursor = "";
+        setHover(chart, null, "");
       }
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // Chart tooltip and crosshair
+  // -------------------------------------------------------------------------
+
+  /*
+   * The chart tooltip is an HTML element styled by app.css, not the built-in
+   * canvas drawing. Chart.js is told `enabled: false` and still decides what
+   * is hovered — it hands this handler the rows and a caret position, and only
+   * the rendering is ours. That is what lets the tip wear the page's own
+   * card face, which no canvas tooltip option can quite reproduce.
+   */
+  var chartTipEl = null;
+
+  function chartTip() {
+    if (chartTipEl && chartTipEl.isConnected) {
+      return chartTipEl;
+    }
+    chartTipEl = document.getElementById("chart-tip");
+    if (!chartTipEl) {
+      chartTipEl = document.createElement("div");
+      chartTipEl.id = "chart-tip";
+      // On the body for the same reason as the marker tip: `.chart-box` clips.
+      document.body.appendChild(chartTipEl);
+    }
+    return chartTipEl;
+  }
+
+  function hideChartTip() {
+    if (chartTipEl) {
+      chartTipEl.classList.remove("wp-visible");
+    }
+  }
+
+  /*
+   * Built node by node with `textContent`, like the marker tip: labels here
+   * are watchpost's own strings today, but one discipline for everything that
+   * reaches a tip is cheaper than remembering which strings are trusted.
+   */
+  function externalTooltip(context) {
+    var model = context.tooltip;
+    if (!model || model.opacity === 0 || !(model.dataPoints || []).length) {
+      hideChartTip();
+      return;
+    }
+
+    var tip = chartTip();
+    tip.textContent = "";
+
+    var title = document.createElement("div");
+    title.className = "wp-tip-title";
+    // The bucket heading the period change rewrites — same source as the old
+    // canvas tooltip's title callback, read off the chart, not a captured
+    // array.
+    title.textContent =
+      context.chart.$wp.titles[model.dataPoints[0].dataIndex] || "";
+    tip.appendChild(title);
+
+    model.dataPoints.forEach(function (point) {
+      var row = document.createElement("div");
+      row.className = "wp-tip-row";
+
+      var swatch = document.createElement("span");
+      swatch.className = "wp-tip-swatch";
+      // CSSOM assignment, which the CSP allows; a style attribute it would
+      // not. The dataset backgroundColor may be a gradient — borderColor is
+      // the solid series colour.
+      swatch.style.backgroundColor = point.dataset.borderColor;
+      row.appendChild(swatch);
+
+      // Value before label: the reader hovering a column already knows the
+      // series and wants the number. Chart.js formats a null as "0"; the
+      // point is correctly absent and the tip must not invent a zero.
+      var missing = point.raw === null || point.raw === undefined;
+      var value = document.createElement("strong");
+      value.className = missing ? "wp-tip-value wp-muted" : "wp-tip-value";
+      value.textContent = missing ? "not observed" : point.formattedValue;
+      row.appendChild(value);
+
+      if (point.dataset.label) {
+        var label = document.createElement("span");
+        label.className = "wp-tip-label";
+        label.textContent = point.dataset.label;
+        row.appendChild(label);
+      }
+
+      tip.appendChild(row);
+    });
+
+    tip.classList.add("wp-visible");
+    var rect = context.chart.canvas.getBoundingClientRect();
+    placeTip(
+      tip,
+      rect.left + window.scrollX + model.caretX,
+      rect.top + window.scrollY + model.caretY
+    );
+  }
+
+  /*
+   * One solid hairline at the hovered column, the affordance that tells the
+   * reader which bucket the tip is describing. Solid and greyed on purpose:
+   * a dash pattern here would read as another event marker.
+   */
+  var wpCrosshair = {
+    id: "wpCrosshair",
+
+    afterDatasetsDraw: function (chart) {
+      var active = chart.tooltip && chart.tooltip.getActiveElements();
+      if (!active || !active.length) {
+        return;
+      }
+      var area = chart.chartArea;
+      var x = active[0].element.x;
+      if (!area || !isFinite(x) || x < area.left || x > area.right) {
+        return;
+      }
+      var ctx = chart.ctx;
+      ctx.save();
+      // `globalAlpha` rather than an rgba rewrite: the tick colour comes from
+      // a Pico variable and is not guaranteed to be six-digit hex.
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = css("--wp-chart-tick", "#6b7280");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, area.top);
+      ctx.lineTo(x, area.bottom);
+      ctx.stroke();
+      ctx.restore();
     },
   };
 
@@ -912,9 +1090,15 @@
    *     and it is a property of the series rather than of the chart: a
    *     carried-forward total takes its last observation, a count sums, and
    *     uniques can only peak.
-   *   - `area` marks the chart's primary series, which carries a soft
-   *     gradient wash under its line; a secondary series (uniques) stays a
-   *     bare line so two washes never muddy each other.
+   *   - `style: "bar"` marks a per-bucket count, which plots as columns:
+   *     ninety spiky daily points in a card-width line chart read as
+   *     scribble, where the same numbers as bars read as what they are —
+   *     discrete daily counts. Cumulative series stay lines.
+   *   - `area` marks the chart's primary line series, which carries a soft
+   *     gradient wash under it; a secondary series (uniques) stays a bare
+   *     line so two washes never muddy each other.
+   *   - `order` puts the bars behind the uniques line: Chart.js draws the
+   *     higher order first.
    */
   var CHART_SPECS = [
     {
@@ -941,7 +1125,8 @@
           label: "Views",
           mode: "sum",
           cssVar: "--wp-marker-1",
-          area: true,
+          style: "bar",
+          order: 2,
         },
         {
           source: "views_uniques",
@@ -950,6 +1135,7 @@
           labelKey: "uniquesLabel",
           mode: "max",
           cssVar: "--wp-marker-2",
+          order: 1,
         },
       ],
     },
@@ -963,13 +1149,15 @@
           label: "Clones",
           mode: "sum",
           cssVar: "--wp-marker-5",
-          area: true,
+          style: "bar",
+          order: 2,
         },
         {
           source: "clones_uniques",
           labelKey: "uniquesLabel",
           mode: "max",
           cssVar: "--wp-marker-6",
+          order: 1,
         },
       ],
     },
@@ -1008,6 +1196,12 @@
   }
 
   function buildDataset(descriptor, view) {
+    return descriptor.style === "bar"
+      ? buildBarDataset(descriptor, view)
+      : buildLineDataset(descriptor, view);
+  }
+
+  function buildLineDataset(descriptor, view) {
     var colour = css(descriptor.cssVar, "#888888");
     var dataset = {
       label: datasetLabel(descriptor, view),
@@ -1019,6 +1213,7 @@
       // Marks the gradient fill so `applyTheme` leaves the scriptable
       // backgroundColor alone — it re-reads borderColor per draw by itself.
       $wpArea: !!descriptor.area,
+      order: descriptor.order,
       borderColor: colour,
       backgroundColor: descriptor.area ? areaGradient : colour,
       // Points would otherwise inherit the gradient as their fill.
@@ -1032,6 +1227,38 @@
       spanGaps: false,
     };
     return Object.assign(dataset, LINE_STYLE);
+  }
+
+  /*
+   * A per-bucket count as columns. A null bucket simply has no bar — the gap
+   * discipline costs nothing here — and the external tooltip still answers
+   * "not observed" for it.
+   */
+  function buildBarDataset(descriptor, view) {
+    var colour = css(descriptor.cssVar, "#888888");
+    return {
+      type: "bar",
+      label: datasetLabel(descriptor, view),
+      data: view.values[descriptor.source],
+      $wpVar: descriptor.cssVar,
+      // The flag `applyTheme` dispatches on: a bar's rest fill is a literal
+      // rgba, not a scriptable gradient, so a scheme flip must rewrite it.
+      $wpBar: true,
+      order: descriptor.order,
+      // Slightly translucent at rest so the hover state has somewhere to go.
+      // `borderColor` stays the solid series colour: the legend and the
+      // tooltip swatch read it, and bars draw no stroke of their own.
+      backgroundColor: hexToRgba(colour, 0.82),
+      hoverBackgroundColor: colour,
+      borderColor: colour,
+      borderWidth: 0,
+      // Rounded at the data end, square on the baseline.
+      borderRadius: { topLeft: 4, topRight: 4 },
+      borderSkipped: "bottom",
+      // A cap, not a width: one observed bucket in a wide plot must stay a
+      // mark, not a block the width of the chart.
+      maxBarThickness: 24,
+    };
   }
 
   function createChart(canvas, spec, view, events) {
@@ -1107,44 +1334,12 @@
             },
           },
           tooltip: {
-            usePointStyle: true,
-            boxWidth: 6,
-            boxHeight: 6,
-            boxPadding: 4,
-            cornerRadius: 6,
-            padding: 10,
-            borderWidth: 1,
-            callbacks: {
-              title: function (items) {
-                // Read off the chart, not off a captured array: the titles
-                // change under a live chart on every period change.
-                return items[0].chart.$wp.titles[items[0].dataIndex];
-              },
-              label: function (item) {
-                var name = item.dataset.label ? item.dataset.label + ": " : "";
-                // Chart.js formats a null as "0". Leaving that alone would
-                // undo the whole point of plotting gaps as gaps: the point is
-                // correctly absent, and then the tooltip tells the reader the
-                // repo got zero views that day.
-                if (item.raw === null || item.raw === undefined) {
-                  return name + "not observed";
-                }
-                return name + item.formattedValue;
-              },
-              // The dataset backgroundColor is a gradient; the tooltip box
-              // must be the solid series colour.
-              labelColor: function (item) {
-                var colour = item.dataset.borderColor;
-                return { borderColor: colour, backgroundColor: colour };
-              },
-              labelPointStyle: function () {
-                return { pointStyle: "circle", rotation: 0 };
-              },
-            },
+            enabled: false,
+            external: externalTooltip,
           },
         },
       },
-      plugins: [eventMarkers],
+      plugins: [eventMarkers, wpCrosshair],
     });
 
     /*
@@ -1193,13 +1388,18 @@
 
     var chart = Chart.getChart(canvas);
     // Anything that is not already this spec's chart cannot be updated into
-    // one: a different plot type, a different number of series, or a chart
-    // this file did not build and therefore holds no `$wp` on.
+    // one: a different plot type, a different number of series, a series
+    // whose bar/line shape differs from its descriptor's, or a chart this
+    // file did not build and therefore holds no `$wp` on.
     if (
       !chart ||
       !chart.$wp ||
       chart.config.type !== spec.type ||
-      chart.data.datasets.length !== spec.datasets.length
+      chart.data.datasets.length !== spec.datasets.length ||
+      spec.datasets.some(function (descriptor, i) {
+        var built = chart.data.datasets[i].type === "bar";
+        return built !== (descriptor.style === "bar");
+      })
     ) {
       return createChart(canvas, spec, view, events);
     }
@@ -1463,6 +1663,46 @@
         normalisePeriod(cells[i].getAttribute("data-period-value")) !== days;
     }
   }
+
+  /*
+   * Show the hero panel for `id` and press its tile.
+   *
+   * An `aria-pressed` and `hidden` flip and nothing else — every panel's
+   * chart already holds the full payload, so switching metrics costs no
+   * request and no re-render. The one wrinkle is size: a chart built while
+   * its panel was `hidden` measured a zero-height box, so the reveal is when
+   * it learns its real one.
+   */
+  function selectKpi(id) {
+    var tiles = document.querySelectorAll("[data-kpi-tile]");
+    for (var i = 0; i < tiles.length; i++) {
+      tiles[i].setAttribute(
+        "aria-pressed",
+        String(tiles[i].getAttribute("data-kpi-tile") === id),
+      );
+    }
+    var panels = document.querySelectorAll("[data-kpi-panel]");
+    for (var j = 0; j < panels.length; j++) {
+      panels[j].hidden = panels[j].getAttribute("data-kpi-panel") !== id;
+    }
+    var canvas = document.getElementById(id);
+    var chart = canvas && typeof Chart !== "undefined" && Chart.getChart(canvas);
+    if (chart) {
+      chart.resize();
+      chart.update("none");
+    }
+  }
+
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    var tile = target.closest("[data-kpi-tile]");
+    if (tile) {
+      selectKpi(tile.getAttribute("data-kpi-tile"));
+    }
+  });
 
   /* Show the trailing `days` of `payload` on the charts. */
   function renderCharts(payload, days) {
@@ -2168,6 +2408,7 @@
   window.watchpost = {
     initRepoCharts: initRepoCharts,
     setPeriod: setPeriod,
+    selectKpi: selectKpi,
     refreshMarkers: refreshMarkers,
     toggleKind: toggleKind,
     initSparklines: initSparklines,

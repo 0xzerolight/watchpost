@@ -497,6 +497,39 @@ async fn empty_chart_cards_are_hidden() {
     assert_eq!(series(&payload, "downloads_total").len(), len);
 }
 
+/// The KPI row is server truth: real figures in the markup for the requested
+/// period, correct with JS off, tiles only for observed metrics.
+#[tokio::test]
+async fn kpi_row_ships_server_rendered_figures() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(3), 100).await;
+    h.seed_stars(ID_A, days_ago(1), 140).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    // The stars tile is the default: pressed, its hero panel not hidden.
+    assert!(
+        body.contains(r#"data-kpi-tile="chart_stars" aria-pressed="true""#),
+        "body was {body}"
+    );
+    assert!(
+        body.contains(r#"<div class="wp-hero-chart" data-kpi-panel="chart_stars">"#),
+        "body was {body}"
+    );
+    // Level and growth are in the markup itself: 140 stars, +40 across the
+    // whole window on the default "All" period.
+    assert!(
+        body.contains(r#"<strong class="wp-kpi-value">140</strong>"#),
+        "body was {body}"
+    );
+    assert!(
+        body.contains(r#"class="wp-delta wp-delta-up">+40<"#),
+        "body was {body}"
+    );
+    // No views tile — nothing observed there.
+    assert!(!body.contains(r#"data-kpi-tile="chart_views""#), "{body}");
+}
+
 #[tokio::test]
 async fn pulls_only_repo_charts_from_first_pull_observation() {
     let h = harness();

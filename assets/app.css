@@ -66,7 +66,12 @@
   --wp-l-6: #4a3aa7;
   --wp-l-7: #e34948;
   --wp-l-flash: #fff3c4;
-  --wp-l-grid: #eceef2;
+  /*
+   * Chart gridlines are hairlines one step off the card surface — present
+   * when looked for, invisible when reading the data. Anything stronger reads
+   * as a drawn chart box.
+   */
+  --wp-l-grid: #eff1f4;
 
   /*
    * Dark: the same eight hues re-stepped for the dark card surface, not a
@@ -82,7 +87,8 @@
   --wp-d-6: #9085e9;
   --wp-d-7: #e66767;
   --wp-d-flash: #4a4020;
-  --wp-d-grid: #232937;
+  /* One step off the `#181c25` card surface, as above. */
+  --wp-d-grid: #1f2430;
 
   /*
    * The slots that the rules below and app.js read. `getComputedStyle`
@@ -150,6 +156,80 @@
 }
 
 /*
+ * The repo page's single large chart panel — one metric at a time, switched
+ * by the KPI tiles. Needs its own height for the reason `.chart-box` does.
+ */
+.wp-hero-chart {
+  position: relative;
+  height: 360px;
+}
+
+@media (max-width: 40rem) {
+  .wp-hero-chart {
+    height: 260px;
+  }
+}
+
+/* KPI tiles. The grid wraps like the card grid, one tile per metric. */
+.wp-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: var(--wp-space-3);
+  margin-bottom: var(--wp-space-4);
+}
+
+/*
+ * A tile is a real <button> — it presses, and the pressed one is the metric
+ * the hero panel is plotting — so most of this is undoing Pico's form-button
+ * dress: those are sized for verbs, and a tile is a labelled number.
+ */
+.wp-kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  width: auto;
+  margin: 0;
+  padding: var(--wp-space-2) var(--wp-space-3);
+  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wp-kpi:is(:hover, :focus-visible) {
+  border-color: var(--pico-primary, #2a78d6);
+  background: transparent;
+  color: inherit;
+}
+
+/* The pressed tile is the showing metric; the wash matches the chips'. */
+.wp-kpi[aria-pressed="true"] {
+  border-color: var(--pico-primary, #2a78d6);
+  background: color-mix(in srgb, var(--pico-primary, #2a78d6) 10%, transparent);
+  color: inherit;
+}
+
+/*
+ * Proportional figures, deliberately not the tables' `tabular-nums`: a big
+ * standalone number set in equal-width digits reads loose, and a tile's value
+ * aligns with nothing vertically.
+ */
+.wp-kpi-value {
+  font-size: 1.4rem;
+  line-height: 1.3;
+  font-variant-numeric: normal;
+}
+
+.wp-kpi-delta {
+  min-height: 1.2em;
+}
+
+/*
  * Dashboard card grid. `auto-fill` + `minmax` means the column count follows
  * the viewport with no breakpoints to maintain — one column on a phone, as many
  * as fit on a desktop.
@@ -167,6 +247,11 @@
  */
 .wp-cards-wide {
   grid-template-columns: 1fr;
+}
+
+/* A full-width chart is the section, so it gets the hero height too. */
+.wp-cards-wide .chart-box {
+  height: 360px;
 }
 
 /* Pico gives articles a generous default margin, which a grid already spaces. */
@@ -275,7 +360,12 @@
   align-items: baseline;
   gap: var(--wp-space-1) var(--wp-space-3);
   padding: var(--wp-space-2) 0;
-  border-bottom: 1px solid var(--wp-chart-grid);
+  /*
+   * Pico's own separator token, not `--wp-chart-grid`: the chart grid is tuned
+   * to sit one step off the card surface — too faint to divide list rows on
+   * the page background.
+   */
+  border-bottom: 1px solid var(--pico-muted-border-color, #e5e7eb);
 }
 
 .wp-changes li:last-child {
@@ -441,6 +531,55 @@
 
 #marker-tip.wp-visible {
   display: block;
+}
+
+/*
+ * The chart tooltip — the HTML replacement for Chart.js's canvas-drawn one
+ * (`externalTooltip` in app.js). Same face as the marker tip; the shared
+ * rule keeps the two indistinguishable at a glance.
+ */
+#chart-tip {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  max-width: 22rem;
+  padding: var(--wp-space-2) var(--wp-space-3);
+  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: var(--pico-card-background-color, #fff);
+  box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+#chart-tip.wp-visible {
+  display: block;
+}
+
+.wp-tip-title {
+  margin-bottom: var(--wp-space-1);
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-tip-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wp-space-2);
+}
+
+/* The series colour, set by app.js through the CSSOM; everything else here. */
+.wp-tip-swatch {
+  flex: 0 0 auto;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  align-self: center;
+}
+
+.wp-tip-label {
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
 }
 
 /*

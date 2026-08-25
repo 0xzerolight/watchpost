@@ -70,6 +70,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The repo page leads with KPI tiles over one hero chart.** The grid of four 240px chart cards
+  is gone: each observed metric is now a stat tile — its level, and for the carried-forward series
+  a per-period delta — above a single full-width chart, and clicking a tile switches which metric
+  that chart plots. The switch is an `aria-pressed` and `hidden` flip over canvases already built
+  from the one payload the page always shipped, so it costs no request; the tile figures are
+  server-rendered per period behind the leaderboard's hidden-span contract, so they are right with
+  JS off and a zoom writes no text. The per-period arithmetic (`growth`, `sum_observed`,
+  `per_period`, `add_into`) moved from the analytics handler to a shared `src/series.rs` to feed
+  both pages from one definition.
+
+- **Daily counts plot as bars.** Views and clones drew ninety spiky points of line into a
+  card-width plot and read as scribble; as rounded columns (capped thickness, translucent at rest,
+  solid on hover) they read as the discrete daily counts they are. Uniques stay a line over the
+  bars, palette slots unchanged, and a null day is a missing bar rather than a zero-height one —
+  the same gap discipline `spanGaps: false` kept for lines.
+
+- **Chart chrome recedes.** Gridlines drop to a hairline one step off the card surface in both
+  schemes (the changes feed's row borders, which shared the token, now use Pico's own separator);
+  the area wash under cumulative lines fades to fully transparent; and the built-in canvas tooltip
+  is replaced by an HTML tip styled from app.css — same face as the marker tip, value before
+  label, "not observed" for a gap — positioned through the CSSOM, which the zero-inline-style CSP
+  permits. A solid grey crosshair marks the hovered column; it is deliberately not dashed, because
+  dashes now mean nothing else on the plot.
+
+- **Event markers rest as dots.** The always-on dashed drop lines — the loudest thing on every
+  chart — are gone; a marker is its coloured dot at the top of the plot, and the drop line draws
+  solid at half strength only while the pointer is in that marker's column. Hover tips, click-to-
+  row and kind filtering are unchanged.
+
+- **Analytics totals wear delta badges.** Stars, forks, open issues and open PRs each carry their
+  movement over the selected period, measured by `growth` over the same summed dense series the
+  portfolio chart plots — an observed flat period reads ±0, an unobserved one an em dash. The
+  portfolio chart adopts the hero height.
+
 - **The dashboard is repo cards again.** The recent-changes feed briefly sat above them; at up to
   twenty full-width rows it pushed the repos the page is named after off the first screen, which is
   the wrong trade for a supporting figure. It now lives on the Analytics page, last, under the

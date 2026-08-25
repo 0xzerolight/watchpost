@@ -18,9 +18,10 @@ use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    ALL_DAYS, empty_row, empty_state, field, field_compact, json_script, kind_class, page_header,
-    period_select, render_markdown, spinner, table_wrap,
+    ALL_DAYS, PERIOD_COUNT, PERIODS, delta_badge, empty_row, empty_state, field, field_compact,
+    json_script, kind_class, page_header, period_select, render_markdown, spinner, table_wrap,
 };
+use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
 use crate::urlcheck::validate_event_url;
 
@@ -117,6 +118,77 @@ impl ChartSeries {
     fn any_observed(&self) -> bool {
         self.cards().iter().any(|&(_, _, observed)| observed)
     }
+
+    /// The default hero panel: the first observed card in render order, which
+    /// starts at Stars. `None` with nothing observed — the section renders an
+    /// empty state instead.
+    fn default_canvas(&self) -> Option<&'static str> {
+        self.cards()
+            .into_iter()
+            .find(|&(_, _, observed)| observed)
+            .map(|(_, canvas_id, _)| canvas_id)
+    }
+}
+
+/// The KPI tiles' figures, one struct per page render.
+///
+/// Derived from the same dense series the `#chart-data` island ships, by the
+/// same [`crate::series`] arithmetic the analytics page uses — the server
+/// stays the single source of these numbers, and the client's entire part is
+/// the `hidden` flip `updatePeriodValues` already does for the leaderboard.
+#[derive(Debug)]
+pub struct KpiData {
+    pub stars_level: Option<i64>,
+    pub stars_growth: [Option<i64>; PERIOD_COUNT],
+    pub views: [Option<i64>; PERIOD_COUNT],
+    pub clones: [Option<i64>; PERIOD_COUNT],
+    pub downloads_level: Option<i64>,
+    pub downloads_delta: [Option<i64>; PERIOD_COUNT],
+    pub pulls_level: Option<i64>,
+    pub pulls_delta: [Option<i64>; PERIOD_COUNT],
+}
+
+impl KpiData {
+    pub fn of(series: &ChartSeries) -> KpiData {
+        KpiData {
+            // Levels stand at the newest reading; growth of a carried-forward
+            // level over a window is its period delta.
+            stars_level: last_observed(&series.stars),
+            stars_growth: per_period(&series.stars, growth),
+            // Rates sum over the window instead — "1.2K views in 30 days" —
+            // and carry no second number: the sum already answers the period.
+            views: per_period(&series.views_count, sum_observed),
+            clones: per_period(&series.clones_count, sum_observed),
+            downloads_level: last_observed(&series.downloads_total),
+            downloads_delta: per_period(&series.downloads_total, growth),
+            pulls_level: last_observed(&series.pulls_total),
+            pulls_delta: per_period(&series.pulls_total, growth),
+        }
+    }
+
+    /// What a tile shows for `canvas_id`: its big value, and the per-period
+    /// delta badge if the metric is a level rather than a rate.
+    fn figures(&self, canvas_id: &str) -> (KpiValue<'_>, Option<&[Option<i64>; PERIOD_COUNT]>) {
+        match canvas_id {
+            "chart_views" => (KpiValue::PerPeriod(&self.views), None),
+            "chart_clones" => (KpiValue::PerPeriod(&self.clones), None),
+            "chart_downloads" => (
+                KpiValue::Level(self.downloads_level),
+                Some(&self.downloads_delta),
+            ),
+            "chart_pulls" => (KpiValue::Level(self.pulls_level), Some(&self.pulls_delta)),
+            // `chart_stars`, and the arm the compiler wants: `cards()` is the
+            // only caller and names exactly the five ids above.
+            _ => (KpiValue::Level(self.stars_level), Some(&self.stars_growth)),
+        }
+    }
+}
+
+/// A tile's big value: a level is one static number, a rate is one number per
+/// period with all but the selected one hidden.
+enum KpiValue<'a> {
+    Level(Option<i64>),
+    PerPeriod(&'a [Option<i64>; PERIOD_COUNT]),
 }
 
 /// One entry of the `#events-data` island — what the chart's marker plugin
@@ -322,6 +394,9 @@ impl PopularParams {
 pub struct RepoView<'a> {
     pub repo: &'a RepoOverview,
     pub payload: &'a ChartPayload,
+    /// The KPI tiles' figures, derived from `payload.series` by
+    /// [`KpiData::of`] so the tiles and the charts can never disagree.
+    pub kpis: &'a KpiData,
     pub referrers: &'a [PopularItem],
     pub paths: &'a [PopularItem],
     pub events: &'a [Event],
@@ -394,44 +469,109 @@ fn export_links(repo_id: i64) -> Markup {
     }
 }
 
-/// The charts, their period selector, and the `#chart-data` island.
+/// The KPI tiles, the hero chart panels, the period selector, and the
+/// `#chart-data` island.
+///
+/// One large chart at a time instead of a grid of small ones: the tiles carry
+/// every metric's number, and clicking one swaps which metric the hero panel
+/// plots (`selectKpi` in assets/app.js — an `aria-pressed` and `hidden` flip,
+/// no request). The canvas ids are unchanged from the card era, so
+/// `CHART_SPECS` and the analytics page keep working untouched.
 ///
 /// The selector carries no htmx and no inline handler: `assets/app.js` binds
 /// one delegated `change` listener to `[data-period-select]`, and the island
-/// holds the repo's whole history, so `setPeriod` re-renders the four charts
+/// holds the repo's whole history, so `setPeriod` re-renders the charts
 /// from data already in the page and rewrites the address bar itself. The
 /// `name="days"` stays because the option values *are* the `days` allowlist and
 /// a shared `?days=` URL still opens at that period — it just never gets
 /// submitted anywhere.
 ///
-/// With nothing observed there is no payload to zoom over, so the cards, the
-/// island and the selector all go: `setPeriod` would bail on every change, and
-/// four empty panes say less than one sentence does.
+/// With nothing observed there is no payload to zoom over, so the tiles, the
+/// panels, the island and the selector all go: `setPeriod` would bail on every
+/// change, and empty panes say less than one sentence does.
 fn charts_section(view: &RepoView) -> Markup {
     let selected = view.payload.days;
-    let observed = view.payload.series.any_observed();
     html! {
         section {
             div class="wp-section-head" {
                 h2 { "Metrics" }
-                @if observed {
+                @if view.payload.series.any_observed() {
                     (period_select(selected))
                 }
             }
-            @if observed {
-                div class="wp-cards" {
-                    @for (title, canvas_id, card_observed) in view.payload.series.cards() {
-                        @if card_observed {
-                            (chart_card(title, canvas_id))
-                        }
-                    }
-                }
+            @if let Some(default_id) = view.payload.series.default_canvas() {
+                (kpi_row(view, default_id))
+                (hero_charts(&view.payload.series, default_id))
                 // Data only — the charts are built by app.js on
                 // `DOMContentLoaded`, and rebuilt from this island if a swap
                 // ever delivers a new one.
                 (json_script("chart-data", view.payload))
             } @else {
                 (empty_state("No metrics yet — charts appear after the first sync.", None))
+            }
+        }
+    }
+}
+
+/// One tile per observed metric. Buttons, not links — a tile navigates
+/// nowhere; it presses, and the pressed tile is the one whose hero panel is
+/// showing.
+fn kpi_row(view: &RepoView, default_id: &str) -> Markup {
+    let days = view.payload.days;
+    html! {
+        div class="wp-kpis" role="group" aria-label="Metrics" {
+            @for (title, canvas_id, observed) in view.payload.series.cards() {
+                @if observed {
+                    (kpi_tile(title, canvas_id, view.kpis, days, canvas_id == default_id))
+                }
+            }
+        }
+    }
+}
+
+/// Label, big value, and — for level metrics — a per-period delta badge.
+///
+/// A rate metric's value is itself per-period (the window's sum), rendered as
+/// the leaderboard renders its cells: every period's figure in the markup,
+/// all but the selected one hidden, so the numbers are correct with JS off
+/// and a period change writes no text.
+fn kpi_tile(title: &str, canvas_id: &str, kpis: &KpiData, days: i64, pressed: bool) -> Markup {
+    let (value, delta) = kpis.figures(canvas_id);
+    html! {
+        button type="button" class="wp-kpi" data-kpi-tile=(canvas_id) aria-pressed=(pressed) {
+            span class="wp-kpi-label wp-muted wp-small" { (title) }
+            strong class="wp-kpi-value" {
+                @match value {
+                    KpiValue::Level(level) => {
+                        @match level { Some(n) => (n), None => "—" }
+                    }
+                    KpiValue::PerPeriod(values) => {
+                        @for ((period, _), value) in PERIODS.iter().zip(values) {
+                            span data-period-value=(period) hidden[*period != days] {
+                                @match value { Some(n) => (n), None => "—" }
+                            }
+                        }
+                    }
+                }
+            }
+            @if let Some(values) = delta {
+                (delta_badge(values, days))
+            }
+        }
+    }
+}
+
+/// One full-width panel per observed metric, hidden except the default —
+/// `selectKpi` flips which. The panel, not the canvas, carries the `hidden`:
+/// Chart.js sizes a canvas from its parent, and a hidden parent is one it
+/// re-measures on reveal.
+fn hero_charts(series: &ChartSeries, default_id: &str) -> Markup {
+    html! {
+        @for (title, canvas_id, observed) in series.cards() {
+            @if observed {
+                div class="wp-hero-chart" data-kpi-panel=(canvas_id) hidden[canvas_id != default_id] {
+                    canvas id=(canvas_id) role="img" aria-label=(format!("{title} over time")) {}
+                }
             }
         }
     }
@@ -1174,10 +1314,15 @@ mod tests {
         }
     }
 
-    fn chart_view<'a>(payload: &'a ChartPayload, repo: &'a RepoOverview) -> RepoView<'a> {
+    fn chart_view<'a>(
+        payload: &'a ChartPayload,
+        kpis: &'a KpiData,
+        repo: &'a RepoOverview,
+    ) -> RepoView<'a> {
         RepoView {
             repo,
             payload,
+            kpis,
             referrers: &[],
             paths: &[],
             events: &[],
@@ -1198,8 +1343,9 @@ mod tests {
     #[test]
     fn the_section_ships_data_only_and_the_selector_is_client_side() {
         let payload = payload(7, Some(3));
+        let kpis = KpiData::of(&payload.series);
         let repo = repo();
-        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         // The payload island is the only script here: no executable inline
         // script, so nothing has to be guarded against app.js being deferred.
         assert!(
@@ -1225,9 +1371,9 @@ mod tests {
 
     #[test]
     fn a_chart_card_titles_itself() {
-        let payload = payload(-1, Some(3));
-        let repo = repo();
-        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        // The card form is the analytics page's now — the repo page moved to
+        // KPI tiles over hero panels — but it still titles itself.
+        let out = chart_card("Stars", "chart_stars").into_string();
         assert!(
             out.contains(r#"<h3 class="wp-card-title">Stars</h3>"#),
             "out was {out}"
@@ -1235,6 +1381,121 @@ mod tests {
         // No annotation slot: the bucket note it carried explained an x-axis
         // that the period selector above it already names.
         assert!(!out.contains("wp-card-note"), "out was {out}");
+    }
+
+    /// One tile per observed metric, none for an unobserved one, and the
+    /// first observed tile — Stars, in render order — is the pressed default.
+    #[test]
+    fn kpi_tiles_render_for_observed_metrics_only() {
+        let mut payload = payload(-1, Some(3));
+        payload.series.views_count = vec![Some(2)];
+        let kpis = KpiData::of(&payload.series);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
+        assert!(
+            out.contains(r#"data-kpi-tile="chart_stars" aria-pressed="true""#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"data-kpi-tile="chart_views" aria-pressed="false""#),
+            "out was {out}"
+        );
+        // Tiles are buttons, not links: they navigate nowhere.
+        assert_eq!(
+            out.matches(r#"<button type="button" class="wp-kpi""#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        for id in ["chart_clones", "chart_downloads", "chart_pulls"] {
+            assert!(!out.contains(id), "{id} must not render: {out}");
+        }
+    }
+
+    /// A per-period tile value ships every period's figure, all but the
+    /// selected one hidden — the leaderboard's `data-period-value` contract,
+    /// flipped by the same `updatePeriodValues`.
+    #[test]
+    fn kpi_values_ship_every_period_and_show_one() {
+        let mut payload = payload(30, Some(3));
+        payload.series.views_count = vec![Some(2)];
+        let kpis = KpiData::of(&payload.series);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
+        // Views value: one span per period. Stars adds a delta badge with the
+        // same span count; the total is what pins both present.
+        assert_eq!(
+            out.matches("data-period-value").count(),
+            2 * PERIOD_COUNT,
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<span data-period-value="30">"#),
+            "out was {out}"
+        );
+        // The unselected periods are hidden, the selected one is not.
+        assert_eq!(
+            out.matches(r#"data-period-value="7" hidden"#).count(),
+            2,
+            "out was {out}"
+        );
+        assert!(
+            !out.contains(r#"data-period-value="30" hidden"#),
+            "out was {out}"
+        );
+    }
+
+    /// Delta badges carry their sign as text and their direction as a class,
+    /// baked server-side so a `hidden` flip recolours correctly.
+    #[test]
+    fn kpi_deltas_sign_with_class_and_glyph() {
+        let mut payload = payload(-1, Some(3));
+        payload.labels = vec!["2026-08-16".into(), "2026-08-17".into()];
+        payload.series.stars = vec![Some(100), Some(140)];
+        payload.series.views_count = vec![None, None];
+        payload.series.views_uniques = vec![None, None];
+        payload.series.clones_count = vec![None, None];
+        payload.series.clones_uniques = vec![None, None];
+        payload.series.downloads_total = vec![Some(9), Some(7)];
+        payload.series.pulls_total = vec![None, None];
+        let kpis = KpiData::of(&payload.series);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
+        // Stars grew by 40 over the whole window...
+        assert!(
+            out.contains(r#"class="wp-delta wp-delta-up">+40<"#),
+            "out was {out}"
+        );
+        // ...downloads fell by two, spelled with U+2212, not a hyphen.
+        assert!(
+            out.contains(r#"class="wp-delta wp-delta-down">−2<"#),
+            "out was {out}"
+        );
+    }
+
+    /// Hero panels exist for every observed metric, hidden except the default;
+    /// the canvas ids are unchanged so `CHART_SPECS` keeps finding them.
+    #[test]
+    fn hero_panels_hide_all_but_the_default() {
+        let mut payload = payload(-1, Some(3));
+        payload.series.views_count = vec![Some(2)];
+        let kpis = KpiData::of(&payload.series);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
+        assert!(
+            out.contains(r#"<div class="wp-hero-chart" data-kpi-panel="chart_stars">"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<div class="wp-hero-chart" data-kpi-panel="chart_views" hidden>"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(
+                r#"<canvas id="chart_stars" role="img" aria-label="Stars over time"></canvas>"#
+            ),
+            "out was {out}"
+        );
     }
 
     #[test]
@@ -1247,8 +1508,9 @@ mod tests {
         payload.series.clones_count = vec![Some(1)];
         payload.series.downloads_total = vec![Some(1)];
         payload.series.pulls_total = vec![Some(1)];
+        let kpis = KpiData::of(&payload.series);
         let repo = repo();
-        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         assert_eq!(out.matches(r#"role="img""#).count(), 5, "out was {out}");
         assert!(
             out.contains(
@@ -1271,8 +1533,9 @@ mod tests {
     #[test]
     fn a_card_with_nothing_observed_is_not_rendered() {
         let payload = payload(-1, Some(3));
+        let kpis = KpiData::of(&payload.series);
         let repo = repo();
-        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         assert!(out.contains("chart_stars"), "out was {out}");
         for canvas in [
             "chart_views",
@@ -1289,8 +1552,9 @@ mod tests {
         // Every series null end to end: four blank panes and a zoom control
         // over nothing are furniture, and `setPeriod` bails without a payload.
         let payload = payload(-1, None);
+        let kpis = KpiData::of(&payload.series);
         let repo = repo();
-        let out = charts_section(&chart_view(&payload, &repo)).into_string();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
 
         assert!(
             out.contains("No metrics yet — charts appear after the first sync."),
@@ -1300,6 +1564,8 @@ mod tests {
         assert!(!out.contains("wp-period"), "out was {out}");
         assert!(!out.contains("<script"), "out was {out}");
         assert!(!out.contains("<canvas"), "out was {out}");
+        // No tiles either: a KPI row of em dashes is furniture.
+        assert!(!out.contains("wp-kpi"), "out was {out}");
         // The section still says what it would have shown.
         assert!(out.contains("<h2>Metrics</h2>"), "out was {out}");
     }

@@ -186,6 +186,39 @@ fn json_island<T: Serialize>(id: Option<&str>, class: Option<&str>, value: &T) -
     }
 }
 
+/// A per-period movement badge: one span per entry of [`PERIODS`], all but
+/// the selected one `hidden`, flipped client-side by `updatePeriodValues` —
+/// the leaderboard's `data-period-value` contract.
+///
+/// The direction class is baked into each span server-side, so a `hidden`
+/// flip recolours correctly without the client writing any text. The sign is
+/// spelled out (U+2212 MINUS SIGN, not a hyphen) so direction survives a
+/// monochrome screen; `Some(0)` is an observed "nothing moved" and `None` an
+/// em-dash "nobody looked", the same distinction every table here keeps.
+pub fn delta_badge(values: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
+    html! {
+        span class="wp-kpi-delta" {
+            @for ((period, _), value) in PERIODS.iter().zip(values) {
+                span
+                    data-period-value=(period)
+                    hidden[*period != days]
+                    class=(match value {
+                        Some(n) if *n > 0 => "wp-delta wp-delta-up",
+                        Some(n) if *n < 0 => "wp-delta wp-delta-down",
+                        _ => "wp-delta wp-muted",
+                    }) {
+                    @match value {
+                        Some(n) if *n > 0 => { "+" (n) }
+                        Some(n) if *n < 0 => { "\u{2212}" (n.abs()) }
+                        Some(_) => "\u{00b1}0",
+                        None => "—",
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Render untrusted markdown to HTML.
 ///
 /// Two filters make the `PreEscaped` output safe. Raw HTML events are dropped

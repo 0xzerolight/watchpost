@@ -340,6 +340,7 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
     h.seed_repo(ID_B, REPO_B, true).await;
     // upsert_repo seeds 10 stars / 4 forks each, so the levels come from the
     // stats rows the collector writes rather than from the repo record.
+    h.seed_stars(ID_A, days_ago(3), 25).await;
     h.seed_stars(ID_A, days_ago(0), 30).await;
     h.seed_stars(ID_B, days_ago(0), 12).await;
 
@@ -347,6 +348,13 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
 
     assert!(
         body.contains(r#"<strong class="wp-total-value">42</strong>"#),
+        "{body}"
+    );
+    // The delta badge rides the same summed series the portfolio chart plots,
+    // so the two always agree: A moved 25 → 30, and B's first reading is a
+    // genuine step up in the total — +12 of arrival plus +5 of growth.
+    assert!(
+        body.contains(r#"class="wp-delta wp-delta-up">+17<"#),
         "{body}"
     );
 }
