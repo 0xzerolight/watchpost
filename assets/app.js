@@ -135,7 +135,7 @@
 
   function chromeColors() {
     return {
-      grid: css("--wp-chart-grid", "#eceef2"),
+      grid: css("--wp-chart-grid", "#eff1f4"),
       tick: css("--wp-chart-tick", "#6b7280"),
       ink: css("--pico-color", "#373c44"),
       card: css("--pico-card-background-color", "#ffffff"),
