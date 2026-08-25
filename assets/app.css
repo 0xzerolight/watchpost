@@ -249,6 +249,11 @@
   grid-template-columns: 1fr;
 }
 
+/* A full-width chart is the section, so it gets the hero height too. */
+.wp-cards-wide .chart-box {
+  height: 360px;
+}
+
 /* Pico gives articles a generous default margin, which a grid already spaces. */
 .wp-card {
   margin: 0;

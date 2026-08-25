@@ -13,8 +13,8 @@ use serde::Serialize;
 
 use crate::routes::html::repo::chart_card;
 use crate::routes::html::{
-    PERIOD_COUNT, PERIODS, date_stamp, empty_state, json_script, page_header, period_select,
-    plural, table_wrap,
+    PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script, page_header,
+    period_select, plural, table_wrap,
 };
 use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
@@ -66,13 +66,21 @@ impl PortfolioPayload {
     }
 }
 
-/// The portfolio's current levels, summed across tracked visible repos.
+/// The portfolio's current levels, summed across tracked visible repos, and
+/// how far each moved over every period.
 #[derive(Debug, Default)]
 pub struct Totals {
     pub stars: Option<i64>,
     pub forks: Option<i64>,
     pub issues: Option<i64>,
     pub prs: Option<i64>,
+    /// Movement per entry of [`PERIODS`], measured by the handler over the
+    /// same summed dense series the chart plots — the badge and the curve can
+    /// never disagree.
+    pub stars_delta: [Option<i64>; PERIOD_COUNT],
+    pub forks_delta: [Option<i64>; PERIOD_COUNT],
+    pub issues_delta: [Option<i64>; PERIOD_COUNT],
+    pub prs_delta: [Option<i64>; PERIOD_COUNT],
 }
 
 impl Totals {
@@ -89,6 +97,9 @@ impl Totals {
             forks: sum_levels(repos, |repo| repo.forks),
             issues: sum_levels(repos, |repo| repo.issues),
             prs: sum_levels(repos, |repo| repo.prs),
+            // The deltas need the summed dense series, which only the handler
+            // holds — it fills these after.
+            ..Totals::default()
         }
     }
 }
@@ -319,7 +330,7 @@ fn portfolio_section(view: &AnalyticsView) -> Markup {
     html! {
         section {
             h2 { "Portfolio" }
-            (totals_list(view.totals))
+            (totals_list(view.totals, view.days))
             @if view.payload.any_observed() {
                 // One card, full width: this chart is the section rather than
                 // one of several, so it does not want the card grid's 18rem
@@ -337,27 +348,34 @@ fn portfolio_section(view: &AnalyticsView) -> Markup {
     }
 }
 
-fn totals_list(totals: &Totals) -> Markup {
+fn totals_list(totals: &Totals, days: i64) -> Markup {
     html! {
         ul class="wp-totals" {
-            (total("Stars", totals.stars))
-            (total("Forks", totals.forks))
-            (total("Open issues", totals.issues))
-            (total("Open PRs", totals.prs))
+            (total("Stars", totals.stars, &totals.stars_delta, days))
+            (total("Forks", totals.forks, &totals.forks_delta, days))
+            (total("Open issues", totals.issues, &totals.issues_delta, days))
+            (total("Open PRs", totals.prs, &totals.prs_delta, days))
         }
     }
 }
 
-/// One labelled number. An unobserved total shows an em dash rather than a zero,
-/// for the reason the dashboard cards do: the page must not claim a portfolio
-/// has no stars when watchpost simply has not looked yet.
-fn total(label: &str, value: Option<i64>) -> Markup {
+/// One labelled number and its period movement. An unobserved total shows an
+/// em dash rather than a zero, for the reason the dashboard cards do: the page
+/// must not claim a portfolio has no stars when watchpost simply has not
+/// looked yet.
+fn total(
+    label: &str,
+    value: Option<i64>,
+    deltas: &[Option<i64>; PERIOD_COUNT],
+    days: i64,
+) -> Markup {
     html! {
         li {
             span class="wp-muted wp-small" { (label) }
             strong class="wp-total-value" {
                 @match value { Some(n) => (n), None => "—" }
             }
+            (delta_badge(deltas, days))
         }
     }
 }
@@ -466,6 +484,32 @@ mod tests {
         );
         assert!(
             !out.contains("<strong class=\"wp-total-value\">0</strong>"),
+            "out was {out}"
+        );
+    }
+
+    /// Each total wears the same per-period delta badge the KPI tiles do:
+    /// every period in the markup, one visible, sign class baked server-side.
+    #[test]
+    fn a_total_carries_its_period_delta_badge() {
+        let payload = payload(vec![Some(1)]);
+        let rows = [leader("octo/a", Some(3))];
+        let totals = Totals {
+            stars: Some(140),
+            stars_delta: [Some(2), Some(5), Some(0), None, Some(40)],
+            ..Totals::default()
+        };
+        let out = analytics_body(&view(&totals, &payload, &rows)).into_string();
+        // The default period is All: its +40 is the visible span.
+        assert!(
+            out.contains(r#"class="wp-delta wp-delta-up">+40<"#),
+            "out was {out}"
+        );
+        // An observed flat period says "nothing moved" rather than hiding;
+        // an unobserved one stays an em dash.
+        assert!(out.contains("±0"), "out was {out}");
+        assert!(
+            out.contains(r#"class="wp-delta wp-muted">—<"#),
             "out was {out}"
         );
     }

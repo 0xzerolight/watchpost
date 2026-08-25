@@ -84,6 +84,10 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
     // there is no first repo to take a calendar from.
     let mut labels: Vec<String> = Vec::new();
     let mut stars_total: Vec<Option<i64>> = Vec::new();
+    // Summed only for the totals' delta badges; never shipped to the client.
+    let mut forks_total: Vec<Option<i64>> = Vec::new();
+    let mut issues_total: Vec<Option<i64>> = Vec::new();
+    let mut prs_total: Vec<Option<i64>> = Vec::new();
     let mut leaders = Vec::with_capacity(repos.len());
 
     for repo in &repos {
@@ -91,9 +95,24 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
         if labels.is_empty() {
             labels = rows.iter().map(|(date, _)| date.clone()).collect();
             stars_total = vec![None; labels.len()];
+            forks_total = vec![None; labels.len()];
+            issues_total = vec![None; labels.len()];
+            prs_total = vec![None; labels.len()];
         }
         let stars: Vec<Option<i64>> = rows.into_iter().map(|(_, value)| value).collect();
         add_into(&mut stars_total, stars.iter().copied());
+        for (total, metric) in [
+            (&mut forks_total, Metric::Forks),
+            (&mut issues_total, Metric::Issues),
+            (&mut prs_total, Metric::Prs),
+        ] {
+            add_into(
+                total,
+                queries::dense_series(conn, repo.repo_id, metric, window)?
+                    .into_iter()
+                    .map(|(_, value)| value),
+            );
+        }
 
         let views: Vec<Option<i64>> =
             queries::dense_series(conn, repo.repo_id, Metric::ViewsCount, window)?
@@ -118,8 +137,14 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
     // order is stable across renders.
     leaders.sort_by(|a, b| b.stars.cmp(&a.stars).then_with(|| a.name.cmp(&b.name)));
 
+    let mut totals = Totals::of(&repos);
+    totals.stars_delta = per_period(&stars_total, growth);
+    totals.forks_delta = per_period(&forks_total, growth);
+    totals.issues_delta = per_period(&issues_total, growth);
+    totals.prs_delta = per_period(&prs_total, growth);
+
     Ok(PageData {
-        totals: Totals::of(&repos),
+        totals,
         payload: PortfolioPayload {
             days: selected,
             labels,
