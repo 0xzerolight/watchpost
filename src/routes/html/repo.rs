@@ -1402,7 +1402,8 @@ mod tests {
         );
         // Tiles are buttons, not links: they navigate nowhere.
         assert_eq!(
-            out.matches(r#"<button type="button" class="wp-kpi""#).count(),
+            out.matches(r#"<button type="button" class="wp-kpi""#)
+                .count(),
             2,
             "out was {out}"
         );

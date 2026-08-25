@@ -169,6 +169,11 @@
         item.lineWidth = 0;
       }
     });
+    // Declaration order, not paint order: `order` puts the bars behind the
+    // uniques line, and without this the legend would read "Unique, Views".
+    items.sort(function (a, b) {
+      return a.datasetIndex - b.datasetIndex;
+    });
     return items;
   }
 

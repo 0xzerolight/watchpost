@@ -350,10 +350,11 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
         body.contains(r#"<strong class="wp-total-value">42</strong>"#),
         "{body}"
     );
-    // The delta badge rides the summed dense series: 25 → 30 for A, and B's
-    // single reading contributes level but no movement.
+    // The delta badge rides the same summed series the portfolio chart plots,
+    // so the two always agree: A moved 25 → 30, and B's first reading is a
+    // genuine step up in the total — +12 of arrival plus +5 of growth.
     assert!(
-        body.contains(r#"class="wp-delta wp-delta-up">+5<"#),
+        body.contains(r#"class="wp-delta wp-delta-up">+17<"#),
         "{body}"
     );
 }
