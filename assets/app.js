@@ -1659,6 +1659,46 @@
     }
   }
 
+  /*
+   * Show the hero panel for `id` and press its tile.
+   *
+   * An `aria-pressed` and `hidden` flip and nothing else — every panel's
+   * chart already holds the full payload, so switching metrics costs no
+   * request and no re-render. The one wrinkle is size: a chart built while
+   * its panel was `hidden` measured a zero-height box, so the reveal is when
+   * it learns its real one.
+   */
+  function selectKpi(id) {
+    var tiles = document.querySelectorAll("[data-kpi-tile]");
+    for (var i = 0; i < tiles.length; i++) {
+      tiles[i].setAttribute(
+        "aria-pressed",
+        String(tiles[i].getAttribute("data-kpi-tile") === id),
+      );
+    }
+    var panels = document.querySelectorAll("[data-kpi-panel]");
+    for (var j = 0; j < panels.length; j++) {
+      panels[j].hidden = panels[j].getAttribute("data-kpi-panel") !== id;
+    }
+    var canvas = document.getElementById(id);
+    var chart = canvas && typeof Chart !== "undefined" && Chart.getChart(canvas);
+    if (chart) {
+      chart.resize();
+      chart.update("none");
+    }
+  }
+
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    var tile = target.closest("[data-kpi-tile]");
+    if (tile) {
+      selectKpi(tile.getAttribute("data-kpi-tile"));
+    }
+  });
+
   /* Show the trailing `days` of `payload` on the charts. */
   function renderCharts(payload, days) {
     var view = computeView(payload, days);
@@ -2363,6 +2403,7 @@
   window.watchpost = {
     initRepoCharts: initRepoCharts,
     setPeriod: setPeriod,
+    selectKpi: selectKpi,
     refreshMarkers: refreshMarkers,
     toggleKind: toggleKind,
     initSparklines: initSparklines,

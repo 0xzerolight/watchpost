@@ -193,6 +193,13 @@ async fn app_js_defines_the_watchpost_namespace() {
         // A null is a day watchpost did not observe, and the tooltip is where
         // that stops looking like a zero.
         "not observed",
+        // The KPI tiles carry no inline handlers; this delegated pair is the
+        // only thing that makes a tile swap the hero panel.
+        "data-kpi-tile",
+        "data-kpi-panel",
+        // A chart built inside a hidden panel initialised at zero size;
+        // `selectKpi` is also where it learns its real box on reveal.
+        "selectKpi",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }

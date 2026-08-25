@@ -69,6 +69,12 @@ pub fn sum_observed(values: &[Option<i64>]) -> Option<i64> {
     values.iter().flatten().copied().reduce(|a, b| a + b)
 }
 
+/// The newest observed value — the level a carried-forward series stands at
+/// today. `None` when the series was never observed at all.
+pub fn last_observed(values: &[Option<i64>]) -> Option<i64> {
+    values.iter().rev().find_map(|value| *value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +130,13 @@ mod tests {
             let expected = if *days > 0 { (*days).min(400) } else { 400 };
             assert_eq!(figures[i], Some(expected), "period {days}");
         }
+    }
+
+    #[test]
+    fn last_observed_skips_trailing_gaps() {
+        assert_eq!(last_observed(&[Some(3), Some(5), None]), Some(5));
+        assert_eq!(last_observed(&[None, None]), None);
+        assert_eq!(last_observed(&[]), None);
     }
 
     #[test]

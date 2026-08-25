@@ -25,7 +25,7 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::routes::html::repo::{
-    ChartPayload, ChartSeries, PopularParams, RepoView, Sort, popular_table, repo_body,
+    ChartPayload, ChartSeries, KpiData, PopularParams, RepoView, Sort, popular_table, repo_body,
 };
 use crate::routes::html::{ALL_MIN_DAYS, NavItem, base, get_hx_target, parse_days};
 use crate::state::AppState;
@@ -93,6 +93,7 @@ pub async fn repo_page(
     let view = RepoView {
         repo: &page.repo,
         payload: &page.payload,
+        kpis: &page.kpis,
         referrers: &page.referrers,
         paths: &page.paths,
         events: &page.events,
@@ -116,6 +117,7 @@ pub async fn repo_page(
 struct PageData {
     repo: RepoOverview,
     payload: ChartPayload,
+    kpis: KpiData,
     referrers: Vec<PopularItem>,
     paths: Vec<PopularItem>,
     events: Vec<Event>,
@@ -131,9 +133,13 @@ fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageDat
     let Some(repo) = queries::repo_overview_one(conn, repo_id)? else {
         return Ok(None);
     };
+    let payload = chart_payload(conn, repo_id, all_window(conn, repo_id)?, selected)?;
     Ok(Some(PageData {
         repo,
-        payload: chart_payload(conn, repo_id, all_window(conn, repo_id)?, selected)?,
+        // Derived from the payload it ships beside, so the tiles and the
+        // charts always describe the same series.
+        kpis: KpiData::of(&payload.series),
+        payload,
         // 0 is `popular_items`' "all time" — these tables ignore the charts'
         // period, and the repo's first *chartable* observation is not
         // necessarily its first referrer row anyway.
