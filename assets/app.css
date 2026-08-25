@@ -455,6 +455,55 @@
 }
 
 /*
+ * The chart tooltip — the HTML replacement for Chart.js's canvas-drawn one
+ * (`externalTooltip` in app.js). Same face as the marker tip; the shared
+ * rule keeps the two indistinguishable at a glance.
+ */
+#chart-tip {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  max-width: 22rem;
+  padding: var(--wp-space-2) var(--wp-space-3);
+  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  background: var(--pico-card-background-color, #fff);
+  box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+
+#chart-tip.wp-visible {
+  display: block;
+}
+
+.wp-tip-title {
+  margin-bottom: var(--wp-space-1);
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-tip-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wp-space-2);
+}
+
+/* The series colour, set by app.js through the CSSOM; everything else here. */
+.wp-tip-swatch {
+  flex: 0 0 auto;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  align-self: center;
+}
+
+.wp-tip-label {
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+}
+
+/*
  * The kind chip inside a tip, beside the date. `.wp-chip` zeroes its own
  * margins, so the gap is put back here rather than from JavaScript — the rule
  * has to sit after `.wp-chip` to win, both being a single class.

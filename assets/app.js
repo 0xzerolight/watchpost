@@ -137,9 +137,6 @@
     return {
       grid: css("--wp-chart-grid", "#eff1f4"),
       tick: css("--wp-chart-tick", "#6b7280"),
-      ink: css("--pico-color", "#373c44"),
-      card: css("--pico-card-background-color", "#ffffff"),
-      cardBorder: css("--pico-card-border-color", "#d0d5dd"),
     };
   }
 
@@ -153,11 +150,8 @@
     chart.options.scales.y.ticks.color = c.tick;
     chart.options.scales.y.grid.color = c.grid;
     chart.options.plugins.legend.labels.color = c.tick;
-    var tooltip = chart.options.plugins.tooltip;
-    tooltip.backgroundColor = c.card;
-    tooltip.borderColor = c.cardBorder;
-    tooltip.titleColor = c.ink;
-    tooltip.bodyColor = c.ink;
+    // The tooltip is an HTML element now (`externalTooltip`); it takes its
+    // colours from the stylesheet and needs nothing written here.
   }
 
   /*
@@ -599,18 +593,19 @@
     });
   }
 
-  function showTip(events, native) {
-    var tip = markerTip();
-    fillTip(tip, events);
-    tip.classList.add("wp-visible");
-
-    // Both measurements are taken after the fill and the unhide: a hidden
-    // element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
-    // any earlier would decide it fits everywhere.
-    var x = native.pageX + 14;
+  /*
+   * Place an already-visible tip beside a page-coordinate point, flipped away
+   * from the viewport edges. Shared by the marker tip and the chart tooltip.
+   *
+   * Measurements have to happen after the fill and the unhide: a hidden
+   * element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
+   * any earlier would decide it fits everywhere.
+   */
+  function placeTip(tip, pageX, pageY) {
+    var x = pageX + 14;
     var maxX = window.scrollX + document.documentElement.clientWidth - 8;
     if (x + tip.offsetWidth > maxX) {
-      x = Math.max(window.scrollX + 8, native.pageX - tip.offsetWidth - 14);
+      x = Math.max(window.scrollX + 8, pageX - tip.offsetWidth - 14);
     }
     // Written before the height is read, not with the `top` below. The tip is
     // absolutely positioned with an automatic width, so the room between its
@@ -625,12 +620,19 @@
     // cursor keeps it beside the marker it belongs to; the `Math.max` pins a
     // tip taller than the viewport to the top edge, losing its last line rather
     // than its first.
-    var y = native.pageY + 14;
+    var y = pageY + 14;
     var maxY = window.scrollY + document.documentElement.clientHeight - 8;
     if (y + tip.offsetHeight > maxY) {
-      y = Math.max(window.scrollY + 8, native.pageY - tip.offsetHeight - 14);
+      y = Math.max(window.scrollY + 8, pageY - tip.offsetHeight - 14);
     }
     tip.style.top = y + "px";
+  }
+
+  function showTip(events, native) {
+    var tip = markerTip();
+    fillTip(tip, events);
+    tip.classList.add("wp-visible");
+    placeTip(tip, native.pageX, native.pageY);
   }
 
   /*
@@ -774,13 +776,145 @@
       }
       if (hits.length && e.native) {
         // Several events on one day (or in one week) share a column, so the
-        // tip lists all of them rather than picking one arbitrarily.
+        // tip lists all of them rather than picking one arbitrarily. The
+        // chart tooltip yields — two tips over one point is noise.
+        hideChartTip();
         showTip(hits, e.native);
         chart.canvas.style.cursor = "pointer";
       } else {
         hideTip();
         chart.canvas.style.cursor = "";
       }
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // Chart tooltip and crosshair
+  // -------------------------------------------------------------------------
+
+  /*
+   * The chart tooltip is an HTML element styled by app.css, not the built-in
+   * canvas drawing. Chart.js is told `enabled: false` and still decides what
+   * is hovered — it hands this handler the rows and a caret position, and only
+   * the rendering is ours. That is what lets the tip wear the page's own
+   * card face, which no canvas tooltip option can quite reproduce.
+   */
+  var chartTipEl = null;
+
+  function chartTip() {
+    if (chartTipEl && chartTipEl.isConnected) {
+      return chartTipEl;
+    }
+    chartTipEl = document.getElementById("chart-tip");
+    if (!chartTipEl) {
+      chartTipEl = document.createElement("div");
+      chartTipEl.id = "chart-tip";
+      // On the body for the same reason as the marker tip: `.chart-box` clips.
+      document.body.appendChild(chartTipEl);
+    }
+    return chartTipEl;
+  }
+
+  function hideChartTip() {
+    if (chartTipEl) {
+      chartTipEl.classList.remove("wp-visible");
+    }
+  }
+
+  /*
+   * Built node by node with `textContent`, like the marker tip: labels here
+   * are watchpost's own strings today, but one discipline for everything that
+   * reaches a tip is cheaper than remembering which strings are trusted.
+   */
+  function externalTooltip(context) {
+    var model = context.tooltip;
+    if (!model || model.opacity === 0 || !(model.dataPoints || []).length) {
+      hideChartTip();
+      return;
+    }
+
+    var tip = chartTip();
+    tip.textContent = "";
+
+    var title = document.createElement("div");
+    title.className = "wp-tip-title";
+    // The bucket heading the period change rewrites — same source as the old
+    // canvas tooltip's title callback, read off the chart, not a captured
+    // array.
+    title.textContent =
+      context.chart.$wp.titles[model.dataPoints[0].dataIndex] || "";
+    tip.appendChild(title);
+
+    model.dataPoints.forEach(function (point) {
+      var row = document.createElement("div");
+      row.className = "wp-tip-row";
+
+      var swatch = document.createElement("span");
+      swatch.className = "wp-tip-swatch";
+      // CSSOM assignment, which the CSP allows; a style attribute it would
+      // not. The dataset backgroundColor may be a gradient — borderColor is
+      // the solid series colour.
+      swatch.style.backgroundColor = point.dataset.borderColor;
+      row.appendChild(swatch);
+
+      // Value before label: the reader hovering a column already knows the
+      // series and wants the number. Chart.js formats a null as "0"; the
+      // point is correctly absent and the tip must not invent a zero.
+      var missing = point.raw === null || point.raw === undefined;
+      var value = document.createElement("strong");
+      value.className = missing ? "wp-tip-value wp-muted" : "wp-tip-value";
+      value.textContent = missing ? "not observed" : point.formattedValue;
+      row.appendChild(value);
+
+      if (point.dataset.label) {
+        var label = document.createElement("span");
+        label.className = "wp-tip-label";
+        label.textContent = point.dataset.label;
+        row.appendChild(label);
+      }
+
+      tip.appendChild(row);
+    });
+
+    tip.classList.add("wp-visible");
+    var rect = context.chart.canvas.getBoundingClientRect();
+    placeTip(
+      tip,
+      rect.left + window.scrollX + model.caretX,
+      rect.top + window.scrollY + model.caretY
+    );
+  }
+
+  /*
+   * One solid hairline at the hovered column, the affordance that tells the
+   * reader which bucket the tip is describing. Solid and greyed on purpose:
+   * a dash pattern here would read as another event marker.
+   */
+  var wpCrosshair = {
+    id: "wpCrosshair",
+
+    afterDatasetsDraw: function (chart) {
+      var active = chart.tooltip && chart.tooltip.getActiveElements();
+      if (!active || !active.length) {
+        return;
+      }
+      var area = chart.chartArea;
+      var x = active[0].element.x;
+      if (!area || !isFinite(x) || x < area.left || x > area.right) {
+        return;
+      }
+      var ctx = chart.ctx;
+      ctx.save();
+      // `globalAlpha` rather than an rgba rewrite: the tick colour comes from
+      // a Pico variable and is not guaranteed to be six-digit hex.
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = css("--wp-chart-tick", "#6b7280");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, area.top);
+      ctx.lineTo(x, area.bottom);
+      ctx.stroke();
+      ctx.restore();
     },
   };
 
@@ -1107,44 +1241,12 @@
             },
           },
           tooltip: {
-            usePointStyle: true,
-            boxWidth: 6,
-            boxHeight: 6,
-            boxPadding: 4,
-            cornerRadius: 6,
-            padding: 10,
-            borderWidth: 1,
-            callbacks: {
-              title: function (items) {
-                // Read off the chart, not off a captured array: the titles
-                // change under a live chart on every period change.
-                return items[0].chart.$wp.titles[items[0].dataIndex];
-              },
-              label: function (item) {
-                var name = item.dataset.label ? item.dataset.label + ": " : "";
-                // Chart.js formats a null as "0". Leaving that alone would
-                // undo the whole point of plotting gaps as gaps: the point is
-                // correctly absent, and then the tooltip tells the reader the
-                // repo got zero views that day.
-                if (item.raw === null || item.raw === undefined) {
-                  return name + "not observed";
-                }
-                return name + item.formattedValue;
-              },
-              // The dataset backgroundColor is a gradient; the tooltip box
-              // must be the solid series colour.
-              labelColor: function (item) {
-                var colour = item.dataset.borderColor;
-                return { borderColor: colour, backgroundColor: colour };
-              },
-              labelPointStyle: function () {
-                return { pointStyle: "circle", rotation: 0 };
-              },
-            },
+            enabled: false,
+            external: externalTooltip,
           },
         },
       },
-      plugins: [eventMarkers],
+      plugins: [eventMarkers, wpCrosshair],
     });
 
     /*

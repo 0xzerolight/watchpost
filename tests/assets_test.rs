@@ -175,6 +175,15 @@ async fn app_js_defines_the_watchpost_namespace() {
         // out of reduced motion, but a smooth `scrollIntoView` is JavaScript's
         // and no stylesheet can cancel it.
         "(prefers-reduced-motion: reduce)",
+        // The chart tooltip is an HTML element, not the canvas-drawn built-in:
+        // Chart.js is told `enabled: false` and hands every show/hide to this
+        // handler. Lose it and hovering a chart shows nothing at all.
+        "externalTooltip",
+        // The hover crosshair is a plugin of ours, not a Chart.js feature.
+        "wpCrosshair",
+        // A null is a day watchpost did not observe, and the tooltip is where
+        // that stops looking like a zero.
+        "not observed",
     ] {
         assert!(body.contains(name), "app.js is missing {name}");
     }
