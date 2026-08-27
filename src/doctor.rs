@@ -17,6 +17,7 @@ use crate::db::Db;
 use crate::db::queries;
 use crate::errors::{DbError, GhError};
 use crate::gh_client::{GhClient, RateLimitInfo};
+use crate::schedule::{Schedule, ScheduleSource, resolve_schedule};
 use crate::types::RepoRow;
 
 /// Every table the schema owns, in the order the report lists them.
@@ -93,6 +94,8 @@ pub fn doctor_report(
     gh: &Option<Result<RateLimitInfo, GhError>>,
     token: Option<&str>,
     source: TokenSource,
+    schedule: &Schedule,
+    schedule_source: ScheduleSource,
 ) -> (String, bool) {
     let mut out = String::new();
     out.push_str("watchpost doctor\n\n");
@@ -105,6 +108,18 @@ pub fn doctor_report(
     out.push_str(&format!(
         "  token in use: {}\n\n",
         token_summary(token, source)
+    ));
+
+    // "why has it not collected" is the question this tool exists for, and the
+    // schedule now has three possible owners.
+    out.push_str("schedule\n");
+    out.push_str(&format!(
+        "  {schedule} ({})\n\n",
+        match schedule_source {
+            ScheduleSource::Env => "WATCHPOST_CRON",
+            ScheduleSource::Database => "settings page",
+            ScheduleSource::Default => "default",
+        }
     ));
 
     out.push_str("database\n");
@@ -244,17 +259,23 @@ pub async fn run_doctor(cfg: &Config) -> ExitCode {
     // a wizard-supplied token lives: a doctor run that only read the
     // environment would report "no token" on an install that has one and is
     // working.
-    let (stored, db_probe) = match Db::open(&cfg.db_path) {
+    let (stored, stored_interval, db_probe) = match Db::open(&cfg.db_path) {
         Ok(db) => {
             let stored = db
                 .call(|c| queries::get_setting(c, queries::GITHUB_TOKEN_KEY))
                 .await
                 .unwrap_or(None);
-            (stored, probe_db(&db, &cfg.db_path).await)
+            let interval = db
+                .call(|c| queries::get_setting(c, queries::SYNC_INTERVAL_KEY))
+                .await
+                .unwrap_or(None);
+            (stored, interval, probe_db(&db, &cfg.db_path).await)
         }
-        Err(e) => (None, Err(e)),
+        Err(e) => (None, None, Err(e)),
     };
     let (token, source) = resolve_token(cfg.github_token.as_deref(), stored);
+    let (schedule, schedule_source) =
+        resolve_schedule(cfg.cron_schedule.as_deref(), stored_interval.as_deref());
 
     let gh_result = match token.as_deref() {
         Some(t) => Some(match GhClient::new(t, cfg.github_api_base.clone()) {
@@ -264,7 +285,15 @@ pub async fn run_doctor(cfg: &Config) -> ExitCode {
         None => None,
     };
 
-    let (report, ok) = doctor_report(cfg, &db_probe, &gh_result, token.as_deref(), source);
+    let (report, ok) = doctor_report(
+        cfg,
+        &db_probe,
+        &gh_result,
+        token.as_deref(),
+        source,
+        &schedule,
+        schedule_source,
+    );
     print!("{report}");
 
     if ok {

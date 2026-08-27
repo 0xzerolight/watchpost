@@ -3,6 +3,7 @@
 //! captured stdout (the report is built as a string and printed separately).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -14,6 +15,7 @@ use watchpost::db::Db;
 use watchpost::db::queries;
 use watchpost::doctor::{doctor_report, probe_db, run_doctor};
 use watchpost::gh_client::GhClient;
+use watchpost::schedule::{Schedule, ScheduleSource};
 use watchpost::types::GhRepo;
 
 /// Distinctive enough that a leak is unambiguous: the middle must never be
@@ -32,6 +34,14 @@ fn config_for(api_base: &str) -> Config {
         github_page_base: api_base.parse().unwrap(),
         timezone: Tz::UTC,
     }
+}
+
+/// The schedule pair every call that is not about scheduling passes.
+fn default_schedule() -> (Schedule, ScheduleSource) {
+    (
+        Schedule::Cron("0 5 * * * *".to_string()),
+        ScheduleSource::Default,
+    )
 }
 
 fn rate_limit_body(remaining: i64) -> serde_json::Value {
@@ -103,6 +113,8 @@ async fn report_lists_schema_version_and_table_counts() {
         &Some(gh),
         Some(SECRET_TOKEN),
         TokenSource::Env,
+        &default_schedule().0,
+        default_schedule().1,
     );
 
     assert!(ok, "healthy db + reachable api must pass:\n{report}");
@@ -149,6 +161,8 @@ async fn report_never_prints_the_token() {
         &Some(gh),
         Some(SECRET_TOKEN),
         TokenSource::Env,
+        &default_schedule().0,
+        default_schedule().1,
     );
 
     assert!(!report.contains(SECRET_TOKEN), "{report}");
@@ -175,6 +189,8 @@ async fn unauthorized_rate_limit_prints_the_scope_hint_and_fails() {
         &Some(gh),
         Some(SECRET_TOKEN),
         TokenSource::Env,
+        &default_schedule().0,
+        default_schedule().1,
     );
 
     assert!(!ok, "{report}");
@@ -200,6 +216,8 @@ async fn forbidden_rate_limit_also_prints_the_scope_hint() {
         &Some(gh),
         Some(SECRET_TOKEN),
         TokenSource::Env,
+        &default_schedule().0,
+        default_schedule().1,
     );
 
     assert!(!ok, "{report}");
@@ -216,7 +234,15 @@ async fn a_missing_token_fails_and_points_at_the_setup_page() {
     let db = seeded_db();
 
     let probe = probe_db(&db, &cfg.db_path).await;
-    let (report, ok) = doctor_report(&cfg, &probe, &None, None, TokenSource::Unset);
+    let (report, ok) = doctor_report(
+        &cfg,
+        &probe,
+        &None,
+        None,
+        TokenSource::Unset,
+        &default_schedule().0,
+        default_schedule().1,
+    );
 
     assert!(!ok, "{report}");
     assert!(report.contains("no token configured"), "{report}");
@@ -245,6 +271,8 @@ async fn the_report_names_where_the_token_came_from() {
         &None,
         Some(SECRET_TOKEN),
         TokenSource::Database,
+        &default_schedule().0,
+        default_schedule().1,
     );
     assert!(report.contains("…1234 from the database"), "{report}");
     assert!(!report.contains(SECRET_TOKEN), "{report}");
@@ -265,4 +293,43 @@ async fn unreachable_github_exits_nonzero() {
         format!("{:?}", std::process::ExitCode::FAILURE),
         "an unreachable API must fail the doctor"
     );
+}
+
+/// "why has it not collected" is the question this tool exists for, and the
+/// schedule now has three possible owners.
+#[tokio::test]
+async fn the_report_names_the_schedule_and_where_it_came_from() {
+    let cfg = config_for("https://api.github.com");
+    let db = seeded_db();
+    let probe = probe_db(&db, &cfg.db_path).await;
+
+    for (schedule, source, expected) in [
+        (
+            Schedule::Cron("0 5 * * * *".to_string()),
+            ScheduleSource::Env,
+            "cron 0 5 * * * * (WATCHPOST_CRON)",
+        ),
+        (
+            Schedule::Every(Duration::from_secs(6 * 3600)),
+            ScheduleSource::Database,
+            "every 6h (settings page)",
+        ),
+        (
+            Schedule::Cron("0 5 * * * *".to_string()),
+            ScheduleSource::Default,
+            "cron 0 5 * * * * (default)",
+        ),
+    ] {
+        let (report, _) = doctor_report(
+            &cfg,
+            &probe,
+            &None,
+            None,
+            TokenSource::Unset,
+            &schedule,
+            source,
+        );
+        assert!(report.contains("schedule\n"), "{report}");
+        assert!(report.contains(expected), "{report}");
+    }
 }
