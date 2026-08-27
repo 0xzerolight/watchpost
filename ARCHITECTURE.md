@@ -25,8 +25,10 @@ file, the WAL sidecars beside it, and whatever pre-migration backups it has take
 
 ## Collection
 
-- The collector runs on `WATCHPOST_CRON` (default `0 5 * * * *`, so hourly at five past), plus once
-  at startup, plus whenever you press **Sync now**.
+- The collector runs on whichever schedule resolves first: `WATCHPOST_CRON` (six-field cron, UTC),
+  then the interval saved from the settings page (`5m`–`14d`, swapped into the running scheduler
+  without a restart), then the default `0 5 * * * *` — hourly at five past. Plus once at startup,
+  plus whenever you press **Sync now**.
 - Per tracked repo it calls `repos/{name}`, `/pulls`, `/traffic/views`, `/traffic/clones`,
   `/traffic/popular/referrers`, `/traffic/popular/paths`, `/releases` and — once, on first sync —
   `/stargazers` to backfill star history.
@@ -98,9 +100,10 @@ then jumps to the current total, and daily sampling takes over from the first sy
 
 **Times display in `WATCHPOST_TZ`; days are UTC.** Timestamps you read — "last synced", the
 `--doctor` rate-limit reset, and the day a new event defaults to — render in the zone you
-configure, with that zone's abbreviation. Everything that groups by day does not: `WATCHPOST_CRON`,
-the dates stored in the database, and the chart columns are all UTC, because GitHub returns traffic
-already summed per UTC day and those buckets cannot be re-cut. A collection also runs at startup,
+configure, with that zone's abbreviation. Everything that groups by day does not: the collection
+schedule (`WATCHPOST_CRON` or the saved interval alike), the dates stored in the database, and the
+chart columns are all UTC, because GitHub returns traffic already summed per UTC day and those
+buckets cannot be re-cut. A collection also runs at startup,
 so restarting is a way to force a refresh.
 
 ## Diagnostics

@@ -60,7 +60,7 @@ async fn harness_with_token(token: &str, source: TokenSource) -> Harness {
             TokenSource::Env => Some(token.to_owned()),
             _ => None,
         },
-        cron_schedule: "0 5 * * * *".into(),
+        cron_schedule: None,
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
         port: 8080,
@@ -538,7 +538,7 @@ async fn csrf_enforced_on_settings_posts() {
     let h = harness().await;
     h.seed(ID_A, REPO_A, true).await;
 
-    for uri in ["/settings/repos", "/sync"] {
+    for uri in ["/settings/repos", "/settings/schedule", "/sync"] {
         let resp = h
             .app
             .clone()
@@ -808,4 +808,173 @@ async fn replacing_the_token_without_csrf_is_rejected() {
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(h.state.gh_slot().hint.as_deref(), Some("4321"));
+}
+
+// ---------------------------------------------------------------------------
+// POST /settings/schedule
+// ---------------------------------------------------------------------------
+
+/// The same harness with the schedule claimed by the environment.
+async fn harness_with_cron(cron: &str) -> Harness {
+    let mut h = harness().await;
+    // `cfg` is not mutable through the `Arc`, so rebuild the state around a
+    // config that carries the expression.
+    let mut cfg = h.state.cfg.clone();
+    cfg.cron_schedule = Some(cron.to_owned());
+    let base: Url = h.server.uri().parse().unwrap();
+    let state = Arc::new(AppState::new(
+        Db::open_in_memory().unwrap(),
+        cfg,
+        Some(GhClient::new("t", base).unwrap()),
+        Some("t"),
+        TokenSource::Env,
+    ));
+    h.app = router(Arc::clone(&state));
+    h.state = state;
+    h
+}
+
+async fn stored_interval(h: &Harness) -> Option<String> {
+    h.state
+        .db
+        .call(|c| queries::get_setting(c, queries::SYNC_INTERVAL_KEY))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn saving_an_interval_persists_it_and_shows_it_back() {
+    let h = harness().await;
+    let token = h.csrf_token().await;
+
+    let resp = h
+        .post_form("/settings/schedule", "interval=6h", &token)
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+
+    assert!(body.contains(r#"value="6h""#), "{body}");
+    assert!(body.contains("Use the default"), "{body}");
+    assert_eq!(stored_interval(&h).await.as_deref(), Some("6h"));
+}
+
+/// The harness router runs without a scheduler, which is also the shape of an
+/// install whose boot-time start failed. The setting still has to save — it
+/// takes effect on the next restart — so the panel says that rather than
+/// reporting a failure to save.
+#[tokio::test]
+async fn saving_without_a_running_scheduler_still_stores_the_interval() {
+    let h = harness().await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/schedule", "interval=6h", &token)
+            .await,
+    )
+    .await;
+    assert!(body.contains("wp-notice-info"), "{body}");
+    assert!(body.contains("next restart"), "{body}");
+    assert!(body.contains("not scheduled"), "{body}");
+    assert_eq!(stored_interval(&h).await.as_deref(), Some("6h"));
+}
+
+/// With a scheduler running, the save applies to it: the notice is a plain
+/// success and the panel can name the next cycle.
+#[tokio::test]
+async fn saving_with_a_running_scheduler_applies_it_and_names_the_next_sync() {
+    let h = harness().await;
+    watchpost::schedule::start(Arc::clone(&h.state))
+        .await
+        .unwrap();
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/schedule", "interval=6h", &token)
+            .await,
+    )
+    .await;
+    assert!(body.contains("wp-notice-success"), "{body}");
+    assert!(!body.contains("not scheduled"), "{body}");
+    // Six hours out, so the countdown reads in hours rather than the cron
+    // default's minutes.
+    assert!(body.contains("in 5h") || body.contains("in 6h"), "{body}");
+}
+
+/// Stored as typed, not as normalized: the field shows back what was written.
+#[tokio::test]
+async fn a_compound_interval_is_stored_exactly_as_it_was_typed() {
+    let h = harness().await;
+    let token = h.csrf_token().await;
+
+    h.post_form("/settings/schedule", "interval=1h+30m", &token)
+        .await;
+    assert_eq!(stored_interval(&h).await.as_deref(), Some("1h 30m"));
+}
+
+/// A rejected value must change nothing: the previous schedule keeps running
+/// and the field shows what was typed next to why it was refused.
+#[tokio::test]
+async fn a_rejected_interval_is_not_written() {
+    let h = harness().await;
+    let token = h.csrf_token().await;
+    h.post_form("/settings/schedule", "interval=6h", &token)
+        .await;
+
+    for (raw, expected) in [
+        ("interval=2m", "The shortest interval is 5m."),
+        ("interval=30d", "The longest interval is 14d"),
+        ("interval=banana", "is not a duration"),
+    ] {
+        let body = body_string(h.post_form("/settings/schedule", raw, &token).await).await;
+        assert!(body.contains(expected), "{raw}: {body}");
+        assert!(body.contains("wp-field-error"), "{raw}: {body}");
+        assert_eq!(
+            stored_interval(&h).await.as_deref(),
+            Some("6h"),
+            "{raw} must not have been written"
+        );
+    }
+}
+
+/// A setting with no way back to the default is a trap, so a blank field is a
+/// reset rather than a validation failure.
+#[tokio::test]
+async fn a_blank_interval_returns_the_install_to_the_default() {
+    let h = harness().await;
+    let token = h.csrf_token().await;
+    h.post_form("/settings/schedule", "interval=6h", &token)
+        .await;
+
+    let body = body_string(h.post_form("/settings/schedule", "interval=", &token).await).await;
+    assert!(body.contains("hourly"), "{body}");
+    assert!(!body.contains("Use the default"), "{body}");
+    assert_eq!(stored_interval(&h).await, None);
+}
+
+/// The environment owns the schedule, so a POST from a stale page must not
+/// write one. The panel it re-renders has no form, for the same reason the
+/// token panel has none when `WATCHPOST_GITHUB_TOKEN` is set.
+#[tokio::test]
+async fn an_environment_schedule_cannot_be_replaced_from_a_browser() {
+    let h = harness_with_cron("0 */10 * * * *").await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/schedule", "interval=6h", &token)
+            .await,
+    )
+    .await;
+    assert!(body.contains("WATCHPOST_CRON"), "{body}");
+    assert!(!body.contains(r#"name="interval""#), "{body}");
+    assert_eq!(stored_interval(&h).await, None);
+}
+
+#[tokio::test]
+async fn the_settings_page_renders_the_schedule_panel() {
+    let h = harness().await;
+    let body = body_string(h.get("/settings").await).await;
+
+    assert!(body.contains(r#"id="schedule-panel""#), "{body}");
+    assert!(body.contains(r#"name="interval""#), "{body}");
+    assert!(body.contains("Next sync"), "{body}");
 }

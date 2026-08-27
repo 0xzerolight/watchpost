@@ -3,11 +3,16 @@
 //! (`#repos-picker`, `#sync-status`) — an `outerHTML` swap replaces exactly
 //! what these functions produce.
 
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use maud::{Markup, html};
 
-use super::ui::{Notice, empty_state, error_glyph, notice, spinner, table_wrap, timestamp};
+use super::ui::{
+    Notice, empty_state, error_glyph, field, future_timestamp, notice, spinner, table_wrap,
+    timestamp,
+};
 use crate::config::TokenSource;
+use crate::schedule::{Resolved, Schedule, ScheduleSource};
 use crate::state::{GhSlot, SyncStatus};
 use crate::types::RepoRow;
 
@@ -73,6 +78,141 @@ fn token_form(label: &str) -> Markup {
             div class="wp-actions" {
                 button type="submit" { (label) }
                 (spinner("token-spinner"))
+            }
+        }
+    }
+}
+
+/// Everything the schedule panel renders.
+///
+/// A struct rather than seven parameters: the panel has three quite different
+/// states — the environment owns the schedule, the database owns it, nobody
+/// has said — and each one reads different fields.
+pub struct ScheduleView {
+    pub source: ScheduleSource,
+    /// The cron expression in force, for the two states that have one.
+    pub cron: Option<String>,
+    /// What the interval field shows: the stored value, or the text that was
+    /// just submitted and rejected.
+    pub interval: String,
+    /// The message under the field, when the submitted value was rejected.
+    pub error: Option<String>,
+    /// The banner above the panel.
+    pub msg: Option<(Notice, String)>,
+    /// When the next cycle is due.
+    pub next: Option<DateTime<Utc>>,
+}
+
+impl ScheduleView {
+    /// The panel as the install currently stands.
+    pub fn current(
+        resolved: &Resolved,
+        next: Option<DateTime<Utc>>,
+        msg: Option<(Notice, String)>,
+    ) -> Self {
+        Self {
+            source: resolved.source,
+            cron: match &resolved.schedule {
+                Schedule::Cron(expr) => Some(expr.clone()),
+                Schedule::Every(_) => None,
+            },
+            interval: resolved.stored.clone().unwrap_or_default(),
+            error: None,
+            msg,
+            next,
+        }
+    }
+
+    /// The panel after a submission was rejected: what was typed stays in the
+    /// field, so the reader can fix it rather than retype it from memory.
+    pub fn rejected(
+        resolved: &Resolved,
+        submitted: String,
+        error: String,
+        next: Option<DateTime<Utc>>,
+    ) -> Self {
+        let mut view = Self::current(resolved, next, None);
+        view.interval = submitted;
+        view.error = Some(error);
+        view
+    }
+}
+
+/// The sync schedule section.
+///
+/// An environment-supplied schedule gets a statement rather than a field, for
+/// exactly the reason [`token_panel`] gives: the next boot reads
+/// `WATCHPOST_CRON` again and overwrites whatever a browser saved, so offering
+/// the form would be offering a change that silently reverts.
+pub fn schedule_panel(view: &ScheduleView, tz: Tz) -> Markup {
+    html! {
+        div id="schedule-panel" {
+            @if let Some((kind, text)) = &view.msg {
+                (notice(*kind, html! { (text) }))
+            }
+            @match view.source {
+                ScheduleSource::Env => p {
+                    "Set by " code { "WATCHPOST_CRON" }
+                    @if let Some(cron) = &view.cron { " (" code { (cron) } ")" }
+                    ". Change it in the environment and restart."
+                }
+                _ => {
+                    @if view.source == ScheduleSource::Default {
+                        p { "Collecting on the default schedule: hourly, at five past." }
+                    }
+                    (schedule_form(view))
+                }
+            }
+            p class="wp-muted wp-small" {
+                "Next sync " (future_timestamp(view.next, tz))
+            }
+        }
+    }
+}
+
+/// The field itself. Swaps the whole panel, so the notice, the field and the
+/// new next-sync time arrive together.
+fn schedule_form(view: &ScheduleView) -> Markup {
+    let invalid = view.error.is_some();
+    html! {
+        // The save is the form's own request: htmx triggers a form on
+        // `submit`, which is what Enter in the field raises.
+        form hx-post="/settings/schedule"
+            hx-target="#schedule-panel"
+            hx-swap="outerHTML"
+            hx-disabled-elt="find button[type=submit]"
+            hx-indicator="#schedule-spinner" {
+            (field("settings-interval", "Sync every", view.error.as_deref(), html! {
+                input type="text"
+                    id="settings-interval"
+                    name="interval"
+                    value=(view.interval)
+                    placeholder="1h"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-invalid=[invalid.then_some("true")]
+                    aria-describedby=[invalid.then_some("settings-interval-error")];
+            }))
+            small class="wp-muted" {
+                "Terms add up: " code { "10m" } ", " code { "6h" } ", " code { "1d" } ", "
+                code { "1h 30m" } ". Units are m, h, d and w, between 5m and 14d."
+            }
+            div class="wp-actions" {
+                button type="submit" { "Save" }
+                (spinner("schedule-spinner"))
+                // Only when there is something stored to clear. The button
+                // posts an empty interval rather than hitting a second route,
+                // because "blank means the default" is one code path either
+                // way. It is not a submitter, so it does not carry the field's
+                // value along with it.
+                @if view.source == ScheduleSource::Database {
+                    button type="button" class="secondary"
+                        hx-post="/settings/schedule"
+                        hx-vals=r#"{"interval": ""}"#
+                        hx-target="#schedule-panel"
+                        hx-swap="outerHTML"
+                        hx-disabled-elt="this" { "Use the default" }
+                }
             }
         }
     }
@@ -252,6 +392,159 @@ mod tests {
             error_streak: 0,
             backoff_until: None,
         }
+    }
+
+    use crate::schedule::{Resolved, Schedule, ScheduleSource};
+
+    fn resolved(source: ScheduleSource, schedule: Schedule, stored: Option<&str>) -> Resolved {
+        Resolved {
+            schedule,
+            source,
+            stored: stored.map(str::to_owned),
+        }
+    }
+
+    /// Half a minute past the boundary: the countdown truncates, so an instant
+    /// exactly 42 minutes out reads "in 41m" once the test itself has run.
+    fn soon() -> Option<DateTime<Utc>> {
+        Some(Utc::now() + chrono::Duration::minutes(42) + chrono::Duration::seconds(30))
+    }
+
+    /// An environment-set schedule gets a statement rather than a field, for
+    /// the same reason an environment-set token does: the next boot reads the
+    /// environment again and overwrites whatever a browser saved.
+    #[test]
+    fn an_environment_schedule_is_stated_not_offered() {
+        let view = ScheduleView::current(
+            &resolved(
+                ScheduleSource::Env,
+                Schedule::Cron("0 */10 * * * *".into()),
+                None,
+            ),
+            soon(),
+            None,
+        );
+        let out = schedule_panel(&view, Tz::UTC).into_string();
+
+        assert!(out.contains("WATCHPOST_CRON"), "{out}");
+        assert!(out.contains("0 */10 * * * *"), "{out}");
+        assert!(out.contains("restart"), "{out}");
+        assert!(!out.contains("<form"), "{out}");
+        assert!(!out.contains(r#"name="interval""#), "{out}");
+        // The next sync still shows: it is a fact about the install, not part
+        // of the form.
+        assert!(out.contains("in 42m"), "{out}");
+    }
+
+    #[test]
+    fn a_stored_interval_fills_the_field_and_offers_the_default_back() {
+        let view = ScheduleView::current(
+            &resolved(
+                ScheduleSource::Database,
+                Schedule::Every(std::time::Duration::from_secs(6 * 3600)),
+                Some("6h"),
+            ),
+            soon(),
+            Some((Notice::Success, "Saved.".to_owned())),
+        );
+        let out = schedule_panel(&view, Tz::UTC).into_string();
+
+        assert!(out.contains(r#"id="schedule-panel""#), "{out}");
+        assert!(out.contains(r#"hx-post="/settings/schedule""#), "{out}");
+        assert!(out.contains(r#"value="6h""#), "{out}");
+        assert!(out.contains("wp-notice-success"), "{out}");
+        // A setting with no way back to the default is a trap.
+        assert!(out.contains("Use the default"), "{out}");
+        assert!(out.contains("hx-vals"), "{out}");
+    }
+
+    /// The default is a cron expression, not an interval, so the field starts
+    /// empty and the panel says what is running instead of pretending a value.
+    #[test]
+    fn the_default_leaves_the_field_empty_and_names_the_schedule() {
+        let view = ScheduleView::current(
+            &resolved(
+                ScheduleSource::Default,
+                Schedule::Cron("0 5 * * * *".into()),
+                None,
+            ),
+            soon(),
+            None,
+        );
+        let out = schedule_panel(&view, Tz::UTC).into_string();
+
+        assert!(out.contains(r#"name="interval""#), "{out}");
+        assert!(out.contains(r#"value="""#), "{out}");
+        assert!(out.contains("hourly"), "{out}");
+        // There is nothing stored, so there is nothing to reset to.
+        assert!(!out.contains("Use the default"), "{out}");
+    }
+
+    /// A rejected value stays in the field. Clearing it would make the reader
+    /// retype from memory the thing they just got wrong.
+    #[test]
+    fn a_rejected_value_stays_in_the_field_beside_its_reason() {
+        let view = ScheduleView::rejected(
+            &resolved(
+                ScheduleSource::Default,
+                Schedule::Cron("0 5 * * * *".into()),
+                None,
+            ),
+            "2m".to_owned(),
+            "The shortest interval is 5m.".to_owned(),
+            soon(),
+        );
+        let out = schedule_panel(&view, Tz::UTC).into_string();
+
+        assert!(out.contains(r#"value="2m""#), "{out}");
+        assert!(out.contains("The shortest interval is 5m."), "{out}");
+        assert!(out.contains(r#"aria-invalid="true""#), "{out}");
+        assert!(
+            out.contains(r#"aria-describedby="settings-interval-error""#),
+            "{out}"
+        );
+        assert!(out.contains(r#"id="settings-interval-error""#), "{out}");
+    }
+
+    #[test]
+    fn the_panel_documents_the_format_it_accepts() {
+        let view = ScheduleView::current(
+            &resolved(
+                ScheduleSource::Default,
+                Schedule::Cron("0 5 * * * *".into()),
+                None,
+            ),
+            None,
+            None,
+        );
+        let out = schedule_panel(&view, Tz::UTC).into_string();
+
+        assert!(out.contains("1h 30m"), "{out}");
+        assert!(out.contains("5m"), "{out}");
+        assert!(out.contains("14d"), "{out}");
+        assert!(out.contains("not scheduled"), "{out}");
+    }
+
+    #[test]
+    fn the_schedule_form_indicator_matches_its_spinner() {
+        let view = ScheduleView::current(
+            &resolved(
+                ScheduleSource::Default,
+                Schedule::Cron("0 5 * * * *".into()),
+                None,
+            ),
+            None,
+            None,
+        );
+        let out = schedule_panel(&view, Tz::UTC).into_string();
+        assert!(
+            out.contains(r##"hx-indicator="#schedule-spinner""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<span id="schedule-spinner" class="htmx-indicator wp-spinner""#),
+            "{out}"
+        );
     }
 
     #[test]

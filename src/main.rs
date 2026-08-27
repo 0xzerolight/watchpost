@@ -1,12 +1,12 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use tokio_cron_scheduler::{Job, JobScheduler};
+use tokio_cron_scheduler::JobScheduler;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use watchpost::collector::try_run_cycle;
-use watchpost::config::{Config, DEFAULT_CRON, resolve_token};
+use watchpost::config::{Config, resolve_token};
 use watchpost::db::{Db, queries};
 use watchpost::doctor::run_doctor;
 use watchpost::gh_client::GhClient;
@@ -97,13 +97,17 @@ async fn main() -> ExitCode {
     // A scheduler that won't start is a degraded service, not a dead one: the
     // dashboard still serves what is already collected and the manual trigger
     // still works, so log it and carry on rather than retrying or exiting.
-    let scheduler = match start_scheduler(Arc::clone(&state)).await {
-        Ok(s) => Some(s),
-        Err(e) => {
-            tracing::error!(error = %e, "scheduler failed to start; serving without cron");
-            None
-        }
-    };
+    if let Err(e) = watchpost::schedule::start(Arc::clone(&state)).await {
+        tracing::error!(error = %e, "scheduler failed to start; serving without cron");
+    }
+    // Cloned out for the shutdown path, which has to stop ticks while the
+    // server drains and cannot reach into the state once serving has begun.
+    let scheduler = state
+        .scheduler
+        .lock()
+        .await
+        .as_ref()
+        .map(|slot| slot.scheduler.clone());
 
     let app = router(Arc::clone(&state));
 
@@ -119,41 +123,6 @@ async fn main() -> ExitCode {
         .expect("server error");
 
     ExitCode::SUCCESS
-}
-
-/// Build the cron scheduler and register the collection job.
-async fn start_scheduler(
-    state: Arc<AppState>,
-) -> Result<JobScheduler, tokio_cron_scheduler::JobSchedulerError> {
-    let schedule = resolve_schedule(&state.cfg.cron_schedule);
-    let scheduler = JobScheduler::new().await?;
-    let job = Job::new_async(&schedule, move |_id, _sched| {
-        let state = Arc::clone(&state);
-        Box::pin(async move {
-            try_run_cycle(state).await;
-        })
-    })?;
-    scheduler.add(job).await?;
-    scheduler.start().await?;
-    tracing::info!(%schedule, "cron scheduled");
-    Ok(scheduler)
-}
-
-/// A bad `WATCHPOST_CRON` must not leave the service collecting nothing at
-/// all, so an unparseable expression is logged and replaced by the default.
-fn resolve_schedule(input: &str) -> String {
-    match Job::new_async(input, |_id, _sched| Box::pin(async {})) {
-        Ok(_) => input.to_string(),
-        Err(e) => {
-            tracing::warn!(
-                schedule = input,
-                error = %e,
-                default = DEFAULT_CRON,
-                "invalid cron schedule; falling back to the default"
-            );
-            DEFAULT_CRON.to_string()
-        }
-    }
 }
 
 /// Resolves on SIGINT or SIGTERM (the latter is how a container is stopped),
@@ -185,23 +154,5 @@ async fn shutdown_signal(scheduler: Option<JobScheduler>) {
         && let Err(e) = scheduler.shutdown().await
     {
         tracing::warn!(error = %e, "scheduler shutdown failed");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn valid_schedule_passes_through() {
-        assert_eq!(resolve_schedule("0 */5 * * * *"), "0 */5 * * * *");
-    }
-
-    #[test]
-    fn invalid_schedule_falls_back_to_default() {
-        assert_eq!(resolve_schedule("garbage"), DEFAULT_CRON);
-        assert_eq!(resolve_schedule(""), DEFAULT_CRON);
-        // Five fields: seconds are required, so this is not a valid schedule.
-        assert_eq!(resolve_schedule("5 * * * *"), DEFAULT_CRON);
     }
 }

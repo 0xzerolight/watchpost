@@ -9,6 +9,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A sync interval on the settings page.** How often watchpost collects is now a field rather than
+  a six-field cron expression in a file the container may not be able to write: `10m`, `6h`,
+  `1h 30m` — terms add up, and the units are `m`, `h`, `d` and `w`. It is stored in the `settings`
+  table beside the token, costing no migration (v3 was made generic for exactly this), and applied
+  to the running scheduler, so a change takes effect without a restart. The panel names the next
+  cycle, which is what makes the change verifiable rather than a claim.
+
+  The bounds are rejections, not clamps, and both name a real limit. Below 5m a cycle can still be
+  running when the next one is due — nothing breaks, because an overlapping tick is dropped, but the
+  schedule stops describing what happens. Above 14d the gap is wider than GitHub's traffic
+  retention, so days are lost permanently, which is the one thing watchpost exists to prevent.
+
+  Interval schedules are `tokio-cron-scheduler` repeating jobs rather than a cron expression
+  synthesized from the interval: an arbitrary duration has no honest six-field spelling, and the
+  scheduler tracks a repeating job's next tick, which is where the countdown comes from. Cron stays
+  the shape of the default, so an install that sets nothing keeps firing at five past the hour
+  rather than at whatever minute the process booted.
+
+  `WATCHPOST_CRON` is unchanged and still wins when set, on the same reasoning as the token: it is
+  the deployment's own statement of intent, and a compose file that sets it would otherwise silently
+  disagree with a value saved from a browser. In that state the panel is a statement rather than a
+  form, and a POST from a stale page writes nothing. `--doctor` reports the effective schedule and
+  which of the three sources it came from.
+
 - **An Analytics page** (third nav entry, `/analytics`), answering how the tracked repos are doing
   where the dashboard answers which ones they are. Three sections, and one period selector in the
   header scoping the first two.

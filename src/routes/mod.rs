@@ -80,6 +80,7 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/settings", get(settings::settings_page))
         .route("/settings/discover", post(settings::settings_discover))
         .route("/settings/repos", post(settings::settings_save))
+        .route("/settings/schedule", post(settings::settings_schedule))
         .route("/settings/token", post(settings::settings_token))
         .route("/sync", post(settings::sync_start))
         .route("/sync/status", get(settings::sync_status))
@@ -122,7 +123,7 @@ mod tests {
         let base: Url = "http://127.0.0.1:1/".parse().unwrap();
         let cfg = Config {
             github_token: Some("t".into()),
-            cron_schedule: "0 5 * * * *".into(),
+            cron_schedule: None,
             db_path: PathBuf::from(":memory:"),
             host: "127.0.0.1".into(),
             port: 8080,

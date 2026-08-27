@@ -12,6 +12,9 @@ use crate::types::{
 /// Settings key holding the GitHub PAT the setup page saved.
 pub const GITHUB_TOKEN_KEY: &str = "github_token";
 
+/// Settings key holding the sync interval the settings page saved.
+pub const SYNC_INTERVAL_KEY: &str = "sync_interval";
+
 /// Read one setting. `None` means the key was never written — not an error.
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, DbError> {
     conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
@@ -28,6 +31,14 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), DbEr
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, value),
     )?;
+    Ok(())
+}
+
+/// Remove one setting. A key that was never written is not an error — the
+/// outcome is the same either way, and the caller wants the state, not the
+/// history.
+pub fn delete_setting(conn: &Connection, key: &str) -> Result<(), DbError> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
     Ok(())
 }
 
@@ -2543,6 +2554,36 @@ mod tests {
         seed_repo(&c, 1);
         upsert_stats(&c, 1, &days_ago(1), &snap!(stars: Some(5))).unwrap();
         assert!(dense_series(&c, 1, Metric::Stars, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_setting_removes_it_and_a_missing_key_is_not_an_error() {
+        let c = test_conn();
+        set_setting(&c, SYNC_INTERVAL_KEY, "6h").unwrap();
+        assert_eq!(
+            get_setting(&c, SYNC_INTERVAL_KEY).unwrap().as_deref(),
+            Some("6h")
+        );
+
+        delete_setting(&c, SYNC_INTERVAL_KEY).unwrap();
+        assert_eq!(get_setting(&c, SYNC_INTERVAL_KEY).unwrap(), None);
+
+        // Deleting again reaches the same state, so it is not a failure.
+        delete_setting(&c, SYNC_INTERVAL_KEY).unwrap();
+    }
+
+    /// Two keys in one generic table: writing or clearing one must not disturb
+    /// the other. This is the property that let the interval skip a migration.
+    #[test]
+    fn the_interval_and_the_token_are_independent_keys() {
+        let c = test_conn();
+        set_setting(&c, GITHUB_TOKEN_KEY, "ghp_abcd").unwrap();
+        set_setting(&c, SYNC_INTERVAL_KEY, "6h").unwrap();
+        delete_setting(&c, SYNC_INTERVAL_KEY).unwrap();
+        assert_eq!(
+            get_setting(&c, GITHUB_TOKEN_KEY).unwrap().as_deref(),
+            Some("ghp_abcd")
+        );
     }
 
     #[test]

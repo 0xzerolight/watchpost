@@ -42,7 +42,7 @@ struct Harness {
 fn config_for(base: Url) -> Config {
     Config {
         github_token: None,
-        cron_schedule: "0 5 * * * *".into(),
+        cron_schedule: None,
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
         port: 8080,

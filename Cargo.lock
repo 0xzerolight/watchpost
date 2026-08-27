@@ -2426,6 +2426,7 @@ dependencies = [
  "tracing-logfmt",
  "tracing-subscriber",
  "url",
+ "uuid",
  "wiremock",
 ]
 
