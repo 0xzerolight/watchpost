@@ -1,12 +1,12 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use tokio_cron_scheduler::{Job, JobScheduler};
+use tokio_cron_scheduler::JobScheduler;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use watchpost::collector::try_run_cycle;
-use watchpost::config::{Config, DEFAULT_CRON, resolve_token};
+use watchpost::config::{Config, resolve_token};
 use watchpost::db::{Db, queries};
 use watchpost::doctor::run_doctor;
 use watchpost::gh_client::GhClient;
@@ -97,13 +97,17 @@ async fn main() -> ExitCode {
     // A scheduler that won't start is a degraded service, not a dead one: the
     // dashboard still serves what is already collected and the manual trigger
     // still works, so log it and carry on rather than retrying or exiting.
-    let scheduler = match start_scheduler(Arc::clone(&state)).await {
-        Ok(s) => Some(s),
-        Err(e) => {
-            tracing::error!(error = %e, "scheduler failed to start; serving without cron");
-            None
-        }
-    };
+    if let Err(e) = watchpost::schedule::start(Arc::clone(&state)).await {
+        tracing::error!(error = %e, "scheduler failed to start; serving without cron");
+    }
+    // Cloned out for the shutdown path, which has to stop ticks while the
+    // server drains and cannot reach into the state once serving has begun.
+    let scheduler = state
+        .scheduler
+        .lock()
+        .await
+        .as_ref()
+        .map(|slot| slot.scheduler.clone());
 
     let app = router(Arc::clone(&state));
 
@@ -119,25 +123,6 @@ async fn main() -> ExitCode {
         .expect("server error");
 
     ExitCode::SUCCESS
-}
-
-/// Build the cron scheduler and register the collection job.
-async fn start_scheduler(
-    state: Arc<AppState>,
-) -> Result<JobScheduler, tokio_cron_scheduler::JobSchedulerError> {
-    let schedule =
-        watchpost::schedule::valid_cron(state.cfg.cron_schedule.as_deref().unwrap_or(DEFAULT_CRON));
-    let scheduler = JobScheduler::new().await?;
-    let job = Job::new_async(&schedule, move |_id, _sched| {
-        let state = Arc::clone(&state);
-        Box::pin(async move {
-            try_run_cycle(state).await;
-        })
-    })?;
-    scheduler.add(job).await?;
-    scheduler.start().await?;
-    tracing::info!(%schedule, "cron scheduled");
-    Ok(scheduler)
 }
 
 /// Resolves on SIGINT or SIGTERM (the latter is how a container is stopped),

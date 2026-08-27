@@ -12,9 +12,17 @@
 //! everything that decides *what* the schedule is can be tested without a
 //! runtime.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_cron_scheduler::{Job, JobScheduler, JobSchedulerError};
+
+use crate::collector::try_run_cycle;
 use crate::config::DEFAULT_CRON;
+use crate::db::queries;
+use crate::state::AppState;
 
 /// The shortest interval the settings page accepts.
 ///
@@ -154,7 +162,7 @@ pub struct Resolved {
 /// Probe-parsed by building a throwaway job, because that is the only parser
 /// guaranteed to agree with the one the scheduler uses.
 pub fn valid_cron(input: &str) -> String {
-    match tokio_cron_scheduler::Job::new_async(input, |_id, _sched| Box::pin(async {})) {
+    match Job::new_async(input, |_id, _sched| Box::pin(async {})) {
         Ok(_) => input.to_string(),
         Err(e) => {
             tracing::warn!(
@@ -195,6 +203,97 @@ pub fn resolve_schedule(env: Option<&str>, stored: Option<&str>) -> (Schedule, S
         Schedule::Cron(DEFAULT_CRON.to_string()),
         ScheduleSource::Default,
     )
+}
+
+/// The schedule this install resolves to right now, read fresh from the
+/// database rather than cached: the settings page can change it between two
+/// requests, and a cached answer would render a panel that disagrees with the
+/// scheduler.
+pub async fn current(state: &AppState) -> Resolved {
+    // A settings read that fails must not stop the page rendering or the
+    // scheduler starting — the same treatment the stored token gets at boot.
+    let stored = state
+        .db
+        .call(|c| queries::get_setting(c, queries::SYNC_INTERVAL_KEY))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "could not read the stored sync interval");
+            None
+        });
+    let (schedule, source) =
+        resolve_schedule(state.cfg.cron_schedule.as_deref(), stored.as_deref());
+    Resolved {
+        schedule,
+        source,
+        // Dropped unless it is the interval actually in force. A value the
+        // environment is overriding is still in the database and comes back if
+        // the environment stops setting one, but reporting it here would put
+        // it in a field describing a schedule that is not running.
+        stored: stored.filter(|_| source == ScheduleSource::Database),
+    }
+}
+
+/// The collection job, built for whichever shape of schedule this is.
+fn collection_job(state: Arc<AppState>, schedule: &Schedule) -> Result<Job, JobSchedulerError> {
+    let run = move |_id, _sched| {
+        let state = Arc::clone(&state);
+        Box::pin(async move {
+            try_run_cycle(state).await;
+        }) as Pin<Box<dyn Future<Output = ()> + Send>>
+    };
+    match schedule {
+        Schedule::Cron(expr) => Job::new_async(expr.as_str(), run),
+        Schedule::Every(every) => Job::new_repeated_async(*every, run),
+    }
+}
+
+/// Build the scheduler, register the collection job, and hand the handle to
+/// `state` so the settings page can replace the job without a restart.
+pub async fn start(state: Arc<AppState>) -> Result<(), JobSchedulerError> {
+    let resolved = current(&state).await;
+    let scheduler = JobScheduler::new().await?;
+    let job = scheduler
+        .add(collection_job(Arc::clone(&state), &resolved.schedule)?)
+        .await?;
+    scheduler.start().await?;
+    tracing::info!(
+        schedule = %resolved.schedule,
+        source = ?resolved.source,
+        "collection scheduled"
+    );
+    state.install_scheduler(scheduler, job).await;
+    Ok(())
+}
+
+/// Swap the running job for one on `schedule`.
+///
+/// `Ok(false)` means there was no scheduler to swap: the boot-time start
+/// failed and the process is serving without cron. The caller has already
+/// stored the setting, so it takes effect on the next restart — that is a
+/// notice, not an error.
+///
+/// The add comes before the remove on purpose. For the moment between them two
+/// jobs are registered, which costs nothing — [`try_run_cycle`] drops an
+/// overlapping tick — while the other order would leave an install collecting
+/// on nothing at all if the add failed.
+pub async fn reschedule(
+    state: &Arc<AppState>,
+    schedule: &Schedule,
+) -> Result<bool, JobSchedulerError> {
+    // The lock is held across both awaits so two saves cannot interleave into
+    // two surviving jobs.
+    let mut slot = state.scheduler.lock().await;
+    let Some(running) = slot.as_mut() else {
+        return Ok(false);
+    };
+    let job = running
+        .scheduler
+        .add(collection_job(Arc::clone(state), schedule)?)
+        .await?;
+    running.scheduler.remove(&running.job).await?;
+    running.job = job;
+    tracing::info!(schedule = %schedule, "collection rescheduled");
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -394,5 +493,148 @@ mod tests {
             Schedule::Every(Duration::from_secs(90 * 60)).to_string(),
             "every 90m"
         );
+    }
+
+    // ---- the scheduler half -----------------------------------------------
+    //
+    // These build `Schedule::Every` directly rather than through
+    // `parse_interval`, so the 5m floor does not force a slow test: the bounds
+    // live in the parser, not in the enum.
+
+    use crate::config::{Config, TokenSource};
+    use crate::db::Db;
+    use crate::state::AppState;
+    use std::sync::Arc;
+
+    fn test_state() -> Arc<AppState> {
+        let base: url::Url = "http://127.0.0.1:1/".parse().unwrap();
+        let cfg = Config {
+            github_token: None,
+            cron_schedule: None,
+            db_path: std::path::PathBuf::from(":memory:"),
+            host: "127.0.0.1".into(),
+            port: 8080,
+            log_level: "info".into(),
+            github_api_base: base.clone(),
+            github_page_base: base,
+            timezone: chrono_tz::Tz::UTC,
+        };
+        Arc::new(AppState::new(
+            Db::open_in_memory().unwrap(),
+            cfg,
+            None,
+            None,
+            TokenSource::Unset,
+        ))
+    }
+
+    #[tokio::test]
+    async fn current_reads_the_stored_interval() {
+        let state = test_state();
+        assert_eq!(current(&state).await.source, ScheduleSource::Default);
+
+        state
+            .db
+            .call(|c| {
+                crate::db::queries::set_setting(c, crate::db::queries::SYNC_INTERVAL_KEY, "6h")
+            })
+            .await
+            .unwrap();
+
+        let resolved = current(&state).await;
+        assert_eq!(resolved.source, ScheduleSource::Database);
+        assert_eq!(
+            resolved.schedule,
+            Schedule::Every(Duration::from_secs(6 * 3600))
+        );
+        // The raw string comes back too, because the field shows what was typed.
+        assert_eq!(resolved.stored.as_deref(), Some("6h"));
+    }
+
+    /// A value the environment overrides is still in the database, but it is
+    /// not the schedule in force — reporting it would put it in a field
+    /// describing something that is not running.
+    #[tokio::test]
+    async fn an_overridden_interval_is_not_reported_as_in_force() {
+        let mut state = test_state();
+        Arc::get_mut(&mut state).unwrap().cfg.cron_schedule = Some("0 */10 * * * *".into());
+        state
+            .db
+            .call(|c| {
+                crate::db::queries::set_setting(c, crate::db::queries::SYNC_INTERVAL_KEY, "6h")
+            })
+            .await
+            .unwrap();
+
+        let resolved = current(&state).await;
+        assert_eq!(resolved.source, ScheduleSource::Env);
+        assert_eq!(resolved.stored, None);
+    }
+
+    #[tokio::test]
+    async fn starting_registers_a_job_and_a_next_tick() {
+        let state = test_state();
+        start(Arc::clone(&state)).await.unwrap();
+
+        let next = state
+            .next_sync()
+            .await
+            .expect("a started job has a next tick");
+        assert!(
+            next > chrono::Utc::now(),
+            "the next tick must be in the future"
+        );
+    }
+
+    /// The whole point of holding the scheduler: a saved interval takes effect
+    /// without a restart, and the job it replaces stops.
+    #[tokio::test]
+    async fn rescheduling_swaps_the_job_and_moves_the_next_tick() {
+        let state = test_state();
+        start(Arc::clone(&state)).await.unwrap();
+        let first = state.scheduler.lock().await.as_ref().unwrap().job;
+
+        assert!(
+            reschedule(&state, &Schedule::Every(Duration::from_secs(3 * 3600)))
+                .await
+                .unwrap()
+        );
+
+        let slot = state.scheduler.lock().await;
+        let slot = slot.as_ref().unwrap();
+        assert_ne!(
+            slot.job, first,
+            "the job must be replaced, not left in place"
+        );
+
+        // Deliberately not asserting the old job's metadata is already gone:
+        // `remove` is channel-driven, so that read is a race. What guarantees
+        // one job is structural — the add and the remove happen under one
+        // lock — and the manual verification watches the log for a doubled
+        // cycle.
+        let mut scheduler = slot.scheduler.clone();
+        let next = scheduler
+            .next_tick_for_job(slot.job)
+            .await
+            .unwrap()
+            .unwrap();
+        let due_in = next.signed_duration_since(chrono::Utc::now());
+        assert!(
+            due_in > chrono::Duration::minutes(170) && due_in < chrono::Duration::minutes(190),
+            "the next tick should be about three hours out, was {due_in}"
+        );
+    }
+
+    /// A scheduler that never started is a degraded service, not an error the
+    /// settings page should report as a failure to save.
+    #[tokio::test]
+    async fn rescheduling_without_a_scheduler_reports_that_and_does_not_fail() {
+        let state = test_state();
+        assert!(
+            !reschedule(&state, &Schedule::Every(Duration::from_secs(600)))
+                .await
+                .unwrap()
+        );
+        assert_eq!(state.next_sync().await, None);
     }
 }

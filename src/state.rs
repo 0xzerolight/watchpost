@@ -40,6 +40,12 @@ pub struct GhSlot {
     pub hint: Option<String>,
 }
 
+/// The running scheduler and the id of the collection job inside it.
+pub struct SchedulerSlot {
+    pub scheduler: tokio_cron_scheduler::JobScheduler,
+    pub job: uuid::Uuid,
+}
+
 pub struct AppState {
     pub db: Db,
     /// The GitHub client, absent until a token exists. Swappable because the
@@ -59,6 +65,17 @@ pub struct AppState {
     /// Serializes cycles (cron tick vs. manual trigger). Async `Mutex`
     /// because it *is* held across awaits, for the whole cycle.
     pub sync_guard: Arc<tokio::sync::Mutex<()>>,
+    /// The scheduler, once it has started.
+    ///
+    /// Filled after construction rather than in [`AppState::new`], because the
+    /// job it registers captures this very `Arc<AppState>` — the state has to
+    /// exist before the job that closes over it does.
+    ///
+    /// A tokio `Mutex`, unlike the std ones above, and deliberately held
+    /// across awaits: a reschedule removes one job and adds another, and two
+    /// saves in flight would otherwise interleave into two registered jobs
+    /// collecting on two cadences.
+    pub scheduler: tokio::sync::Mutex<Option<SchedulerSlot>>,
 }
 
 impl AppState {
@@ -92,6 +109,34 @@ impl AppState {
             gate: RateGate::new(),
             sync: Mutex::new(SyncStatus::Idle),
             sync_guard: Arc::new(tokio::sync::Mutex::new(())),
+            scheduler: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Hand the started scheduler over, so the settings page can replace its
+    /// job without a restart.
+    pub async fn install_scheduler(
+        &self,
+        scheduler: tokio_cron_scheduler::JobScheduler,
+        job: uuid::Uuid,
+    ) {
+        *self.scheduler.lock().await = Some(SchedulerSlot { scheduler, job });
+    }
+
+    /// When the next cycle is due. `None` when no scheduler is running — the
+    /// boot-time start failed and the process is serving without cron.
+    pub async fn next_sync(&self) -> Option<DateTime<Utc>> {
+        let slot = self.scheduler.lock().await;
+        let slot = slot.as_ref()?;
+        // `next_tick_for_job` wants `&mut`; the handle is a bundle of `Arc`s,
+        // so a clone is the same scheduler and not a second one.
+        let mut scheduler = slot.scheduler.clone();
+        match scheduler.next_tick_for_job(slot.job).await {
+            Ok(next) => next,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the next scheduled tick");
+                None
+            }
         }
     }
 
