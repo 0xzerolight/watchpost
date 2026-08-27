@@ -243,6 +243,46 @@ pub fn relative_time(at: Option<&str>) -> String {
     }
 }
 
+/// "in 42m" for a scheduled instant.
+///
+/// The forward-looking sibling of [`relative_time`], and a second function
+/// rather than a sign check inside the first: that one buckets *elapsed* time
+/// and reads a future instant as "just now", which is exactly wrong for a
+/// schedule. An instant already past reads "due" — a late tick is late, not
+/// negative.
+pub fn countdown(at: chrono::DateTime<chrono::Utc>) -> String {
+    let left = at.signed_duration_since(chrono::Utc::now());
+    let (minutes, hours, days) = (left.num_minutes(), left.num_hours(), left.num_days());
+    if minutes < 1 {
+        "due".to_owned()
+    } else if hours < 1 {
+        format!("in {minutes}m")
+    } else if days < 1 {
+        format!("in {hours}h")
+    } else {
+        format!("in {days}d")
+    }
+}
+
+/// A scheduled instant as a `<time>` element: a countdown to read, the exact
+/// time in `title`.
+///
+/// The forward-looking sibling of [`timestamp`], and it keeps that function's
+/// contract — `title` is the instant in `tz` with the zone's abbreviation,
+/// `datetime` is the machine-readable instant.
+pub fn future_timestamp(at: Option<chrono::DateTime<chrono::Utc>>, tz: Tz) -> Markup {
+    let Some(at) = at else {
+        return html! { "not scheduled" };
+    };
+    let exact = at
+        .with_timezone(&tz)
+        .format("%Y-%m-%d %H:%M %Z")
+        .to_string();
+    html! {
+        time datetime=(at.to_rfc3339()) title=(exact) { (countdown(at)) }
+    }
+}
+
 /// A labelled form control with its validation message.
 ///
 /// The `small` sits immediately after the control because that is the sibling
@@ -283,6 +323,50 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use chrono::{Duration, Utc};
+
+    /// `relative_time` buckets elapsed time and reads a future instant as
+    /// "just now", which is exactly backwards for a schedule — hence a second
+    /// formatter rather than a sign check inside the first.
+    #[test]
+    fn countdown_counts_forward_in_coarse_buckets() {
+        let now = Utc::now();
+        assert_eq!(countdown(now + Duration::seconds(20)), "due");
+        assert_eq!(countdown(now - Duration::hours(2)), "due");
+        // Half a unit past each boundary. Like `relative_time`, the buckets
+        // truncate, so an instant sitting exactly on one lands in the bucket
+        // below as soon as a microsecond of the test itself has elapsed.
+        assert_eq!(
+            countdown(now + Duration::minutes(42) + Duration::seconds(30)),
+            "in 42m"
+        );
+        assert_eq!(
+            countdown(now + Duration::hours(6) + Duration::minutes(30)),
+            "in 6h"
+        );
+        assert_eq!(
+            countdown(now + Duration::days(3) + Duration::hours(12)),
+            "in 3d"
+        );
+    }
+
+    #[test]
+    fn future_timestamp_carries_the_exact_instant_in_the_display_zone() {
+        let at = chrono::DateTime::parse_from_rfc3339("2099-08-17T09:05:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let out = future_timestamp(Some(at), chrono_tz::Tz::Europe__Madrid).into_string();
+        assert!(out.contains(r#"title="2099-08-17 11:05 CEST""#), "{out}");
+        assert!(out.contains("<time datetime="), "{out}");
+        assert!(out.contains("in "), "{out}");
+    }
+
+    #[test]
+    fn future_timestamp_says_so_when_nothing_is_scheduled() {
+        assert_eq!(
+            future_timestamp(None, chrono_tz::Tz::UTC).into_string(),
+            "not scheduled"
+        );
+    }
 
     #[test]
     fn error_page_is_a_whole_document_with_a_way_out() {
