@@ -133,7 +133,7 @@ All settings are environment variables, read from `.env` by compose. See [`.env.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `WATCHPOST_GITHUB_TOKEN` | *(unset)* | Token used for every API call. Optional: with none set, watchpost serves a setup page that saves one to the database instead. When it *is* set it wins over a saved token, and the settings page offers no way to change it |
-| `WATCHPOST_CRON` | `0 5 * * * *` | Collection schedule, six fields (seconds first), UTC. An unparseable value falls back to the default |
+| `WATCHPOST_CRON` | `0 5 * * * *` | Collection schedule, six fields (seconds first), UTC. An unparseable value falls back to the default. Leave it unset to set the interval on the settings page instead (`10m`, `6h`, `1h 30m`; between 5m and 14d), which applies without a restart; setting it here wins over that and removes the field |
 | `WATCHPOST_DB_PATH` | `./data/watchpost.db` | SQLite file. `/app/data/watchpost.db` in the image |
 | `WATCHPOST_HOST` | `127.0.0.1` | Bind address. The image sets `0.0.0.0` |
 | `WATCHPOST_PORT` | `8080` | Bind port |
