@@ -21,9 +21,12 @@ use crate::collector;
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::AppError;
-use crate::routes::html::settings::{repos_picker, sync_status_fragment, token_panel};
+use crate::routes::html::settings::{
+    ScheduleView, repos_picker, schedule_panel, sync_status_fragment, token_panel,
+};
 use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
 use crate::routes::setup;
+use crate::schedule::{self, ScheduleSource};
 use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::RepoRow;
 
@@ -47,6 +50,7 @@ pub async fn settings_page(
             (page_header("Settings", None, None))
             section {
                 h2 { "Sync" }
+                (schedule_panel_now(&state, None).await)
                 (sync_status_fragment(&status, state.cfg.timezone))
             }
             section {
@@ -219,6 +223,95 @@ pub async fn settings_token(State(state): State<Arc<AppState>>, body: String) ->
         Err(text) => (Notice::Error, text),
     };
     token_panel(&state.gh_slot(), Some(msg))
+}
+
+/// The schedule panel as the install currently stands.
+async fn schedule_panel_now(state: &Arc<AppState>, msg: Option<(Notice, String)>) -> Markup {
+    let resolved = schedule::current(state).await;
+    let view = ScheduleView::current(&resolved, state.next_sync().await, msg);
+    schedule_panel(&view, state.cfg.timezone)
+}
+
+/// POST /settings/schedule — save the sync interval and apply it to the
+/// running scheduler.
+///
+/// Three outcomes, all of them the same swapped panel, because the browser has
+/// no use for a status code it cannot show: the value was stored and the job
+/// replaced; the value was refused and nothing changed; or the value was
+/// stored but there is no scheduler to change, which the notice says.
+///
+/// A blank field is a reset to the default rather than a validation failure. A
+/// setting with no way back to the default is a trap, and "blank means the
+/// default" costs one branch where a second route would cost a second surface.
+pub async fn settings_schedule(State(state): State<Arc<AppState>>, body: String) -> Markup {
+    let submitted = setup::form_field(&body, "interval")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+
+    let resolved = schedule::current(&state).await;
+
+    // An environment-set schedule is not replaceable from a browser, for the
+    // same reason an environment-set token is not. The panel offers no form in
+    // that state, so a POST here came from a stale page: re-render it rather
+    // than act on it.
+    if resolved.source == ScheduleSource::Env {
+        return schedule_panel_now(&state, None).await;
+    }
+
+    if !submitted.is_empty()
+        && let Err(e) = schedule::parse_interval(&submitted)
+    {
+        let view =
+            ScheduleView::rejected(&resolved, submitted, e.to_string(), state.next_sync().await);
+        return schedule_panel(&view, state.cfg.timezone);
+    }
+
+    let written = if submitted.is_empty() {
+        state
+            .db
+            .call(|c| queries::delete_setting(c, queries::SYNC_INTERVAL_KEY))
+            .await
+    } else {
+        let owned = submitted.clone();
+        state
+            .db
+            .call(move |c| queries::set_setting(c, queries::SYNC_INTERVAL_KEY, &owned))
+            .await
+    };
+    if let Err(e) = written {
+        warn!(error = %e, "saving the sync interval failed");
+        let view = ScheduleView::rejected(
+            &resolved,
+            submitted,
+            "Could not save the interval.".to_owned(),
+            state.next_sync().await,
+        );
+        return schedule_panel(&view, state.cfg.timezone);
+    }
+
+    // Re-resolved rather than assumed: a blank submission resolves back to the
+    // default cron, which is not what was posted.
+    let saved = schedule::current(&state).await;
+    let msg = match schedule::reschedule(&state, &saved.schedule).await {
+        Ok(true) => (Notice::Success, "Saved.".to_owned()),
+        // The setting is stored either way; only the live swap had nothing to
+        // swap, which is the degraded-boot case and not a failure to save.
+        Ok(false) => (
+            Notice::Info,
+            "Saved. The scheduler is not running, so this takes effect on the next restart."
+                .to_owned(),
+        ),
+        Err(e) => {
+            warn!(error = %e, "rescheduling failed");
+            (
+                Notice::Error,
+                "Saved, but the running schedule could not be changed. Restart to apply it."
+                    .to_owned(),
+            )
+        }
+    };
+    schedule_panel_now(&state, Some(msg)).await
 }
 
 /// POST /sync — start a cycle unless one is already in flight.
