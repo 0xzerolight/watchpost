@@ -13,6 +13,7 @@ pub mod gh_client;
 pub mod ghcr;
 pub mod ratelimit;
 pub mod routes;
+pub mod schedule;
 pub mod state;
 pub mod types;
 pub mod urlcheck;

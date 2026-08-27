@@ -23,7 +23,7 @@ const SECRET_TOKEN: &str = "ghp_SECRETSECRETSECRET1234";
 fn config_for(api_base: &str) -> Config {
     Config {
         github_token: Some(SECRET_TOKEN.to_string()),
-        cron_schedule: "0 5 * * * *".to_string(),
+        cron_schedule: None,
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".to_string(),
         port: 8080,

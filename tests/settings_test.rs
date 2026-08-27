@@ -60,7 +60,7 @@ async fn harness_with_token(token: &str, source: TokenSource) -> Harness {
             TokenSource::Env => Some(token.to_owned()),
             _ => None,
         },
-        cron_schedule: "0 5 * * * *".into(),
+        cron_schedule: None,
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
         port: 8080,

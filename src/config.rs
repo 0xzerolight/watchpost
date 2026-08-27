@@ -29,7 +29,18 @@ pub struct Config {
     /// instead. This field is only ever the environment's answer —
     /// [`resolve_token`] decides which token the process actually uses.
     pub github_token: Option<String>,
-    pub cron_schedule: String,
+    /// The expression `WATCHPOST_CRON` supplied, if any.
+    ///
+    /// `Option`, unlike every other setting here, and load-bearing: the
+    /// settings page offers no interval form when the environment owns the
+    /// schedule, so "unset" and "set to the default" have to be
+    /// distinguishable. Filling the default in here would erase that
+    /// difference.
+    ///
+    /// Collection, the stored day keys and this expression are deliberately
+    /// UTC — GitHub aggregates traffic per UTC day, so those buckets have to
+    /// stay UTC to mean anything.
+    pub cron_schedule: Option<String>,
     pub db_path: PathBuf,
     pub host: String,
     pub port: u16,
@@ -39,9 +50,9 @@ pub struct Config {
     /// [`DEFAULT_GITHUB_PAGE_BASE`] in production; only tests point it at a
     /// mock server.
     pub github_page_base: Url,
-    /// Zone the UI formats instants in. Collection, the stored day keys and the
-    /// cron schedule are deliberately not affected — GitHub aggregates traffic
-    /// per UTC day, so those buckets have to stay UTC to mean anything.
+    /// Zone the UI formats instants in. Display only: collection, the stored
+    /// day keys and the schedule are deliberately not affected, for the reason
+    /// [`Config::cron_schedule`] gives.
     pub timezone: Tz,
 }
 
@@ -60,7 +71,7 @@ impl Config {
             .ok()
             .filter(|t| !t.is_empty());
 
-        let cron_schedule = env::var("WATCHPOST_CRON").unwrap_or_else(|_| DEFAULT_CRON.to_string());
+        let cron_schedule = env::var("WATCHPOST_CRON").ok();
 
         let db_path = env::var("WATCHPOST_DB_PATH")
             .map(PathBuf::from)
@@ -118,7 +129,7 @@ impl Config {
 
         format!(
             "github_token={token_summary} cron_schedule={} db_path={} host={} port={} log_level={} github_api_base={} timezone={}",
-            self.cron_schedule,
+            self.cron_schedule.as_deref().unwrap_or("unset"),
             self.db_path.display(),
             self.host,
             self.port,
@@ -203,9 +214,41 @@ mod tests {
             assert_eq!(c.port, 8080);
             assert_eq!(c.host, "127.0.0.1");
             assert_eq!(c.db_path, PathBuf::from("./data/watchpost.db"));
-            assert_eq!(c.cron_schedule, "0 5 * * * *");
+            assert_eq!(c.cron_schedule, None);
             assert_eq!(c.github_api_base.as_str(), "https://api.github.com/");
             assert_eq!(c.timezone, Tz::UTC);
+        });
+    }
+
+    /// `Option` rather than a filled-in default: the settings page needs to
+    /// know whether the environment claimed the schedule at all.
+    #[test]
+    fn an_environment_cron_is_kept_verbatim() {
+        temp_env::with_vars(
+            [
+                ("WATCHPOST_GITHUB_TOKEN", Some("ghp_test1234")),
+                ("WATCHPOST_CRON", Some("0 */10 * * * *")),
+            ],
+            || {
+                let c = Config::from_env().unwrap();
+                assert_eq!(c.cron_schedule.as_deref(), Some("0 */10 * * * *"));
+                assert!(
+                    c.redacted_summary()
+                        .contains("cron_schedule=0 */10 * * * *")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn an_unset_cron_reads_as_unset_in_the_summary() {
+        temp_env::with_vars(base_env(), || {
+            assert!(
+                Config::from_env()
+                    .unwrap()
+                    .redacted_summary()
+                    .contains("cron_schedule=unset")
+            );
         });
     }
     #[test]

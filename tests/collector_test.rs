@@ -55,7 +55,7 @@ fn state_for(server: &MockServer) -> Arc<AppState> {
     let base: Url = server.uri().parse().unwrap();
     let cfg = Config {
         github_token: Some("t".into()),
-        cron_schedule: "0 5 * * * *".into(),
+        cron_schedule: None,
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
         port: 8080,
@@ -78,7 +78,7 @@ fn state_without_a_token() -> Arc<AppState> {
     let base: Url = "http://127.0.0.1:1/".parse().unwrap();
     let cfg = Config {
         github_token: None,
-        cron_schedule: "0 5 * * * *".into(),
+        cron_schedule: None,
         db_path: PathBuf::from(":memory:"),
         host: "127.0.0.1".into(),
         port: 8080,
