@@ -33,8 +33,11 @@ Thumbs.db
 personal-docs/
 .gstack/
 
-# Private development docs (public docs live in repo root)
-docs/
+# Private development docs (public docs live in repo root). The exception is the
+# release notes, which ship: git cannot re-include a path under an excluded
+# directory, so docs/ is excluded by its contents rather than as a whole.
+docs/*
+!docs/release_notes/
 .superpowers
 
 # Cargo.lock is deliberately NOT ignored: this is a binary crate, so the lock is

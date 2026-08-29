@@ -40,34 +40,40 @@ All on `main`, fully merged and green.
    (today), add a fresh empty `## [Unreleased]` above it, and drop any empty
    `### Added/Changed/Fixed/Security` subsection.
 
-5. Run the gate:
+5. Write `docs/release_notes/vX.Y.Z.md` — the user-facing half of what step 4
+   promoted. One short bullet per user-visible outcome, under `### Added`,
+   `### Changed`, `### Removed`, `### Fixed`; the reasoning stays in the
+   CHANGELOG. The file starts on its first `###`, with no title and no date.
+
+6. Run the gate:
 
        make ci
 
-6. Commit:
+7. Commit:
 
-       git add Cargo.toml Cargo.lock CHANGELOG.md
+       git add Cargo.toml Cargo.lock CHANGELOG.md docs/release_notes/vX.Y.Z.md
        git commit -m "chore: release vX.Y.Z"
 
-7. Push, tag, push the tag:
+8. Push, tag, push the tag:
 
        git push origin main
        git tag vX.Y.Z
        git push origin vX.Y.Z
 
-8. [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)
+9. [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)
    builds `linux/amd64` and `linux/arm64` on native runners, pushes each by
    digest, and stitches one manifest list tagged `X.Y.Z`, `X.Y` and `latest` at
    `ghcr.io/0xzerolight/watchpost`. `ci.yml` runs on the tag push as well, so the
    full gate covers the release commit.
 
-9. Cut the GitHub Release — this is where users read the notes:
+10. Cut the GitHub Release — this is where users read the notes:
 
-       gh release create vX.Y.Z --title "vX.Y.Z" --notes-file notes.md
+        gh release create vX.Y.Z --title "vX.Y.Z" --notes-file docs/release_notes/vX.Y.Z.md
 
-   `notes.md` is this version's `## [X.Y.Z]` section from `CHANGELOG.md`, which
-   is the source of truth. The Release carries notes only; the image publish
-   already happened on the tag push.
+    The body is that file, not the CHANGELOG section: the notes say what changed
+    for the user, in bullets short enough to read on the releases page, while the
+    CHANGELOG keeps the reasoning behind each one. The Release carries notes
+    only; the image publish already happened on the tag push.
 
 ## Verify
 
