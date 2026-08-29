@@ -24,6 +24,7 @@ Thumbs.db
 # Claude / AI tooling
 .claude/
 .claude-runner/
+CLAUDE.local.md
 
 # Build / lint caches
 .llvm-cov/
