@@ -7,6 +7,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The per-period movement badge no longer renders on the "All" period, on the repo page's KPI tiles
+  and the analytics portfolio totals. `growth` over the whole history is the last observed reading
+  minus the first, which for any repo watchpost has watched since it had nothing is the level again
+  — an unlabelled green number sitting directly under the number it restates, and indistinguishable
+  from a total to anyone who has not read the code. Every real window keeps its badge, which is
+  where a movement figure answers a question the reader asked.
+
+  The spans for the other four periods stay in the markup when "All" is selected, all hidden. A
+  period change is a client-side `hidden` flip with no request behind it, so removing them would
+  mean a switch back to 30 days had no 30-day figure left to reveal. `.wp-kpi-delta` already
+  reserves its row, so a tile keeps its height with the badge empty and switching period does not
+  move the layout.
+
+  The leaderboard's `Growth` column is unchanged. It sits under a heading rather than under the
+  number it would restate, and blanking it would mean teaching `updatePeriodValues` about `<th>`
+  elements for a redundancy the heading already explains.
+
 ## [1.2.0] - 2026-08-29
 
 ### Added
