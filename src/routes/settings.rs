@@ -31,16 +31,33 @@ use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::RepoRow;
 
 /// GET /settings — full page, or just the picker when htmx asks for it.
+///
+/// Every read the page needs happens inside one closure. Each panel also has a
+/// `*_now` helper that reads the database itself, which is what a fragment
+/// answering one POST wants — but using those here would cost this render a
+/// trip to the blocking pool per section.
 pub async fn settings_page(
     State(state): State<Arc<AppState>>,
     csrf: CsrfToken,
     headers: HeaderMap,
 ) -> Result<Markup, AppError> {
-    let repos = state.db.call(|c| queries::known_repos(c)).await?;
+    let (repos, interval) = state
+        .db
+        .call(|c| {
+            Ok((
+                queries::known_repos(c)?,
+                queries::get_setting(c, queries::SYNC_INTERVAL_KEY)?,
+            ))
+        })
+        .await?;
+
     let picker = repos_picker(&repos, None, state.cfg.timezone);
     if targets(&headers, "repos-picker") {
         return Ok(picker);
     }
+
+    let resolved = schedule::resolved(state.cfg.cron_schedule.as_deref(), interval);
+    let view = ScheduleView::current(&resolved, state.next_sync().await, None);
     let status = current_status(&state);
     Ok(base(
         "Settings",
@@ -50,7 +67,7 @@ pub async fn settings_page(
             (page_header("Settings", None, None))
             section {
                 h2 { "Sync" }
-                (schedule_panel_now(&state, None).await)
+                (schedule_panel(&view, state.cfg.timezone))
                 (sync_status_fragment(&status, state.cfg.timezone))
             }
             section {

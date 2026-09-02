@@ -205,6 +205,25 @@ pub fn resolve_schedule(env: Option<&str>, stored: Option<&str>) -> (Schedule, S
     )
 }
 
+/// The schedule a given environment and stored interval resolve to.
+///
+/// Split out of [`current`] so a caller holding a value it has already read can
+/// build the same answer without a second trip to the blocking pool. The
+/// settings page is that caller: it reads every key it needs in one
+/// [`crate::db::Db::call`].
+pub fn resolved(env: Option<&str>, stored: Option<String>) -> Resolved {
+    let (schedule, source) = resolve_schedule(env, stored.as_deref());
+    Resolved {
+        schedule,
+        source,
+        // Dropped unless it is the interval actually in force. A value the
+        // environment is overriding is still in the database and comes back if
+        // the environment stops setting one, but reporting it here would put
+        // it in a field describing a schedule that is not running.
+        stored: stored.filter(|_| source == ScheduleSource::Database),
+    }
+}
+
 /// The schedule this install resolves to right now, read fresh from the
 /// database rather than cached: the settings page can change it between two
 /// requests, and a cached answer would render a panel that disagrees with the
@@ -220,17 +239,7 @@ pub async fn current(state: &AppState) -> Resolved {
             tracing::error!(error = %e, "could not read the stored sync interval");
             None
         });
-    let (schedule, source) =
-        resolve_schedule(state.cfg.cron_schedule.as_deref(), stored.as_deref());
-    Resolved {
-        schedule,
-        source,
-        // Dropped unless it is the interval actually in force. A value the
-        // environment is overriding is still in the database and comes back if
-        // the environment stops setting one, but reporting it here would put
-        // it in a field describing a schedule that is not running.
-        stored: stored.filter(|_| source == ScheduleSource::Database),
-    }
+    resolved(state.cfg.cron_schedule.as_deref(), stored)
 }
 
 /// The collection job, built for whichever shape of schedule this is.
@@ -463,6 +472,25 @@ mod tests {
         let (schedule, source) = resolve_schedule(Some("garbage"), None);
         assert_eq!(schedule, Schedule::Cron(DEFAULT_CRON.into()));
         assert_eq!(source, ScheduleSource::Env);
+    }
+
+    /// The settings page builds its panel from `resolved` rather than
+    /// `current`, so the two have to drop the stored value in the same case.
+    #[test]
+    fn an_overridden_interval_is_not_reported_as_the_one_in_force() {
+        let r = resolved(Some("0 5 * * * *"), Some("30m".to_owned()));
+        assert_eq!(r.source, ScheduleSource::Env);
+        assert_eq!(r.stored, None);
+
+        let r = resolved(None, Some("30m".to_owned()));
+        assert_eq!(r.source, ScheduleSource::Database);
+        assert_eq!(r.stored.as_deref(), Some("30m"));
+
+        // Unparseable: the schedule in force is the default, so there is no
+        // stored value to show back either.
+        let r = resolved(None, Some("banana".to_owned()));
+        assert_eq!(r.source, ScheduleSource::Default);
+        assert_eq!(r.stored, None);
     }
 
     #[test]
