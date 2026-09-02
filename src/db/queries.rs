@@ -15,6 +15,11 @@ pub const GITHUB_TOKEN_KEY: &str = "github_token";
 /// Settings key holding the sync interval the settings page saved.
 pub const SYNC_INTERVAL_KEY: &str = "sync_interval";
 
+/// Settings key holding the page the root opens on. No migration: the
+/// `settings` table was made generic in v3 precisely so a third runtime
+/// setting costs nothing.
+pub const LANDING_PAGE_KEY: &str = "landing_page";
+
 /// Read one setting. `None` means the key was never written — not an error.
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, DbError> {
     conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {

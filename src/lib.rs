@@ -11,6 +11,7 @@ pub mod doctor;
 pub mod errors;
 pub mod gh_client;
 pub mod ghcr;
+pub mod landing;
 pub mod ratelimit;
 pub mod routes;
 pub mod schedule;
