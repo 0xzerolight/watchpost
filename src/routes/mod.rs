@@ -57,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = extra
         .route("/", get(index::index_page))
+        .route("/repos", get(index::index_page))
         .route("/analytics", get(analytics::analytics_page))
         .route("/health", get(health::health))
         .route("/repos/{id}", get(repo::repo_page))

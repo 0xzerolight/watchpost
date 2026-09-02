@@ -242,6 +242,7 @@ mod tests {
         assert!(always_open("/assets/app.css"));
         assert!(!always_open("/"));
         assert!(!always_open("/settings"));
+        assert!(!always_open("/repos"));
         // Prefix collisions are not assets: only the directory is open.
         assert!(!always_open("/assets"));
         assert!(!always_open("/healthz"));

@@ -16,7 +16,7 @@ use crate::routes::html::{NavItem, base};
 use crate::state::AppState;
 use crate::types::Metric;
 
-/// GET / — one card per tracked, visible repo.
+/// GET /repos — one card per tracked, visible repo.
 ///
 /// The overview and every sparkline are gathered inside a single
 /// [`crate::db::Db::call`]: the per-repo star series is one query each, and

@@ -119,7 +119,7 @@ async fn an_encoding_we_do_not_have_falls_back_to_identity() {
 /// as JSON, which compresses further than the markup around it.
 #[tokio::test]
 async fn html_is_compressed_too() {
-    let resp = get("/", Some("gzip")).await;
+    let resp = get("/repos", Some("gzip")).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(content_encoding(&resp).as_deref(), Some("gzip"));
     assert!(body_bytes(resp).await.starts_with(&[0x1f, 0x8b]));
@@ -148,6 +148,7 @@ async fn vary_is_set_exactly_once() {
         (CHART_JS, Some("gzip")),
         (CHART_JS, None),
         ("/", Some("gzip, br")),
+        ("/repos", Some("gzip, br")),
     ] {
         let resp = get(uri, encoding).await;
         let vary: Vec<_> = resp

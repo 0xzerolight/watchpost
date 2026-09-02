@@ -906,7 +906,10 @@ async fn unknown_repo_is_not_found() {
         body.contains("That page or item does not exist."),
         "body was {body}"
     );
-    assert!(body.contains(r#"<a href="/">"#), "no way back: {body}");
+    assert!(
+        body.contains(r#"<a href="/repos">Back to repos</a>"#),
+        "no way back: {body}"
+    );
 }
 
 #[tokio::test]

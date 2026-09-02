@@ -71,24 +71,18 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                 a href="#main" class="wp-skip" { "Skip to content" }
                 nav class="container" {
                     ul { li { a href="/" { strong { "watchpost" } } } }
+                    // One loop over `LANDING_PAGES` rather than three literals:
+                    // the nav's hrefs and the start page setting's destinations
+                    // are then the same list, so a nav link cannot point at a
+                    // path the setting would never produce, or the other way
+                    // round. The array's order is the nav's order.
                     ul {
-                        li {
-                            a href="/" aria-current=[matches!(nav, NavItem::Home).then_some("page")] {
-                                "Repositories"
-                            }
-                        }
-                        // Analytics sits between the two: it reads about the
-                        // repos, and settings administers them.
-                        li {
-                            a href="/analytics"
-                                aria-current=[matches!(nav, NavItem::Analytics).then_some("page")] {
-                                "Analytics"
-                            }
-                        }
-                        li {
-                            a href="/settings"
-                                aria-current=[matches!(nav, NavItem::Settings).then_some("page")] {
-                                "Settings"
+                        @for page in crate::landing::LANDING_PAGES {
+                            li {
+                                a href=(page.path())
+                                    aria-current=[(NavItem::of(page) == nav).then_some("page")] {
+                                    (page.label())
+                                }
                             }
                         }
                     }

@@ -89,8 +89,8 @@ fn assert_common_headers(resp: &axum::response::Response, what: &str) {
 }
 
 #[tokio::test]
-async fn the_index_carries_every_header() {
-    let resp = get("/").await;
+async fn the_repositories_page_carries_every_header() {
+    let resp = get("/repos").await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_common_headers(&resp, "index");
 }
@@ -103,7 +103,7 @@ async fn the_index_carries_every_header() {
 /// drive-by edit.
 #[tokio::test]
 async fn the_policy_is_exactly_this() {
-    let resp = get("/").await;
+    let resp = get("/repos").await;
     assert_eq!(
         header(&resp, "content-security-policy"),
         "default-src 'self'; base-uri 'none'; form-action 'self'; \
@@ -116,7 +116,7 @@ async fn the_policy_is_exactly_this() {
 /// Back stays instant. `no-store` would turn it into a full refetch.
 #[tokio::test]
 async fn html_is_revalidated_not_unstored() {
-    let resp = get("/").await;
+    let resp = get("/repos").await;
     assert!(header(&resp, "content-type").starts_with("text/html"));
     assert_eq!(header(&resp, "cache-control"), "no-cache");
 }

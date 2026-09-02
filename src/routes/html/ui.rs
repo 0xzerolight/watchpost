@@ -131,7 +131,7 @@ pub fn error_page(status: StatusCode, headline: &str, detail: &str) -> Markup {
         html! {
             (page_header(headline, Some(html! { (code) " " (reason) }), None))
             (notice(Notice::Error, html! { (detail) }))
-            p { a href="/" { "Back to repos" } }
+            p { a href="/repos" { "Back to repos" } }
         },
     )
 }
@@ -399,7 +399,10 @@ mod tests {
         );
         // A dead end without a link back is the whole complaint about error
         // pages, so the link is part of the contract.
-        assert!(out.contains(r#"<a href="/">"#), "{out}");
+        assert!(
+            out.contains(r#"<a href="/repos">Back to repos</a>"#),
+            "{out}"
+        );
         // Outside the nav: neither entry may claim to be the current page.
         assert!(!out.contains("aria-current"), "{out}");
     }
