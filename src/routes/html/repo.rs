@@ -1422,11 +1422,11 @@ mod tests {
         let kpis = KpiData::of(&payload.series);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
-        // Views value: one span per period. Stars adds a delta badge with the
-        // same span count; the total is what pins both present.
+        // Views value: one span per period. Stars adds a delta badge, which
+        // carries no "All" span — one fewer. The total pins both present.
         assert_eq!(
             out.matches("data-period-value").count(),
-            2 * PERIOD_COUNT,
+            2 * PERIOD_COUNT - 1,
             "out was {out}"
         );
         assert!(
@@ -1449,7 +1449,9 @@ mod tests {
     /// baked server-side so a `hidden` flip recolours correctly.
     #[test]
     fn kpi_deltas_sign_with_class_and_glyph() {
-        let mut payload = payload(-1, Some(3));
+        // A real window, not "All": "All" carries no badge at all, and a
+        // two-day series makes every window's growth the same 40.
+        let mut payload = payload(7, Some(3));
         payload.labels = vec!["2026-08-16".into(), "2026-08-17".into()];
         payload.series.stars = vec![Some(100), Some(140)];
         payload.series.views_count = vec![None, None];

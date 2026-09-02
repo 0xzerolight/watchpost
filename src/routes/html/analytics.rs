@@ -415,12 +415,23 @@ mod tests {
         payload: &'a PortfolioPayload,
         leaders: &'a [LeaderRow],
     ) -> AnalyticsView<'a> {
+        view_at(totals, payload, leaders, ALL_DAYS)
+    }
+
+    /// The same view on a chosen period, for the figures that only render on a
+    /// real window.
+    fn view_at<'a>(
+        totals: &'a Totals,
+        payload: &'a PortfolioPayload,
+        leaders: &'a [LeaderRow],
+        days: i64,
+    ) -> AnalyticsView<'a> {
         AnalyticsView {
             totals,
             payload,
             leaders,
             changes: &[],
-            days: ALL_DAYS,
+            days,
         }
     }
 
@@ -489,20 +500,22 @@ mod tests {
     }
 
     /// Each total wears the same per-period delta badge the KPI tiles do:
-    /// every period in the markup, one visible, sign class baked server-side.
+    /// every real window in the markup, one visible, sign class baked
+    /// server-side — and no span for "All".
     #[test]
     fn a_total_carries_its_period_delta_badge() {
         let payload = payload(vec![Some(1)]);
         let rows = [leader("octo/a", Some(3))];
         let totals = Totals {
             stars: Some(140),
+            // In PERIODS order: 7, 30, 90, 365, All.
             stars_delta: [Some(2), Some(5), Some(0), None, Some(40)],
             ..Totals::default()
         };
-        let out = analytics_body(&view(&totals, &payload, &rows)).into_string();
-        // The default period is All: its +40 is the visible span.
+        let out = analytics_body(&view_at(&totals, &payload, &rows, 30)).into_string();
+        // The selected window's +5 is the visible span.
         assert!(
-            out.contains(r#"class="wp-delta wp-delta-up">+40<"#),
+            out.contains(r#"class="wp-delta wp-delta-up">+5<"#),
             "out was {out}"
         );
         // An observed flat period says "nothing moved" rather than hiding;
@@ -512,6 +525,8 @@ mod tests {
             out.contains(r#"class="wp-delta wp-muted">—<"#),
             "out was {out}"
         );
+        // "All" carries no badge span, so its +40 is nowhere.
+        assert!(!out.contains(">+40<"), "out was {out}");
     }
 
     #[test]

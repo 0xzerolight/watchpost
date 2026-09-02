@@ -516,18 +516,35 @@ async fn kpi_row_ships_server_rendered_figures() {
         body.contains(r#"<div class="wp-hero-chart" data-kpi-panel="chart_stars">"#),
         "body was {body}"
     );
-    // Level and growth are in the markup itself: 140 stars, +40 across the
-    // whole window on the default "All" period.
+    // The level is in the markup itself: 140 stars. The default period is
+    // "All", which carries no movement badge — over the whole history that
+    // figure is the level again.
     assert!(
         body.contains(r#"<strong class="wp-kpi-value">140</strong>"#),
         "body was {body}"
     );
     assert!(
-        body.contains(r#"class="wp-delta wp-delta-up">+40<"#),
+        !body.contains(r#"data-period-value="-1" class="wp-delta"#),
         "body was {body}"
     );
     // No views tile — nothing observed there.
     assert!(!body.contains(r#"data-kpi-tile="chart_views""#), "{body}");
+}
+
+/// A real window still carries the movement badge "All" leaves off.
+#[tokio::test]
+async fn a_chosen_period_shows_its_growth_badge() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(3), 100).await;
+    h.seed_stars(ID_A, days_ago(1), 140).await;
+
+    let body = body_string(h.get("/repos/1?days=7").await).await;
+
+    assert!(
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+40</span>"#),
+        "body was {body}"
+    );
 }
 
 #[tokio::test]
