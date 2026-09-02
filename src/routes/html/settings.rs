@@ -12,6 +12,7 @@ use super::ui::{
     timestamp,
 };
 use crate::config::TokenSource;
+use crate::landing::{LANDING_PAGES, LandingPage};
 use crate::schedule::{Resolved, Schedule, ScheduleSource};
 use crate::state::{GhSlot, SyncStatus};
 use crate::types::RepoRow;
@@ -78,6 +79,50 @@ fn token_form(label: &str) -> Markup {
             div class="wp-actions" {
                 button type="submit" { (label) }
                 (spinner("token-spinner"))
+            }
+        }
+    }
+}
+
+/// The start page section.
+///
+/// A `<select>` behind a Save button rather than one that saves on `change`:
+/// the panel swaps `outerHTML`, so a change-triggered save would delete the
+/// element being interacted with — and a keyboard user arrowing through the
+/// options fires `change` per keystroke, which is one POST and one destroyed
+/// element each. The other three panels save on a deliberate press too, and
+/// the success notice is the confirmation.
+///
+/// There is no "use the default" button, which [`schedule_panel`] needs: a
+/// `<select>` always carries a legal value, so there is no blank state to
+/// escape from and the default is simply the first option.
+pub fn landing_panel(selected: LandingPage, msg: Option<(Notice, String)>) -> Markup {
+    html! {
+        div id="landing-panel" {
+            @if let Some((kind, text)) = msg {
+                (notice(kind, html! { (text) }))
+            }
+            form hx-post="/settings/landing"
+                hx-target="#landing-panel"
+                hx-swap="outerHTML"
+                hx-disabled-elt="find button[type=submit]"
+                hx-indicator="#landing-spinner" {
+                (field("settings-landing", "Open on", None, html! {
+                    select #settings-landing name="page" {
+                        @for page in LANDING_PAGES {
+                            option value=(page.slug()) selected[page == selected] {
+                                (page.label())
+                            }
+                        }
+                    }
+                }))
+                small class="wp-muted" {
+                    "Where watchpost opens when you visit it without a path."
+                }
+                div class="wp-actions" {
+                    button type="submit" { "Save" }
+                    (spinner("landing-spinner"))
+                }
             }
         }
     }
@@ -543,6 +588,39 @@ mod tests {
         );
         assert!(
             out.contains(r#"<span id="schedule-spinner" class="htmx-indicator wp-spinner""#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn exactly_one_start_page_is_selected() {
+        let out = landing_panel(LandingPage::Analytics, None).into_string();
+        assert_eq!(out.matches(" selected>").count(), 1, "{out}");
+        assert!(
+            out.contains(r#"<option value="analytics" selected>Analytics</option>"#),
+            "{out}"
+        );
+        // Every page the setting can resolve to is offered, or the panel would
+        // be unable to show back a value the redirector honours.
+        for page in LANDING_PAGES {
+            assert!(
+                out.contains(&format!(r#"<option value="{}""#, page.slug())),
+                "{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_start_page_form_indicator_matches_its_spinner() {
+        // An hx-indicator naming an id nothing renders is a silently dead
+        // spinner, which is why the schedule panel pins the same pair.
+        let out = landing_panel(LandingPage::Repos, None).into_string();
+        assert!(
+            out.contains(r##"hx-indicator="#landing-spinner""##),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<span id="landing-spinner" class="htmx-indicator wp-spinner""#),
             "{out}"
         );
     }

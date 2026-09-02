@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A start page on the settings page.** Which page the bare root opens on is now a choice between
+  the three nav destinations, stored as a slug in the `settings` table beside the token and the
+  interval — the third runtime setting, and still no migration, which is what v3's generic table was
+  for.
+
+  Making the root honour it meant giving the repositories dashboard its own path, `/repos`. The
+  cheaper-looking option — leave `/` rendering the dashboard and redirect away from it only when the
+  setting points elsewhere — strands the dashboard: the nav's "Repositories" link points at `/`, so
+  it would redirect straight back out again and the page would be unreachable from inside the app.
+  With the split, `/` is a pure redirector and means "my start page" rather than "the dashboard".
+  That is also why nothing else had to change: the desktop shortcut the installer writes, the setup
+  gate's redirect off a completed wizard, and the wizard's own `hx-redirect` all point at `/` and now
+  honour the setting for free.
+
+  The hop is a 303 with `cache-control: no-store`. A permanent redirect would be cached
+  indefinitely, so a later change to the setting would appear to do nothing — in the reporter's
+  profile only, and irreproducible in a fresh one. The stored value is a slug rather than a path
+  because a path could be hand-edited to `/`, which the redirector would follow into a loop; parsing
+  through a closed enum makes that unrepresentable, and an unrecognised slug warns and takes the
+  default rather than stranding the front page. The nav now renders from the same array the parser
+  validates against, so a nav href and a landing path cannot drift apart.
+
+  There is deliberately no environment variable and no `--doctor` line. A start page is a preference
+  of whoever reads the pages rather than a statement the deployment makes, and `--doctor` reports
+  what can be broken — this cannot be.
+
 ### Changed
 
 - The per-period movement badge no longer renders on the "All" period, on the repo page's KPI tiles
@@ -25,6 +53,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The leaderboard's `Growth` column is unchanged. It sits under a heading rather than under the
   number it would restate, and blanking it would mean teaching `updatePeriodValues` about `<th>`
   elements for a redundancy the heading already explains.
+
+- The settings page gathers everything it renders in one `Db::call` rather than two, restoring the
+  one-call-per-page-render rule the new panel would otherwise have pushed to three. The schedule
+  resolver grew a pure half (`resolved`) that takes an already-read value, so the panels' own
+  database-reading helpers stay for the fragment swaps that want them.
 
 ## [1.2.0] - 2026-08-29
 

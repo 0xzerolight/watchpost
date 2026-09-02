@@ -978,3 +978,116 @@ async fn the_settings_page_renders_the_schedule_panel() {
     assert!(body.contains(r#"name="interval""#), "{body}");
     assert!(body.contains("Next sync"), "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// POST /settings/landing
+// ---------------------------------------------------------------------------
+
+async fn stored_landing(h: &Harness) -> Option<String> {
+    h.state
+        .db
+        .call(|c| queries::get_setting(c, queries::LANDING_PAGE_KEY))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_settings_page_renders_the_start_page_panel() {
+    let h = harness().await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    assert!(body.contains(r#"id="landing-panel""#), "{body}");
+    assert!(body.contains(r#"hx-post="/settings/landing""#), "{body}");
+    // Every nav destination is offered, and only the dashboard is preselected.
+    assert!(
+        body.contains(r#"<option value="repos" selected>Repositories</option>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<option value="analytics">Analytics</option>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<option value="settings">Settings</option>"#),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn the_repositories_dashboard_is_the_start_page_until_one_is_chosen() {
+    let h = harness().await;
+
+    assert_eq!(stored_landing(&h).await, None);
+
+    let body = body_string(h.get("/settings").await).await;
+    assert_eq!(body.matches(" selected>").count(), 1, "{body}");
+    assert!(
+        body.contains(r#"<option value="repos" selected>"#),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn choosing_a_start_page_persists_it_and_shows_it_back() {
+    let h = harness().await;
+    let csrf = h.csrf_token().await;
+
+    let resp = h
+        .post_form("/settings/landing", "page=analytics", &csrf)
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(stored_landing(&h).await.as_deref(), Some("analytics"));
+    let body = body_string(resp).await;
+    assert!(body.contains("wp-notice-success"), "{body}");
+    assert!(
+        body.contains(r#"<option value="analytics" selected>Analytics</option>"#),
+        "{body}"
+    );
+    assert_eq!(body.matches(" selected>").count(), 1, "{body}");
+}
+
+#[tokio::test]
+async fn an_unknown_posted_start_page_changes_nothing() {
+    // A <select> cannot submit this; a hand-crafted POST can. Re-render rather
+    // than act on it, the way a stale schedule POST is re-rendered.
+    let h = harness().await;
+    let csrf = h.csrf_token().await;
+    h.post_form("/settings/landing", "page=analytics", &csrf)
+        .await;
+
+    let resp = h
+        .post_form("/settings/landing", "page=nowhere", &csrf)
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(stored_landing(&h).await.as_deref(), Some("analytics"));
+    let body = body_string(resp).await;
+    assert!(!body.contains("wp-notice"), "{body}");
+    assert!(
+        body.contains(r#"<option value="analytics" selected>"#),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn saving_the_start_page_without_csrf_is_rejected() {
+    let h = harness().await;
+
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/settings/landing")
+                .header("cookie", format!("wp_csrf={TOKEN}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("page=analytics"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(stored_landing(&h).await, None);
+}

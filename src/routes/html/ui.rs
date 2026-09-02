@@ -11,6 +11,7 @@ use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use crate::csrf::CsrfToken;
+use crate::landing::LandingPage;
 
 /// Which nav entry the current page owns, so the shell can mark it
 /// `aria-current`. `None` is for pages that live outside the nav.
@@ -20,6 +21,23 @@ pub enum NavItem {
     Analytics,
     Settings,
     None,
+}
+
+impl NavItem {
+    /// The nav entry a landing page owns.
+    ///
+    /// The mapping lives here rather than on [`LandingPage`] so the dependency
+    /// runs one way only: templates already reach into the crate root for
+    /// plain enums ([`crate::schedule::ScheduleSource`],
+    /// [`crate::config::TokenSource`]), and the crate root never reaches back
+    /// into `routes::html`.
+    pub fn of(page: LandingPage) -> Self {
+        match page {
+            LandingPage::Repos => Self::Home,
+            LandingPage::Analytics => Self::Analytics,
+            LandingPage::Settings => Self::Settings,
+        }
+    }
 }
 
 /// Which of the three notice tones a message carries.
@@ -113,7 +131,7 @@ pub fn error_page(status: StatusCode, headline: &str, detail: &str) -> Markup {
         html! {
             (page_header(headline, Some(html! { (code) " " (reason) }), None))
             (notice(Notice::Error, html! { (detail) }))
-            p { a href="/" { "Back to repos" } }
+            p { a href="/repos" { "Back to repos" } }
         },
     )
 }
@@ -381,7 +399,10 @@ mod tests {
         );
         // A dead end without a link back is the whole complaint about error
         // pages, so the link is part of the contract.
-        assert!(out.contains(r#"<a href="/">"#), "{out}");
+        assert!(
+            out.contains(r#"<a href="/repos">Back to repos</a>"#),
+            "{out}"
+        );
         // Outside the nav: neither entry may claim to be the current page.
         assert!(!out.contains("aria-current"), "{out}");
     }

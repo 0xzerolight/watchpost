@@ -1,4 +1,4 @@
-//! Router-level proofs for the dashboard at `GET /`.
+//! Router-level proofs for the dashboard at `GET /repos`.
 //!
 //! The load-bearing property here is the sparkline payload. Stars are a
 //! snapshot metric stored one row per *observed* day, so a chart fed the raw
@@ -200,7 +200,7 @@ async fn lists_tracked_repos_with_counts() {
     h.seed_event(ID_A, "launched").await;
     h.seed_event(ID_A, "hn front page").await;
 
-    let resp = h.get("/").await;
+    let resp = h.get("/repos").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
@@ -232,7 +232,7 @@ async fn sparkline_carries_forward() {
     h.seed_stars(ID_A, days_ago(20), 100).await;
     h.seed_stars(ID_A, days_ago(3), 150).await;
 
-    let body = body_string(h.get("/").await).await;
+    let body = body_string(h.get("/repos").await).await;
     let payloads = spark_payloads(&body);
     assert_eq!(payloads.len(), 1, "body was {body}");
     let spark = &payloads[0];
@@ -268,7 +268,7 @@ async fn untracked_or_hidden_absent() {
     h.seed_stats(ID_B, days_ago(1), 5, 1, 0).await;
     h.hide(ID_B).await;
 
-    let body = body_string(h.get("/").await).await;
+    let body = body_string(h.get("/repos").await).await;
 
     assert!(!body.contains(REPO_A), "untracked repo leaked: {body}");
     assert!(!body.contains(REPO_B), "hidden repo leaked: {body}");
@@ -285,7 +285,7 @@ async fn untracked_or_hidden_absent() {
 async fn empty_state_links_settings() {
     let h = harness();
 
-    let resp = h.get("/").await;
+    let resp = h.get("/repos").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
@@ -312,7 +312,7 @@ async fn last_error_renders_a_badge_with_the_message() {
         .await
         .unwrap();
 
-    let body = body_string(h.get("/").await).await;
+    let body = body_string(h.get("/repos").await).await;
 
     assert!(body.contains("data-tooltip=\"github 502\""), "{body}");
     assert!(body.contains("wp-danger"), "body was {body}");
@@ -330,7 +330,7 @@ async fn last_synced_at_renders_as_relative_time() {
         .await
         .unwrap();
 
-    let body = body_string(h.get("/").await).await;
+    let body = body_string(h.get("/repos").await).await;
     assert!(body.contains("3h ago"), "body was {body}");
     // The raw timestamp belongs in `datetime=`, where a machine can read it —
     // never as the text a dashboard asks a human to subtract from.
@@ -359,7 +359,7 @@ async fn a_db_failure_is_a_page_not_a_stack_trace() {
         .await
         .unwrap();
 
-    let resp = h.get("/").await;
+    let resp = h.get("/repos").await;
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = body_string(resp).await;
 
@@ -381,7 +381,7 @@ async fn markup_escapes_repo_names() {
     h.seed_repo(ID_A, "octo/<script>alert(1)</script>", true)
         .await;
 
-    let body = body_string(h.get("/").await).await;
+    let body = body_string(h.get("/repos").await).await;
     assert!(!body.contains("<script>alert(1)"), "body was {body}");
     assert!(body.contains("&lt;script&gt;"), "body was {body}");
 }
@@ -396,7 +396,7 @@ async fn the_dashboard_is_cards_only() {
     h.seed_stats(ID_A, days_ago(2), 137, 42, 7).await;
     h.seed_stats(ID_A, days_ago(1), 140, 42, 6).await;
 
-    let body = body_string(h.get("/").await).await;
+    let body = body_string(h.get("/repos").await).await;
 
     assert!(!body.contains("Recent changes"), "body was {body}");
     assert!(!body.contains("wp-changes"), "body was {body}");
@@ -404,4 +404,71 @@ async fn the_dashboard_is_cards_only() {
     // The cards it was burying are still there.
     assert!(body.contains(r#"class="wp-cards""#), "body was {body}");
     assert!(body.contains(REPO_A), "body was {body}");
+}
+
+// ---------------------------------------------------------------------------
+// The root, which is a redirector rather than a page
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_root_redirects_to_the_repositories_dashboard_by_default() {
+    let h = harness();
+    let resp = h.get("/").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers()["location"], "/repos");
+}
+
+#[tokio::test]
+async fn the_root_redirects_to_analytics_when_that_is_the_start_page() {
+    let h = harness();
+    h.state
+        .db
+        .call(|c| queries::set_setting(c, queries::LANDING_PAGE_KEY, "analytics"))
+        .await
+        .unwrap();
+
+    let resp = h.get("/").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers()["location"], "/analytics");
+}
+
+#[tokio::test]
+async fn an_unknown_stored_start_page_still_opens_the_dashboard() {
+    // A hand-edited database cannot strand the front page.
+    let h = harness();
+    h.state
+        .db
+        .call(|c| queries::set_setting(c, queries::LANDING_PAGE_KEY, "nowhere"))
+        .await
+        .unwrap();
+
+    let resp = h.get("/").await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers()["location"], "/repos");
+}
+
+#[tokio::test]
+async fn the_root_redirect_is_never_stored_by_the_browser() {
+    // A cached hop would make a changed setting look like it did nothing, and
+    // only in the reporter's own profile. The security headers stamp
+    // `cache-control` on `text/html` alone, and a redirect carries no content
+    // type, so the handler has to say it itself.
+    let h = harness();
+    let resp = h.get("/").await;
+    assert_eq!(resp.headers()["cache-control"], "no-store");
+}
+
+#[tokio::test]
+async fn the_root_never_redirects_to_itself() {
+    // The loop guard at router level: whatever is stored, the hop leaves "/".
+    let h = harness();
+    for stored in ["repos", "analytics", "settings", "/", "", "nonsense"] {
+        h.state
+            .db
+            .call(move |c| queries::set_setting(c, queries::LANDING_PAGE_KEY, stored))
+            .await
+            .unwrap();
+        let resp = h.get("/").await;
+        assert_ne!(resp.headers()["location"], "/", "stored was {stored}");
+    }
 }

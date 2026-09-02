@@ -21,8 +21,9 @@ use crate::collector;
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::AppError;
+use crate::landing::{self, LandingPage};
 use crate::routes::html::settings::{
-    ScheduleView, repos_picker, schedule_panel, sync_status_fragment, token_panel,
+    ScheduleView, landing_panel, repos_picker, schedule_panel, sync_status_fragment, token_panel,
 };
 use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
 use crate::routes::setup;
@@ -31,16 +32,34 @@ use crate::state::{AppState, SyncStatus, lock_recover};
 use crate::types::RepoRow;
 
 /// GET /settings — full page, or just the picker when htmx asks for it.
+///
+/// Every read the page needs happens inside one closure. Each panel also has a
+/// `*_now` helper that reads the database itself, which is what a fragment
+/// answering one POST wants — but using those here would cost this render a
+/// trip to the blocking pool per section.
 pub async fn settings_page(
     State(state): State<Arc<AppState>>,
     csrf: CsrfToken,
     headers: HeaderMap,
 ) -> Result<Markup, AppError> {
-    let repos = state.db.call(|c| queries::known_repos(c)).await?;
+    let (repos, interval, landing_raw) = state
+        .db
+        .call(|c| {
+            Ok((
+                queries::known_repos(c)?,
+                queries::get_setting(c, queries::SYNC_INTERVAL_KEY)?,
+                queries::get_setting(c, queries::LANDING_PAGE_KEY)?,
+            ))
+        })
+        .await?;
+
     let picker = repos_picker(&repos, None, state.cfg.timezone);
     if targets(&headers, "repos-picker") {
         return Ok(picker);
     }
+
+    let resolved = schedule::resolved(state.cfg.cron_schedule.as_deref(), interval);
+    let view = ScheduleView::current(&resolved, state.next_sync().await, None);
     let status = current_status(&state);
     Ok(base(
         "Settings",
@@ -49,8 +68,12 @@ pub async fn settings_page(
         html! {
             (page_header("Settings", None, None))
             section {
+                h2 { "Start page" }
+                (landing_panel(landing::resolve(landing_raw.as_deref()), None))
+            }
+            section {
                 h2 { "Sync" }
-                (schedule_panel_now(&state, None).await)
+                (schedule_panel(&view, state.cfg.timezone))
                 (sync_status_fragment(&status, state.cfg.timezone))
             }
             section {
@@ -223,6 +246,45 @@ pub async fn settings_token(State(state): State<Arc<AppState>>, body: String) ->
         Err(text) => (Notice::Error, text),
     };
     token_panel(&state.gh_slot(), Some(msg))
+}
+
+/// The start page panel as the install currently stands.
+async fn landing_panel_now(state: &Arc<AppState>, msg: Option<(Notice, String)>) -> Markup {
+    landing_panel(landing::current(state).await, msg)
+}
+
+/// POST /settings/landing — save the page the root opens on.
+///
+/// Two outcomes, both the same swapped panel, because the browser has no use
+/// for a status code it cannot show. A slug that is not a page cannot come
+/// from the selector, so it came from a stale page or a hand-crafted request:
+/// it is re-rendered rather than acted on, the way a schedule POST against an
+/// environment-owned schedule is. Nothing in the process holds this setting, so
+/// — unlike the interval — there is no running job to swap afterwards.
+pub async fn settings_landing(State(state): State<Arc<AppState>>, body: String) -> Markup {
+    let submitted = setup::form_field(&body, "page").unwrap_or_default();
+    let Some(page) = LandingPage::from_slug(submitted.trim()) else {
+        warn!(page = submitted, "ignoring an unknown start page");
+        return landing_panel_now(&state, None).await;
+    };
+
+    if let Err(e) = state
+        .db
+        .call(move |c| queries::set_setting(c, queries::LANDING_PAGE_KEY, page.slug()))
+        .await
+    {
+        warn!(error = %e, "saving the start page failed");
+        return landing_panel_now(
+            &state,
+            Some((Notice::Error, "Could not save the start page.".to_owned())),
+        )
+        .await;
+    }
+
+    // Re-read rather than echoing what was posted, for the reason the schedule
+    // handler re-resolves: a write that did not land must not come back looking
+    // as though it had.
+    landing_panel_now(&state, Some((Notice::Success, "Saved.".to_owned()))).await
 }
 
 /// The schedule panel as the install currently stands.

@@ -175,7 +175,7 @@ async fn body_string(resp: axum::response::Response) -> String {
 #[tokio::test]
 async fn an_unconfigured_install_sends_every_page_to_the_setup_wizard() {
     let h = unconfigured_offline();
-    for uri in ["/", "/settings", "/repos/1"] {
+    for uri in ["/", "/repos", "/analytics", "/settings", "/repos/1"] {
         let resp = h.get(uri).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{uri}");
         assert_eq!(resp.headers()["location"], "/setup", "{uri}");
@@ -220,7 +220,8 @@ async fn a_configured_install_does_not_show_the_wizard_again() {
 #[tokio::test]
 async fn a_configured_install_serves_its_pages_normally() {
     let h = configured();
-    assert_eq!(h.get("/").await.status(), StatusCode::OK);
+    assert_eq!(h.get("/repos").await.status(), StatusCode::OK);
+    assert_eq!(h.get("/analytics").await.status(), StatusCode::OK);
     assert_eq!(h.get("/settings").await.status(), StatusCode::OK);
 }
 

@@ -388,8 +388,8 @@ async fn health_reports_an_answering_database() {
 }
 
 #[tokio::test]
-async fn index_renders_the_base_layout() {
-    let resp = get("/").await;
+async fn the_repositories_page_renders_the_base_layout() {
+    let resp = get("/repos").await;
     assert_eq!(resp.status(), StatusCode::OK);
 
     let set_cookie = header(&resp, "set-cookie");
@@ -473,7 +473,7 @@ async fn index_renders_the_base_layout() {
     // screenreader user with no idea where they are.
     assert_eq!(body.matches(r#"aria-current="page""#).count(), 1, "{body}");
     assert!(
-        body.contains(r#"<a href="/" aria-current="page">Repositories</a>"#),
+        body.contains(r#"<a href="/repos" aria-current="page">Repositories</a>"#),
         "{body}"
     );
 
@@ -513,10 +513,10 @@ async fn analytics_marks_only_its_own_nav_entry() {
 }
 
 #[tokio::test]
-async fn index_reuses_an_existing_token() {
+async fn the_repositories_page_reuses_an_existing_token() {
     let resp = app()
         .oneshot(
-            Request::get("/")
+            Request::get("/repos")
                 .header("cookie", format!("wp_csrf={TOKEN}"))
                 .body(Body::empty())
                 .unwrap(),

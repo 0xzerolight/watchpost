@@ -6,17 +6,47 @@
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::{HeaderValue, header};
+use axum::response::{IntoResponse, Redirect, Response};
 use maud::Markup;
 
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
+use crate::landing;
 use crate::routes::html::index::{Card, SPARK_DAYS, index_body};
 use crate::routes::html::{NavItem, base};
 use crate::state::AppState;
 use crate::types::Metric;
 
-/// GET / — one card per tracked, visible repo.
+/// GET / — send the reader to whichever page they chose to open on.
+///
+/// The root is a redirector rather than a page so that "Repositories" in the
+/// nav stays reachable. The alternative — `/` rendering the dashboard *and*
+/// redirecting away when the setting points elsewhere — strands the dashboard:
+/// its own nav link would redirect straight back out again. Making `/` mean
+/// "my start page" is also what lets the desktop shortcut the installer writes
+/// and the setup wizard's `hx-redirect: /` honour the setting with no change
+/// to either.
+///
+/// 303, never a permanent redirect: a 301 is cached indefinitely, so the
+/// setting would become unchangeable in the reader's own profile and
+/// irreproducible in a fresh one. `no-store` says the same thing about the hop
+/// itself, and it is said here because
+/// [`crate::routes::security::security_headers`] stamps `cache-control` on
+/// `text/html` alone and a redirect carries no content type.
+///
+/// Any query string is dropped. Nothing links to `/?…`, and forwarding one
+/// blind would let `/?days=30` arrive at `/settings`.
+pub async fn root_redirect(State(state): State<Arc<AppState>>) -> Response {
+    let page = landing::current(&state).await;
+    let mut resp = Redirect::to(page.path()).into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// GET /repos — one card per tracked, visible repo.
 ///
 /// The overview and every sparkline are gathered inside a single
 /// [`crate::db::Db::call`]: the per-repo star series is one query each, and
