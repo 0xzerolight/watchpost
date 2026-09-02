@@ -56,7 +56,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// only applies to routes registered before `.layer()`.
 fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
     let router: Router<Arc<AppState>> = extra
-        .route("/", get(index::index_page))
+        .route("/", get(index::root_redirect))
         .route("/repos", get(index::index_page))
         .route("/analytics", get(analytics::analytics_page))
         .route("/health", get(health::health))
