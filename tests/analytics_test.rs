@@ -344,7 +344,9 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
     h.seed_stars(ID_A, days_ago(0), 30).await;
     h.seed_stars(ID_B, days_ago(0), 12).await;
 
-    let body = h.body("/analytics").await;
+    // A real window, because the badge only renders on one — "All" restates
+    // the level and is left blank.
+    let body = h.body("/analytics?days=7").await;
 
     assert!(
         body.contains(r#"<strong class="wp-total-value">42</strong>"#),
@@ -354,7 +356,11 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
     // so the two always agree: A moved 25 → 30, and B's first reading is a
     // genuine step up in the total — +12 of arrival plus +5 of growth.
     assert!(
-        body.contains(r#"class="wp-delta wp-delta-up">+17<"#),
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+17</span>"#),
+        "{body}"
+    );
+    assert!(
+        !body.contains(r#"data-period-value="-1" class="wp-delta"#),
         "{body}"
     );
 }

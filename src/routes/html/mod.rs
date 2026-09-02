@@ -186,9 +186,17 @@ fn json_island<T: Serialize>(id: Option<&str>, class: Option<&str>, value: &T) -
     }
 }
 
-/// A per-period movement badge: one span per entry of [`PERIODS`], all but
-/// the selected one `hidden`, flipped client-side by `updatePeriodValues` —
-/// the leaderboard's `data-period-value` contract.
+/// A per-period movement badge: one span per real window in [`PERIODS`], all
+/// but the selected one `hidden`, flipped client-side by `updatePeriodValues`
+/// — the leaderboard's `data-period-value` contract.
+///
+/// [`ALL_DAYS`] gets no span at all. Over the whole history a level's growth
+/// is its first reading subtracted from its last, which for anything watchpost
+/// has watched from zero is the level again — an unlabelled green number
+/// restating the one directly above it. Selecting "All" therefore leaves the
+/// badge empty rather than dropping the other spans with it: they stay in the
+/// page so a switch back to a real window costs no request, which is the whole
+/// point of shipping every period's figure.
 ///
 /// The direction class is baked into each span server-side, so a `hidden`
 /// flip recolours correctly without the client writing any text. The sign is
@@ -199,19 +207,21 @@ pub fn delta_badge(values: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
     html! {
         span class="wp-kpi-delta" {
             @for ((period, _), value) in PERIODS.iter().zip(values) {
-                span
-                    data-period-value=(period)
-                    hidden[*period != days]
-                    class=(match value {
-                        Some(n) if *n > 0 => "wp-delta wp-delta-up",
-                        Some(n) if *n < 0 => "wp-delta wp-delta-down",
-                        _ => "wp-delta wp-muted",
-                    }) {
-                    @match value {
-                        Some(n) if *n > 0 => { "+" (n) }
-                        Some(n) if *n < 0 => { "\u{2212}" (n.abs()) }
-                        Some(_) => "\u{00b1}0",
-                        None => "—",
+                @if *period != ALL_DAYS {
+                    span
+                        data-period-value=(period)
+                        hidden[*period != days]
+                        class=(match value {
+                            Some(n) if *n > 0 => "wp-delta wp-delta-up",
+                            Some(n) if *n < 0 => "wp-delta wp-delta-down",
+                            _ => "wp-delta wp-muted",
+                        }) {
+                        @match value {
+                            Some(n) if *n > 0 => { "+" (n) }
+                            Some(n) if *n < 0 => { "\u{2212}" (n.abs()) }
+                            Some(_) => "\u{00b1}0",
+                            None => "—",
+                        }
                     }
                 }
             }
@@ -342,6 +352,51 @@ mod tests {
             r#"<script type="application/json" class="spark-data">[1,null,2]</script>"#
         );
         assert!(!out.contains("id="), "out was {out}");
+    }
+
+    /// "All" gets no movement badge. Over the whole history a level's growth
+    /// is the level again for anything watchpost saw from zero, printed in
+    /// green one line under the number it restates.
+    #[test]
+    fn a_delta_badge_has_no_span_for_the_all_period() {
+        // In PERIODS order: 7, 30, 90, 365, All.
+        let values = [Some(2), Some(5), Some(0), None, Some(40)];
+
+        let out = delta_badge(&values, 30).into_string();
+        // Four spans, not five, and the All figure is nowhere in the markup.
+        assert_eq!(
+            out.matches("data-period-value").count(),
+            PERIOD_COUNT - 1,
+            "out was {out}"
+        );
+        assert!(!out.contains(r#"data-period-value="-1""#), "out was {out}");
+        assert!(!out.contains(">+40<"), "out was {out}");
+        // The selected window still shows its figure.
+        assert!(
+            out.contains(r#"<span data-period-value="30" class="wp-delta wp-delta-up">+5</span>"#),
+            "out was {out}"
+        );
+    }
+
+    /// Selecting "All" hides every span rather than removing them: the period
+    /// change is a client-side `hidden` flip, so a switch back to 30 days must
+    /// find the 30-day figure still in the page.
+    #[test]
+    fn the_all_period_hides_every_span_but_keeps_them() {
+        let values = [Some(2), Some(5), Some(0), None, Some(40)];
+
+        let out = delta_badge(&values, ALL_DAYS).into_string();
+        assert_eq!(
+            out.matches("data-period-value").count(),
+            PERIOD_COUNT - 1,
+            "out was {out}"
+        );
+        // Every one of them hidden — nothing is on screen under "All".
+        assert_eq!(
+            out.matches(" hidden ").count(),
+            PERIOD_COUNT - 1,
+            "out was {out}"
+        );
     }
 
     #[test]
