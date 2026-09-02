@@ -81,6 +81,7 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/settings", get(settings::settings_page))
         .route("/settings/discover", post(settings::settings_discover))
         .route("/settings/repos", post(settings::settings_save))
+        .route("/settings/landing", post(settings::settings_landing))
         .route("/settings/schedule", post(settings::settings_schedule))
         .route("/settings/token", post(settings::settings_token))
         .route("/sync", post(settings::sync_start))
