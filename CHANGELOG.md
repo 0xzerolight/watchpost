@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-08
+
 ### Added
 
 - **A start page on the settings page.** Which page the bare root opens on is now a choice between
@@ -310,6 +312,7 @@ never tagged.
 - `compose.yml` publishes to `127.0.0.1:8080` rather than every interface, so the default deployment
   is not reachable from the network.
 
+[1.3.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.3.0
 [1.2.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.2.0
 [1.1.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.1.0
 [1.0.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.0.0
