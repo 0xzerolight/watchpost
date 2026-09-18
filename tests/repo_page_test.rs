@@ -401,15 +401,17 @@ async fn stars_seed_from_the_first_observation() {
 }
 
 #[tokio::test]
-async fn downloads_total_sums_carried_forward_assets() {
-    // Two assets, each observed on its own sparse days. Every day's total is
-    // the sum of each asset's last known cumulative count at-or-before it —
-    // never a sum over only the rows that exist that day.
+async fn downloads_total_carries_the_newest_snapshot_across_gaps() {
+    // Every read lists every asset, so a day's total is the sum of that day's
+    // rows, and a day with no read carries the previous total. An asset gone
+    // from a later read was renamed or deleted on GitHub and stops counting.
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
     h.seed_asset(ID_A, days_ago(5), "v1", "app.bin", 10).await;
+    h.seed_asset(ID_A, days_ago(3), "v1", "app.bin", 12).await;
+    h.seed_asset(ID_A, days_ago(3), "v2", "other.bin", 5).await;
     h.seed_asset(ID_A, days_ago(1), "v1", "app.bin", 30).await;
-    h.seed_asset(ID_A, days_ago(3), "v1", "other.bin", 5).await;
+    h.seed_asset(ID_A, days_ago(1), "v2", "other2.bin", 5).await;
 
     let body = body_string(h.get("/repos/1?days=7").await).await;
     let downloads = series(&island(&body, "chart-data"), "downloads_total");
@@ -417,12 +419,12 @@ async fn downloads_total_sums_carried_forward_assets() {
     assert_eq!(
         tail(&downloads, 7),
         vec![
-            None,     // -6d: nothing observed yet, anywhere
+            None,     // -6d: nothing observed yet
             Some(10), // -5d: app.bin 10
             Some(10), // -4d: carried
-            Some(15), // -3d: + other.bin 5
-            Some(15), // -2d: both carried
-            Some(35), // -1d: app.bin 30 + other.bin 5
+            Some(17), // -3d: app.bin 12 + other.bin 5
+            Some(17), // -2d: carried
+            Some(35), // -1d: app.bin 30 + other.bin renamed, counted once
             Some(35), // today: carried
         ]
     );

@@ -662,6 +662,47 @@ async fn run_cycle_twice_identical_rowcounts() {
 }
 
 #[tokio::test]
+async fn an_asset_renamed_between_two_syncs_leaves_one_row_for_the_day() {
+    // GitHub keeps an asset's count across a rename, so a day holding the
+    // asset under both names would count the same downloads twice.
+    let server = MockServer::start().await;
+    mount_discovery(&server, vec![repo_json(ID_A, REPO_A)]).await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+    let releases = |name: &str| {
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/{REPO_A}/releases")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!([{"tag_name": "v1", "assets": [{"name": name, "download_count": 16}]}]),
+            ))
+            .with_priority(1)
+    };
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    // Equal priority, so the first mounted answers until it runs out.
+    releases("app-release.apk")
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    releases("app-1.0.0.apk").mount(&server).await;
+    run_cycle(state.clone()).await;
+    run_cycle(state.clone()).await;
+
+    assert_eq!(count(&state, "release_assets").await, 1);
+    assert_eq!(
+        scalar::<String>(&state, "SELECT asset_name FROM release_assets").await,
+        "app-1.0.0.apk"
+    );
+    let total = state
+        .db
+        .call(|c| queries::latest_downloads_total(c, ID_A))
+        .await
+        .unwrap();
+    assert_eq!(total, Some(16));
+}
+
+#[tokio::test]
 async fn discovery_failure_falls_back_to_per_repo() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

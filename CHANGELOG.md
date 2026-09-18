@@ -7,6 +7,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release downloads count a renamed asset once.** The download total carried every
+  `(release_tag, asset_name)` pair forward on its own, on the reasoning that an asset with no row on
+  a given day had simply not been re-read. That never happens: `/releases` is paginated
+  all-or-nothing and the collector writes every asset of every release whenever it answers, so a
+  pair missing from a later day is one GitHub no longer lists. GitHub keeps an asset's count across
+  a rename, which meant a renamed asset was counted once under each name, and a deleted asset
+  stayed in the total for good. One repo read 156 where GitHub and its downloads badge said 139,
+  the difference being two APKs renamed after upload. The total and the chart now sum the newest
+  day's rows and carry that day total across days with no read. A deleted asset therefore leaves the
+  total, as it does on GitHub. Keying rows by GitHub's asset id was the alternative: it survives a
+  rename, but it still keeps deleted assets, needs a migration, and has no ids for the rows already
+  written.
+
+  The same double count happened within a single day. The rename landed between two polls, and the
+  day-keyed upsert only ever adds or raises rows, so the day kept the asset under both names and the
+  total stayed doubled until the next day's read. Each successful read now also deletes that day's
+  rows for assets it no longer lists, which makes a day's rows its last reading, as the storage
+  rules already said. The rows written before this release keep that day's double count, which
+  shows as a one-day spike on the chart. A read that answers with no assets at all leaves the
+  day empty, so the previous day's total carries. That only happens when every asset has been
+  deleted.
+
 ## [1.3.0] - 2026-09-08
 
 ### Added
