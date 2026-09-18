@@ -53,6 +53,9 @@ The schema is deliberately opinionated about what a missing number means:
 - Cumulative columns (`repo_stats.stars`, `release_assets.download_count`,
   `container_pulls.pull_count`) carry forward across gaps at render time. Rate columns (views,
   clones) do not.
+- A day's release-asset rows are that day's complete asset list, because a `/releases` read either
+  lists every asset or writes nothing. The download total is the newest such day's sum, so an asset
+  GitHub stops listing, renamed or deleted, drops out rather than being carried forward on its own.
 - Before any schema upgrade the database is copied through SQLite's backup API to
   `data/watchpost.v{schema}.{timestamp}.bak`, newest three kept. A database written by a newer
   build is refused rather than opened.

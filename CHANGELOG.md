@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release downloads count a renamed asset once.** The download total carried every
+  `(release_tag, asset_name)` pair forward on its own, on the reasoning that an asset with no row on
+  a given day had simply not been re-read. That never happens: `/releases` is paginated
+  all-or-nothing and the collector writes every asset of every release whenever it answers, so a
+  pair missing from a later day is one GitHub no longer lists. GitHub keeps an asset's count across
+  a rename, which meant a renamed asset was counted once under each name, and a deleted asset
+  stayed in the total for good. One repo read 156 where GitHub and its downloads badge said 139,
+  the difference being two APKs renamed after upload. The total and the chart now sum the newest
+  day's rows and carry that day total across days with no read. A deleted asset therefore leaves the
+  total, as it does on GitHub. Keying rows by GitHub's asset id was the alternative: it survives a
+  rename, but it still keeps deleted assets, needs a migration, and has no ids for the rows already
+  written.
+
 ## [1.3.0] - 2026-09-08
 
 ### Added

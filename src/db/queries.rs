@@ -819,24 +819,28 @@ pub fn dense_series(
     Ok(out)
 }
 
-/// One release asset's identity across days: `(release_tag, asset_name)`.
-type AssetKey = (String, String);
-
 /// Per-day total release downloads, dense over the trailing `days` window
 /// ending today — the `downloads_total` chart series.
 ///
-/// `download_count` is a cumulative per-asset counter, so summing the rows that
-/// happen to exist on a day is meaningless: an asset with no row that day has
-/// not lost its downloads, it simply was not re-read. Every
-/// `(release_tag, asset_name)` pair is therefore carried forward independently,
-/// seeded from its newest row strictly before the window — the same rule
-/// [`dense_series`] applies to snapshot metrics — and the day's value is the sum
-/// over every pair observed at or before it.
+/// A day's total is the sum of that day's rows, and a day with no rows carries
+/// the previous total. That holds because a day's rows are a complete reading:
+/// the collector writes every asset of every release whenever `/releases`
+/// answers, and nothing when it does not. An asset missing from a day that has
+/// rows is one GitHub no longer lists — renamed or deleted — not one that went
+/// unread.
 ///
-/// A day where no asset has ever been observed is `None`, not zero: a repo with
-/// no releases yet must not plot a flat zero line. A pair first seen mid-window
-/// starts contributing on that day, which is a genuine step in the total rather
-/// than an artefact.
+/// The rejected alternative carried each `(release_tag, asset_name)` pair
+/// forward on its own. GitHub keeps an asset's count across a rename, so that
+/// counted a renamed asset once under each name, and it kept a deleted asset in
+/// the total for good; either way the total drifted above the figure GitHub
+/// reports. Keying rows by GitHub's asset id would survive a rename, but it
+/// still keeps deleted assets, needs a migration, and has no ids for the rows
+/// already written.
+///
+/// A day before the first observation is `None`, not zero: a repo with no
+/// releases yet must not plot a flat zero line. A new release's asset raises
+/// the total on the day it first appears, which is a genuine step rather than
+/// an artefact.
 ///
 /// `days == 0` is an empty range, matching [`dense_series`].
 pub fn dense_downloads_total(
@@ -844,8 +848,6 @@ pub fn dense_downloads_total(
     repo_id: i64,
     days: u32,
 ) -> Result<Vec<(String, Option<i64>)>, DbError> {
-    use std::collections::HashMap;
-
     if days == 0 {
         return Ok(Vec::new());
     }
@@ -853,57 +855,38 @@ pub fn dense_downloads_total(
     let start = today - chrono::Duration::days(i64::from(days) - 1);
     let (start_str, end_str) = (start.to_string(), today.to_string());
 
-    // The pre-window seed: each pair's newest reading before the window opens.
-    // `ROW_NUMBER()` per pair rather than `MAX(date)` + join — the same
-    // latest-row-per-group shape `repo_overview` uses, and for the same reason
-    // (SQLite's bare-column extension only special-cases one aggregate).
-    let mut carried: HashMap<AssetKey, i64> = conn
-        .prepare(
-            "SELECT release_tag, asset_name, download_count FROM (
-                 SELECT release_tag, asset_name, download_count,
-                        ROW_NUMBER() OVER (PARTITION BY release_tag, asset_name
-                                           ORDER BY date DESC) AS rn
-                 FROM release_assets
-                 WHERE repo_id = ?1 AND date < ?2
-             ) WHERE rn = 1",
-        )?
-        .query_map(params![repo_id, start_str], |r| {
-            Ok((
-                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
-                r.get::<_, i64>(2)?,
-            ))
+    // In-window day totals, keyed by date for O(1) lookup while walking the
+    // calendar below.
+    let mut stmt = conn.prepare(
+        "SELECT date, SUM(download_count) FROM release_assets
+         WHERE repo_id = ?1 AND date >= ?2 AND date <= ?3
+         GROUP BY date",
+    )?;
+    let observed: std::collections::HashMap<String, i64> = stmt
+        .query_map(params![repo_id, start_str, end_str], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?
         .collect::<Result<_, _>>()?;
 
-    // In-window rows bucketed by date, so the calendar walk below is one pass
-    // with O(1) lookups rather than a query per day.
-    let mut stmt = conn.prepare(
-        "SELECT date, release_tag, asset_name, download_count FROM release_assets
-         WHERE repo_id = ?1 AND date >= ?2 AND date <= ?3",
+    // The pre-window seed: the total of the newest day read before the window
+    // opens. `SUM` over no rows is NULL, which is the `None` a repo with no
+    // earlier reading needs.
+    let mut carried = conn.query_row(
+        "SELECT SUM(download_count) FROM release_assets
+         WHERE repo_id = ?1 AND date = (
+             SELECT MAX(date) FROM release_assets WHERE repo_id = ?1 AND date < ?2
+         )",
+        params![repo_id, start_str],
+        |r| r.get::<_, Option<i64>>(0),
     )?;
-    let mut observed: HashMap<String, Vec<(AssetKey, i64)>> = HashMap::new();
-    let rows = stmt.query_map(params![repo_id, start_str, end_str], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
-            r.get::<_, i64>(3)?,
-        ))
-    })?;
-    for row in rows {
-        let (date, key, count) = row?;
-        observed.entry(date).or_default().push((key, count));
-    }
 
     let mut out = Vec::with_capacity(days as usize);
     for offset in 0..i64::from(days) {
         let date = (start + chrono::Duration::days(offset)).to_string();
-        if let Some(rows) = observed.get(&date) {
-            for (key, count) in rows {
-                carried.insert(key.clone(), *count);
-            }
+        if let Some(total) = observed.get(&date) {
+            carried = Some(*total);
         }
-        let total = (!carried.is_empty()).then(|| carried.values().sum());
-        out.push((date, total));
+        out.push((date, carried));
     }
     Ok(out)
 }
@@ -1324,29 +1307,27 @@ pub fn portfolio_history_span(conn: &Connection) -> Result<u32, DbError> {
     Ok(u32::try_from(span).unwrap_or(0))
 }
 
-/// Release downloads to date: the sum over every `(release_tag, asset_name)` of
-/// that pair's newest observed `download_count`.
+/// Release downloads to date: the sum of the newest day's rows.
 ///
 /// Not `SUM(download_count)` over the table — that adds every day's snapshot of
-/// the same cumulative counter and reports a number several times the truth. Not
-/// one day's rows either: an asset with no row on the newest day was not
-/// re-read, and it did not lose its downloads. This is the same
-/// latest-row-per-group shape [`dense_downloads_total`] seeds itself with, which
-/// is what makes this figure and the last point of that chart the same number by
-/// construction rather than by agreement.
+/// the same cumulative counter and reports a number several times the truth.
+/// Not each asset's newest row either: a day's rows are a complete reading (see
+/// [`dense_downloads_total`]), so an asset absent from the newest day was
+/// renamed or deleted on GitHub, and carrying its last row counted a renamed
+/// asset once under each name. This is the value [`dense_downloads_total`]
+/// carries into its last day, which is what makes this figure and the last
+/// point of that chart the same number by construction rather than by
+/// agreement.
 ///
 /// `None` for a repo whose releases have never been observed. `SUM` over no rows
 /// is already `NULL`, so the distinction survives the query rather than being
 /// reconstructed after it.
 pub fn latest_downloads_total(conn: &Connection, repo_id: i64) -> Result<Option<i64>, DbError> {
     Ok(conn.query_row(
-        "SELECT SUM(download_count) FROM (
-             SELECT download_count,
-                    ROW_NUMBER() OVER (PARTITION BY release_tag, asset_name
-                                           ORDER BY date DESC) AS rn
-               FROM release_assets
-              WHERE repo_id = ?1
-         ) WHERE rn = 1",
+        "SELECT SUM(download_count) FROM release_assets
+         WHERE repo_id = ?1 AND date = (
+             SELECT MAX(date) FROM release_assets WHERE repo_id = ?1
+         )",
         params![repo_id],
         |r| r.get::<_, Option<i64>>(0),
     )?)
@@ -2421,18 +2402,33 @@ mod tests {
     }
 
     #[test]
-    fn downloads_total_carries_each_asset_and_sums_per_day() {
+    fn downloads_total_sums_each_day_and_carries_across_gaps() {
         let c = test_conn();
         seed_repo(&c, 1);
         seed_asset(&c, 1, &days_ago(3), "a.bin", 10);
         seed_asset(&c, 1, &days_ago(1), "b.bin", 5);
         seed_asset(&c, 1, &days_ago(1), "a.bin", 12);
         let rows = dense_downloads_total(&c, 1, 5).unwrap();
-        // -4d: nothing observed anywhere yet; -2d: a.bin's 10 still stands even
-        // with no row that day; -1d onwards: both assets.
+        // -4d: nothing observed yet; -2d: no read that day, so -3d's 10
+        // stands; -1d onwards: both assets.
         assert_eq!(
             values(&rows),
             vec![None, Some(10), Some(10), Some(17), Some(17)]
+        );
+    }
+
+    #[test]
+    fn downloads_total_counts_a_renamed_asset_once() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        // GitHub keeps an asset's count across a rename, so the new name
+        // arrives already holding the old name's downloads.
+        seed_asset(&c, 1, &days_ago(3), "app-release.apk", 16);
+        seed_asset(&c, 1, &days_ago(2), "app-1.0.0.apk", 16);
+        let rows = dense_downloads_total(&c, 1, 5).unwrap();
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(16), Some(16), Some(16), Some(16)]
         );
     }
 
@@ -2957,7 +2953,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_downloads_total_sums_the_newest_row_per_asset() {
+    fn latest_downloads_total_sums_the_newest_snapshot() {
         let c = test_conn();
         seed_tracked_repo(&c, 1);
         for (day, one, two) in [(3, 10, 100), (2, 12, 100), (1, 15, 140)] {
@@ -2970,15 +2966,26 @@ mod tests {
     }
 
     #[test]
-    fn latest_downloads_total_carries_an_asset_that_stopped_being_read() {
+    fn latest_downloads_total_counts_a_renamed_asset_once() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        seed_asset(&c, 1, &days_ago(3), "app-release.apk", 16);
+        seed_asset(&c, 1, &days_ago(2), "app-1.0.0.apk", 16);
+
+        // One asset under two names, not 32 downloads.
+        assert_eq!(latest_downloads_total(&c, 1).unwrap(), Some(16));
+    }
+
+    #[test]
+    fn latest_downloads_total_drops_an_asset_github_no_longer_lists() {
         let c = test_conn();
         seed_tracked_repo(&c, 1);
         seed_tagged_asset(&c, 1, &days_ago(9), "v1", 500);
         seed_tagged_asset(&c, 1, &days_ago(1), "v2", 4);
 
-        // The tag is part of the group, so an old release with no row on the
-        // newest day was not re-read — it did not lose its downloads.
-        assert_eq!(latest_downloads_total(&c, 1).unwrap(), Some(504));
+        // Every read lists every asset, so v1 missing from the newest day
+        // means GitHub deleted it, and GitHub's own total no longer has it.
+        assert_eq!(latest_downloads_total(&c, 1).unwrap(), Some(4));
     }
 
     #[test]
