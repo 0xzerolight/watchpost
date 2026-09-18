@@ -217,6 +217,45 @@ pub fn upsert_paths(
     Ok(())
 }
 
+/// Delete `date`'s rows for assets missing from `keep`, the complete asset list
+/// of a `/releases` read made that day.
+///
+/// A day's rows have to be that day's last reading, not the union of every
+/// poll: the download total sums the newest day (see [`latest_downloads_total`]),
+/// so an asset renamed between two polls would otherwise sit on the day under
+/// both names and count twice until the next day's read. Kept apart from
+/// [`upsert_release_assets`] rather than folded into it, because that upsert
+/// merges one row at a time and is also how tests seed a day asset by asset; a
+/// prune inside it would delete the rows written just before.
+pub fn prune_release_assets(
+    conn: &Connection,
+    repo_id: i64,
+    date: &str,
+    keep: &[AssetSnapshot],
+) -> Result<(), DbError> {
+    let keep: std::collections::HashSet<(&str, &str)> = keep
+        .iter()
+        .map(|a| (a.release_tag.as_str(), a.asset_name.as_str()))
+        .collect();
+    let stored: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT release_tag, asset_name FROM release_assets
+             WHERE repo_id = ?1 AND date = ?2",
+        )?
+        .query_map(params![repo_id, date], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut delete = conn.prepare(
+        "DELETE FROM release_assets
+         WHERE repo_id = ?1 AND date = ?2 AND release_tag = ?3 AND asset_name = ?4",
+    )?;
+    for (tag, name) in &stored {
+        if !keep.contains(&(tag.as_str(), name.as_str())) {
+            delete.execute(params![repo_id, date, tag, name])?;
+        }
+    }
+    Ok(())
+}
+
 pub fn upsert_release_assets(
     conn: &Connection,
     repo_id: i64,

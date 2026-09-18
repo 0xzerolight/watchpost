@@ -22,6 +22,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rename, but it still keeps deleted assets, needs a migration, and has no ids for the rows already
   written.
 
+  The same double count happened within a single day. The rename landed between two polls, and the
+  day-keyed upsert only ever adds or raises rows, so the day kept the asset under both names and the
+  total stayed doubled until the next day's read. Each successful read now also deletes that day's
+  rows for assets it no longer lists, which makes a day's rows its last reading, as the storage
+  rules already said. The rows written before this release keep that day's double count, which
+  shows as a one-day spike on the chart. A read that answers with no assets at all leaves the
+  day empty, so the previous day's total carries. That only happens when every asset has been
+  deleted.
+
 ## [1.3.0] - 2026-09-08
 
 ### Added

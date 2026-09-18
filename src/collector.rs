@@ -382,6 +382,7 @@ async fn sync_one_repo(
                 queries::upsert_paths(&tx, repo_id, &date, rows)?;
             }
             if let Some(rows) = &assets {
+                queries::prune_release_assets(&tx, repo_id, &date, rows)?;
                 queries::upsert_release_assets(&tx, repo_id, &date, rows)?;
             }
             if let Some(count) = ghcr_pulls {
