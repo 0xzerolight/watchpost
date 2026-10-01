@@ -257,6 +257,24 @@ pub fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
     if n == 1 { one } else { many }
 }
 
+/// A change with its sign spelled out: "+6", "−2" or "±0".
+///
+/// The sign carries direction ahead of any colour, so it survives a
+/// monochrome screen and a reader who cannot separate the two hues. The minus
+/// is U+2212 MINUS SIGN, not a hyphen: at small sizes a hyphen next to a digit
+/// reads as punctuation. Zero is "±0", an observed "nothing moved". One
+/// function rather than a match arm per renderer: the delta badges, the
+/// leaderboard, the dashboard captions and the event impact line all print
+/// changes, and every copy of the rule was one more place for the minus to
+/// drift back to a hyphen.
+pub fn signed(n: i64) -> String {
+    match n.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("+{n}"),
+        std::cmp::Ordering::Less => format!("\u{2212}{}", n.unsigned_abs()),
+        std::cmp::Ordering::Equal => "\u{00b1}0".to_owned(),
+    }
+}
+
 /// A stored `YYYY-MM-DD` day, rendered short.
 ///
 /// The date-only sibling of [`timestamp`], and deliberately without its `Tz`
@@ -726,5 +744,18 @@ mod tests {
         // Opens towards the content: centred, the hidden tooltip box hung past
         // the right edge and widened the page on a phone.
         assert!(out.contains(r#"data-placement="left""#), "{out}");
+    }
+
+    #[test]
+    fn signed_spells_out_the_direction_with_a_true_minus() {
+        assert_eq!(signed(6), "+6");
+        // U+2212 MINUS SIGN, not a hyphen.
+        assert_eq!(signed(-2), "\u{2212}2");
+        // An observed "nothing moved", never a bare 0 that reads as a level.
+        assert_eq!(signed(0), "\u{00b1}0");
+        assert_eq!(
+            signed(i64::MIN),
+            format!("\u{2212}{}", i64::MIN.unsigned_abs())
+        );
     }
 }

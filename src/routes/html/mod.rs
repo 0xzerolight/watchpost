@@ -198,10 +198,10 @@ fn json_island<T: Serialize>(id: Option<&str>, class: Option<&str>, value: &T) -
 /// point of shipping every period's figure.
 ///
 /// The direction class is baked into each span server-side, so a `hidden`
-/// flip recolours correctly without the client writing any text. The sign is
-/// spelled out (U+2212 MINUS SIGN, not a hyphen) so direction survives a
-/// monochrome screen; `Some(0)` is an observed "nothing moved" and `None` an
-/// em-dash "nobody looked", the same distinction every table here keeps.
+/// flip recolours correctly without the client writing any text. The figure
+/// itself goes through [`signed`], so direction survives a monochrome screen;
+/// `Some(0)` is an observed "nothing moved" and `None` an em-dash "nobody
+/// looked", the same distinction every table here keeps.
 pub fn delta_badge(values: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
     html! {
         span class="wp-kpi-delta" {
@@ -216,9 +216,7 @@ pub fn delta_badge(values: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
                             _ => "wp-delta wp-muted",
                         }) {
                         @match value {
-                            Some(n) if *n > 0 => { "+" (n) }
-                            Some(n) if *n < 0 => { "\u{2212}" (n.abs()) }
-                            Some(_) => "\u{00b1}0",
+                            Some(n) => (signed(*n)),
                             None => "—",
                         }
                     }
