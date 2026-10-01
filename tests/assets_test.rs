@@ -676,3 +676,13 @@ async fn the_shell_marks_its_section_and_keeps_to_the_viewport() {
     assert!(rule(&css, ".wp-page-header h1").contains("overflow-wrap: anywhere;"));
     assert!(rule(&css, ".wp-table-wrap").contains("position: relative;"));
 }
+
+/// Until Chart.js runs, a canvas is 300px wide by default. The portfolio
+/// card's content-sized grid track took that as its minimum, Chart.js then
+/// measured the 300px back from the box, and the card ended 28px past a 320px
+/// phone. The box takes its width from the layout, never from its canvas.
+#[tokio::test]
+async fn a_chart_box_takes_its_width_from_the_layout_not_its_canvas() {
+    let css = body_string(get("/assets/app.css").await).await;
+    assert!(rule(&css, ".chart-box").contains("contain: inline-size;"));
+}

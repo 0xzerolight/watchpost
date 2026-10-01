@@ -209,10 +209,18 @@
 /*
  * Chart.js sizes its canvas to the parent, so the parent must have a height of
  * its own — a bare canvas in a flow container grows on every resize.
+ *
+ * The width has the same loop. Until Chart.js runs, the canvas is its default
+ * 300px, and a content-sized grid track (the portfolio card's `1fr`) took that
+ * as its minimum, so Chart.js measured 300px back and the card ran past a
+ * 320px phone. `contain: inline-size` gives the box no width from its content,
+ * so the layout sets it and the canvas follows. `min-width: 0` here changes
+ * nothing: the card around the box still sizes to the canvas.
  */
 .chart-box {
   position: relative;
   height: 240px;
+  contain: inline-size;
 }
 
 /*
