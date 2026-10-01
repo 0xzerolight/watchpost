@@ -172,6 +172,52 @@ async fn deltas_read_text_colours_and_floating_surfaces_share_one_border() {
     }
 }
 
+/// Pico shows focus as a translucent box-shadow (about 1.8:1) and an unticked
+/// checkbox at about 1.4:1. A pressed KPI tile looked the same focused or not,
+/// and an off chip differed from an on one by a 16% tint. Each of these needs
+/// a cue that is not a faint shade of the same colour.
+#[tokio::test]
+async fn focus_and_toggle_state_do_not_rest_on_colour() {
+    let css = body_string(get("/assets/app.css").await).await;
+
+    let ring = rule(&css, ":root details.dropdown summary:focus-visible");
+    assert!(
+        ring.contains("outline: 2px solid var(--pico-primary);"),
+        "{ring}"
+    );
+    assert!(ring.contains("outline-offset: 2px;"), "{ring}");
+    assert!(ring.contains("box-shadow: none;"), "{ring}");
+
+    let light = declared(rule(&css, r#":root:not([data-theme="dark"])"#));
+    let dark = declared(rule(&css, r#"  :root:not([data-theme="light"])"#));
+    for scheme in [&light, &dark] {
+        assert!(
+            scheme.contains("--pico-form-element-border-color"),
+            "a scheme leaves the control border at Pico's 1.4:1"
+        );
+    }
+
+    let group = rule(&css, ".wp-kpis");
+    assert!(
+        group.contains("--pico-group-box-shadow-focus-with-button: none;"),
+        "{group}"
+    );
+    assert!(
+        rule(&css, r#".wp-kpis[role="group"] > button.wp-kpi"#).contains("margin-left: 0;"),
+        "tiles still collapse into one segmented bar"
+    );
+    assert!(
+        !css.contains(".wp-kpi:is(:hover, :focus-visible)"),
+        "hover and keyboard focus must be distinct states"
+    );
+
+    assert!(
+        rule(&css, r#".wp-chip[aria-pressed="false"]::before"#)
+            .contains("background: transparent;"),
+        "an off chip must show a hollow dot"
+    );
+}
+
 #[tokio::test]
 async fn app_js_defines_the_watchpost_namespace() {
     let resp = get("/assets/app.js").await;

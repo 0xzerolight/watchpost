@@ -74,6 +74,12 @@
    * as a drawn chart box.
    */
   --wp-l-grid: #eff1f4;
+  /*
+   * Form-control borders. Pico's #cfd5e2 (light) and #2a3140 (dark) sit at
+   * about 1.4:1 against the page, so an unticked checkbox all but vanishes.
+   * These measure 3.3:1 on #fff and 3.2:1 on #13171f (WCAG 1.4.11).
+   */
+  --wp-l-control-border: #858fa1;
 
   /*
    * Dark: the same eight hues re-stepped for the dark card surface, not a
@@ -107,6 +113,7 @@
    * #8891a1 measures 5.4:1 there and 5.6:1 on the page.
    */
   --wp-d-muted: #8891a1;
+  --wp-d-control-border: #5d687e;
 
   /*
    * The slots that the rules below and app.js read. `getComputedStyle`
@@ -144,6 +151,17 @@
 }
 
 /*
+ * Light-scheme overrides of Pico's own tokens. A plain `:root` rule loses to
+ * Pico's light theme block, `:root:not([data-theme=dark])`, which carries two
+ * selectors' weight to its one, so this repeats that selector. It sits before
+ * the dark blocks: in a dark OS both match the same element, and the dark one
+ * has to win.
+ */
+:root:not([data-theme="dark"]) {
+  --pico-form-element-border-color: var(--wp-l-control-border);
+}
+
+/*
  * Dark scheme. Two selectors, one remapping: the media query is what actually
  * fires today — it follows the OS, and `applyTheme()` listens to the same query
  * to recolour live charts. `[data-theme]` is Pico's own convention and nothing
@@ -168,6 +186,7 @@
     --wp-chart-grid: var(--wp-d-grid);
     --wp-border: var(--wp-d-border);
     --pico-muted-color: var(--wp-d-muted);
+    --pico-form-element-border-color: var(--wp-d-control-border);
   }
 }
 
@@ -184,6 +203,7 @@
   --wp-chart-grid: var(--wp-d-grid);
   --wp-border: var(--wp-d-border);
   --pico-muted-color: var(--wp-d-muted);
+  --pico-form-element-border-color: var(--wp-d-control-border);
 }
 
 /*
@@ -210,12 +230,30 @@
   }
 }
 
-/* KPI tiles. The grid wraps like the card grid, one tile per metric. */
+/*
+ * KPI tiles. The grid wraps like the card grid, one tile per metric.
+ *
+ * The row is a `role="group"` for screenreaders, and Pico dresses that as a
+ * segmented button bar: a ring around the whole row on any click, squared
+ * inner corners and borders collapsed into seams. Tiles are separate cards,
+ * so the row opts out of all three, as the chip row does.
+ */
 .wp-kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
   gap: var(--wp-space-3);
   margin-bottom: var(--wp-space-4);
+  --pico-group-box-shadow-focus-with-button: none;
+  box-shadow: none;
+}
+
+/*
+ * (0,3,1), to beat Pico's `[role=group] [type=button]:not(:first-child)`
+ * margin collapse at (0,3,0) and its squared-corner rules at (0,2,0).
+ */
+.wp-kpis[role="group"] > button.wp-kpi {
+  margin-left: 0;
+  border-radius: var(--pico-border-radius, 0.25rem);
 }
 
 /*
@@ -231,7 +269,7 @@
   width: auto;
   margin: 0;
   padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: transparent;
   color: inherit;
@@ -241,7 +279,13 @@
   cursor: pointer;
 }
 
-.wp-kpi:is(:hover, :focus-visible) {
+/*
+ * Hover tints the border. Keyboard focus is a different state with its own
+ * cue, the shared outline ring further down, drawn outside the tile. The
+ * pressed tile already wears the primary border, so a focus that only changed
+ * the border was invisible on exactly the tile the page opens on.
+ */
+.wp-kpi:hover {
   border-color: var(--pico-primary, #2a78d6);
   background: transparent;
   color: inherit;
@@ -524,15 +568,11 @@
  * Pico treats a `role="group"` as one composite widget: focus anywhere inside
  * draws the focus ring around the whole (full-width) group and suppresses the
  * child button's own ring. For a row of independent pill toggles that reads as
- * a page-wide bar lighting up, so the group ring moves back onto the focused
- * chip itself.
+ * a page-wide bar lighting up, so the group ring is switched off. The focused
+ * chip wears the shared focus outline (the ring rule after the skip link).
  */
 .wp-row[role="group"] {
   box-shadow: none;
-}
-
-[role="group"] > .wp-chip:focus {
-  box-shadow: 0 0 0 var(--pico-outline-width, 0.125rem) var(--pico-primary-focus);
 }
 
 /* Pressed state for the kind filter toggles (`toggleKind()`): a tint of the
@@ -541,6 +581,22 @@
   background: color-mix(in srgb, var(--wp-kind-color, var(--pico-muted-border-color)) 16%, transparent);
   border-color: var(--wp-kind-color, var(--pico-muted-border-color));
   color: inherit;
+}
+
+/*
+ * A chip switched off. A paler tint is a difference of colour alone (WCAG
+ * 1.4.1), and in dark mode barely one. So the dot empties to a ring, the
+ * label drops to muted ink and the border to the neutral hairline. A chip that
+ * is on keeps its filled dot and tint.
+ */
+.wp-chip[aria-pressed="false"] {
+  border-color: var(--wp-border);
+  color: var(--pico-muted-color, #6b7280);
+}
+
+.wp-chip[aria-pressed="false"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--wp-kind-color, var(--pico-muted-color, #6b7280));
 }
 
 /*
@@ -700,6 +756,28 @@ tr.wp-edit-row [name="kind"] {
 
 .wp-skip:focus {
   transform: none;
+}
+
+/*
+ * The focus ring: one rule for every focusable control. Pico draws focus as a
+ * box-shadow in `--pico-primary-focus`, a translucent tint that measures about
+ * 1.8:1 against the page and merges into a primary-filled button. An outline
+ * in the opaque primary, offset from the control, shows in both schemes and on
+ * any fill, and never changes the element's size. Pico's ring is switched off
+ * here so the two do not stack. It still shows on a mouse click, where
+ * `:focus-visible` does not match, which is why `--pico-primary-focus` is left
+ * translucent rather than made opaque.
+ *
+ * `:root` plus the attribute arguments put this at (0,4,0), above every Pico
+ * focus rule but the dropdown summary's `outline: 0` at (0,3,2), which the
+ * second selector ties and follows. `[tabindex="-1"]` is left out: those are
+ * containers that focus is parked on after a swap, not controls.
+ */
+:root :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible,
+:root details.dropdown summary:focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 /*
