@@ -768,13 +768,13 @@ tr.wp-edit-row [name="kind"] {
  * `:focus-visible` does not match, which is why `--pico-primary-focus` is left
  * translucent rather than made opaque.
  *
- * `:root` plus the attribute arguments put this at (0,4,0), above every Pico
- * focus rule but the dropdown summary's `outline: 0` at (0,3,2), which the
- * second selector ties and follows. `[tabindex="-1"]` is left out: those are
- * containers that focus is parked on after a swap, not controls.
+ * `:is()` weighs as its most specific argument, `[tabindex]:not(...)` at
+ * (0,2,0), for every element it matches. With `:root` and `:focus-visible`
+ * that puts this at (0,4,0), above every Pico focus rule, the dropdown
+ * summary's `outline: 0` at (0,3,2) included. `[tabindex="-1"]` is left out:
+ * those are containers that focus is parked on after a swap, not controls.
  */
-:root :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible,
-:root details.dropdown summary:focus-visible {
+:root :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--pico-primary);
   outline-offset: 2px;
   box-shadow: none;

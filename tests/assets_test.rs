@@ -180,7 +180,10 @@ async fn deltas_read_text_colours_and_floating_surfaces_share_one_border() {
 async fn focus_and_toggle_state_do_not_rest_on_colour() {
     let css = body_string(get("/assets/app.css").await).await;
 
-    let ring = rule(&css, ":root details.dropdown summary:focus-visible");
+    let ring = rule(
+        &css,
+        r#":root :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible"#,
+    );
     assert!(
         ring.contains("outline: 2px solid var(--pico-primary);"),
         "{ring}"
