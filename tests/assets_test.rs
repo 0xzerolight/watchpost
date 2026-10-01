@@ -260,6 +260,12 @@ async fn app_js_defines_the_watchpost_namespace() {
         // to `window.confirm`.
         "htmx:confirm",
         "[data-confirm-ok]",
+        // Per-trigger dialog copy: the heading, the OK label and the danger
+        // style come from the button that asked. Lose the reader and every
+        // delete reverts to "Confirm / Confirm".
+        "data-confirm-title",
+        "data-confirm-label",
+        "data-confirm-danger",
         // An event row is a table row, not a form, so Enter in one of its
         // fields submits nothing without this listener.
         "tr.wp-edit-row",
@@ -274,6 +280,9 @@ async fn app_js_defines_the_watchpost_namespace() {
         // comment and in `applyFilter`'s selector, so a plain needle would go
         // on passing with the fallback deleted.
         r#"getElementById("events-section")"#,
+        // The general fallback before it: the nearest container that takes
+        // parked focus, which is how a sync status keeps the keyboard.
+        r#"[tabindex="-1"]:not(#main)"#,
         // Polls must not record or consume a focus id — this is what tells a
         // poll from a press.
         "triggeringEvent",
@@ -583,6 +592,8 @@ async fn the_repositories_page_renders_the_base_layout() {
         body.contains(r#"<main id="main" class="container" tabindex="-1">"#),
         "{body}"
     );
+    // One no-JS notice per page, inside main where the skip link lands.
+    assert_eq!(body.matches("<noscript>").count(), 1, "{body}");
 
     // The skip link only works as the first focusable element on the page, so
     // its position is part of the contract, not just its presence.
@@ -759,5 +770,15 @@ async fn type_and_spacing_come_from_the_scale() {
     assert!(
         css.contains("@media (pointer: coarse)"),
         "no touch-target block"
+    );
+}
+
+#[tokio::test]
+async fn a_destructive_confirm_has_its_own_button_style() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let danger = rule(&css, "#wp-confirm .wp-confirm-danger");
+    assert!(
+        danger.contains("--pico-background-color: var(--pico-del-color);"),
+        "{danger}"
     );
 }

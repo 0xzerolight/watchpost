@@ -2036,8 +2036,36 @@
   // -------------------------------------------------------------------------
 
   /*
+   * The dialog's resting copy. A trigger may override the heading and the OK
+   * label for one prompt; both are put back on close, so the next plain
+   * `hx-confirm` reads exactly as the shell ships it.
+   */
+  var CONFIRM_DEFAULT = "Confirm";
+
+  /*
+   * What the triggering element asks the dialog to say: `data-confirm-title`
+   * for the heading, `data-confirm-label` for the OK button, and the bare
+   * `data-confirm-danger` for a destructive action. These are read as
+   * attributes and written as `textContent`, the same rule the toast keeps:
+   * a title that came from a stored event can never become markup. The OK
+   * button's own marker is `data-confirm-ok`, which is why the trigger's label
+   * attribute is not called that.
+   */
+  function confirmCopy(elt) {
+    function read(name) {
+      var value = elt && elt.getAttribute ? elt.getAttribute(name) : null;
+      return value && value.trim() ? value : null;
+    }
+    return {
+      title: read("data-confirm-title") || CONFIRM_DEFAULT,
+      label: read("data-confirm-label") || CONFIRM_DEFAULT,
+      danger: !!(elt && elt.hasAttribute && elt.hasAttribute("data-confirm-danger")),
+    };
+  }
+
+  /*
    * Fill the shell's `#wp-confirm` with `question` and open it, answering
-   * `done(true)` only if the reader pressed Confirm. Returns false — having
+   * `done(true)` only if the reader pressed OK. Returns false — having
    * changed nothing — if the shell is missing a part, so the caller can leave
    * the request to htmx rather than swallow it.
    *
@@ -2045,10 +2073,11 @@
    * the inert background and Escape all come from the platform.
    */
   function openConfirm(dlg, question, elt, done) {
+    var titleEl = dlg.querySelector("#wp-confirm-title");
     var textEl = dlg.querySelector("#wp-confirm-text");
     var okBtn = dlg.querySelector("[data-confirm-ok]");
     var cancelBtn = dlg.querySelector("[data-confirm-cancel]");
-    if (!textEl || !okBtn || !cancelBtn) {
+    if (!titleEl || !textEl || !okBtn || !cancelBtn) {
       return false;
     }
 
@@ -2071,11 +2100,15 @@
      * Escape, whose `cancel` event closes it by default. Resolving on `close`
      * instead of wiring the three paths separately is what keeps the teardown
      * whole: the two click handlers are removed on the one event that cannot be
-     * skipped, so the next dialog cannot answer with the last one's callback.
+     * skipped, so the next dialog cannot answer with the last one's callback,
+     * and the copy goes back to the shell's own.
      */
     function onClose() {
       okBtn.removeEventListener("click", onOk);
       cancelBtn.removeEventListener("click", onCancel);
+      titleEl.textContent = CONFIRM_DEFAULT;
+      okBtn.textContent = CONFIRM_DEFAULT;
+      okBtn.classList.remove("wp-confirm-danger");
       // Focus goes back to the button that asked. The platform restores it by
       // itself only when that button held focus to begin with, and Safari does
       // not focus a button on click — without this a cancel would drop the
@@ -2087,6 +2120,12 @@
       done(confirmed);
     }
 
+    var copy = confirmCopy(elt);
+    titleEl.textContent = copy.title;
+    okBtn.textContent = copy.label;
+    if (copy.danger) {
+      okBtn.classList.add("wp-confirm-danger");
+    }
     textEl.textContent = question;
     okBtn.addEventListener("click", onOk);
     cancelBtn.addEventListener("click", onCancel);
@@ -2301,8 +2340,24 @@
       }
     }
     // So the control is gone (a deleted row took its Delete button with it) or
-    // cannot hold focus where it now is. The section it acted on is the nearest
-    // thing to where the reader was, and carries `tabindex="-1"` to take this.
+    // cannot hold focus where it now is. The nearest container the swap
+    // settled into that takes parked focus (`tabindex="-1"`: the events
+    // section, a sync status panel) is the closest thing to where the reader
+    // was. `#main` carries one too, for the skip link, and is skipped: landing
+    // there is the same as being dropped at the top.
+    var settled = evt.target;
+    var holder =
+      settled && settled.closest
+        ? settled.closest('[tabindex="-1"]:not(#main)')
+        : null;
+    if (holder && holder.isConnected) {
+      holder.focus();
+      if (document.activeElement === holder) {
+        return;
+      }
+    }
+    // The events section is the last resort for a swap that settled outside
+    // any such container, as a row swap inside it does not.
     var section = document.getElementById("events-section");
     if (section) {
       section.focus();

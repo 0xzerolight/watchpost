@@ -1245,6 +1245,19 @@ main h2 {
   max-width: 26rem;
 }
 
+/*
+ * A destructive confirm (`data-confirm-danger` on the trigger): the OK button
+ * takes Pico's del colour, so the irreversible choice looks like one. The ink
+ * is Pico's contrast-inverse: white on the light scheme's deep red (7.8:1),
+ * black on the dark scheme's lighter one (6.9:1). The id keeps it above
+ * Pico's hover and focus recolouring, so it stays red while pressed.
+ */
+#wp-confirm .wp-confirm-danger {
+  --pico-background-color: var(--pico-del-color);
+  --pico-border-color: var(--pico-del-color);
+  --pico-color: var(--pico-contrast-inverse);
+}
+
 /* Layout utilities — enough for a row of controls, not a grid system. */
 .wp-row {
   display: flex;

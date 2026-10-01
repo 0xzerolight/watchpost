@@ -95,7 +95,19 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                 // `tabindex="-1"` makes the skip link's target focusable:
                 // without it the jump moves the viewport but not focus, and
                 // the next Tab lands back at the top of the page.
-                main id="main" class="container" tabindex="-1" { (inner) }
+                main id="main" class="container" tabindex="-1" {
+                    // `<noscript>` is markup, not script, so the CSP has no
+                    // say in it. Without JavaScript the chart area is an empty
+                    // box and every edit control is dead, and nothing said
+                    // why. The sentence is the one place that does, in the
+                    // info tone a notice already has.
+                    noscript {
+                        (notice(Notice::Info, html! {
+                            "Charts and editing need JavaScript; the tables and totals on this page are complete without it."
+                        }))
+                    }
+                    (inner)
+                }
                 (toast_region())
                 (confirm_dialog())
             }
@@ -132,14 +144,17 @@ fn toast_region() -> Markup {
 /// attribute rather than by position, so restyling the footer cannot silently
 /// swap Cancel for Confirm.
 ///
-/// The heading is a constant rather than another client-filled slot because
-/// `aria-labelledby` names the dialog from it: pointing at an element the client
-/// might not have written yet would leave the modal with no accessible name at
-/// all, which is worse than the generic one. `aria-describedby` points at the
-/// slot the client *does* fill, so the question is announced along with the
-/// name — without it a screenreader opens on "Confirm, dialog" and never reads
-/// what is about to be destroyed. Cancel comes first in the DOM so
-/// `showModal()`'s initial focus lands on the harmless button.
+/// The heading ships with text ("Confirm") rather than as an empty slot
+/// because `aria-labelledby` names the dialog from it: pointing at an element
+/// the client might not have written yet would leave the modal with no
+/// accessible name at all. A trigger may replace that text, and the OK label,
+/// through `data-confirm-title` and `data-confirm-label`; the client restores
+/// both on close, so a plain `hx-confirm` always reads "Confirm".
+/// `aria-describedby` points at the slot the client always fills, so the
+/// question is announced along with the name — without it a screenreader opens
+/// on "Confirm, dialog" and never reads what is about to be destroyed. Cancel
+/// comes first in the DOM so `showModal()`'s initial focus lands on the
+/// harmless button.
 fn confirm_dialog() -> Markup {
     html! {
         dialog id="wp-confirm" aria-labelledby="wp-confirm-title"
@@ -575,5 +590,28 @@ mod tests {
             assert!(out.contains(href), "{href} missing from {out}");
         }
         assert!(!out.contains("aria-current"), "{out}");
+    }
+
+    /// With JavaScript off the chart area is an empty box and every edit
+    /// control is dead. One sentence, once per page, says why.
+    #[test]
+    fn the_shell_explains_itself_without_javascript() {
+        let out = base(
+            "T",
+            NavItem::Home,
+            &CsrfToken(String::new()),
+            html! { p { "body" } },
+        )
+        .into_string();
+        assert_eq!(out.matches("<noscript>").count(), 1, "{out}");
+        assert!(
+            out.contains(concat!(
+                r#"<main id="main" class="container" tabindex="-1"><noscript>"#,
+                r#"<p class="wp-notice wp-notice-info" role="status">"#,
+                "Charts and editing need JavaScript; the tables and totals on this page are complete without it.",
+                "</p></noscript><p>body</p></main>"
+            )),
+            "{out}"
+        );
     }
 }
