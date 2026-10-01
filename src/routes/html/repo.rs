@@ -63,8 +63,10 @@ pub struct ChartPayload {
 /// The seven plotted series. `None` is a genuine "not observed" gap the client
 /// renders as a break (`spanGaps: false`); it is never a stand-in for zero.
 ///
-/// Field names are the wire contract with `assets/app.js` — renaming one here
-/// silently empties a chart there.
+/// Field names are the wire contract with `CHART_SPECS` in `assets/app.js` —
+/// renaming one here silently empties a chart there. A new series needs a
+/// field here, a place in `cards()` and a dataset in `CHART_SPECS`; a new
+/// canvas id also needs its own arm in `KpiData::figures`.
 #[derive(Debug, Serialize)]
 pub struct ChartSeries {
     pub stars: Vec<Option<i64>>,

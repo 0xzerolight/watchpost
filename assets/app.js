@@ -4,7 +4,11 @@
  *
  * There is no build step. This file is served as written, so it stays plain
  * ES2017+ with no imports — Chart.js is already on the page as a global by the
- * time this runs (both <script>s are `defer`, which keeps them in order).
+ * time this runs (both <script>s are `defer`, which keeps them in order). It is
+ * one strict-mode IIFE written with `var` throughout.
+ *
+ * Listeners are delegated on `document`: an htmx swap replaces the elements it
+ * targets, and a listener bound to one of them would leave with it.
  *
  * The page hands data over in JSON islands rather than in generated code:
  *   #chart-data   {days, labels:[YYYY-MM-DD…], series:{stars, views_count, …}}
@@ -1073,6 +1077,10 @@
   /*
    * The repo charts, as data.
    *
+   * Each `source` is a field of `ChartSeries` and each `canvasId` one of its
+   * `cards()` (src/routes/html/repo.rs). Rename either side alone and the
+   * chart comes up empty with no error.
+   *
    * These are descriptors and nothing here is ever written to. Chart.js owns
    * the objects it is handed — it stores the dataset object itself and
    * `applyTheme` writes resolved colours onto it — so `buildDataset` copies
@@ -1434,7 +1442,7 @@
   var ALL_DAYS = -1;
 
   /*
-   * The period allowlist. Mirrors `PERIODS` in src/routes/html/repo.rs, which
+   * The period allowlist. Mirrors `PERIODS` in src/routes/html/period.rs, which
    * is what renders the options and what validates a `?days=` on the way in —
    * this copy only guards against a value arriving from somewhere else.
    */

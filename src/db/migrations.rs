@@ -7,6 +7,10 @@ use crate::errors::DbError;
 /// `const` array — migrations never need captured state.
 pub type Migration = fn(&rusqlite::Transaction) -> Result<(), DbError>;
 
+/// Append-only: a schema change is a new `migrate_vN` at the end. Never edit
+/// one that has shipped, because deployed databases have already run it and
+/// will not run it again. Each bumps `user_version` in its own transaction,
+/// and an older binary refuses the database from then on.
 pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
 
 /// Run all pending migrations against `conn`, bringing `PRAGMA user_version`

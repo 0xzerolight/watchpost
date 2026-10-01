@@ -2,6 +2,8 @@
  * watchpost's own styles, layered on top of Pico. Everything here is either a
  * token other rules read (`--wp-marker-*`), a widget Pico has no equivalent for
  * (chips, the marker tip, the flash highlight), or a two-line layout utility.
+ * The app's own classes take a `wp-` prefix and its custom properties `--wp-`,
+ * which keeps them apart from Pico's.
  *
  * The marker palette is eight categorical slots. `kind_class()` in
  * src/routes/html/mod.rs hashes an event kind into one of them server-side and

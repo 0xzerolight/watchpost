@@ -1,4 +1,7 @@
 //! Query functions on top of `Db::call`'s `&Connection`.
+//!
+//! Names carry the family: writers lead with a verb (`upsert_*`, `record_*`,
+//! `mark_*`), dense per-day readers are `dense_*`, export readers `export_*`.
 
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
@@ -9,15 +12,21 @@ use crate::types::{
     StatRow, StatSnapshot, TrafficDay, TrafficKind,
 };
 
+// A new settings key is one more const here and no migration: v3 made the
+// `settings` table generic so a further runtime setting costs nothing, and a
+// database-only key such as `landing_page` needs nothing else. A key that also
+// reads a `WATCHPOST_*` variable needs a `Config` field, its `from_env` parse, a
+// `redacted_summary` line, a `resolve_*` precedence fn, an `.env.example` entry
+// and a doctor line. `Config` has no `Default`, so every test that writes a
+// `Config { … }` literal (tests/ and three unit-test modules) needs it too.
+
 /// Settings key holding the GitHub PAT the setup page saved.
 pub const GITHUB_TOKEN_KEY: &str = "github_token";
 
 /// Settings key holding the sync interval the settings page saved.
 pub const SYNC_INTERVAL_KEY: &str = "sync_interval";
 
-/// Settings key holding the page the root opens on. No migration: the
-/// `settings` table was made generic in v3 precisely so a third runtime
-/// setting costs nothing.
+/// Settings key holding the page the root opens on.
 pub const LANDING_PAGE_KEY: &str = "landing_page";
 
 /// Read one setting. `None` means the key was never written — not an error.

@@ -14,6 +14,10 @@ use maud::{Markup, html};
 pub const ALL_DAYS: i64 = -1;
 
 /// The period selector's options, and by construction the `days` allowlist.
+///
+/// Its length is [`PERIOD_COUNT`], the array size of every per-period row
+/// ([`crate::series::per_period`], `KpiData`, `LeaderRow`). `PERIODS` in
+/// `assets/app.js` repeats the values, so an entry added here goes there too.
 pub const PERIODS: [(i64, &str); 5] = [
     (7, "7 days"),
     (30, "30 days"),
@@ -36,7 +40,8 @@ pub const DEFAULT_DAYS: i64 = ALL_DAYS;
 pub const ALL_MIN_DAYS: u32 = 30;
 
 /// The `days` allowlist. Validated against the same table the period selector
-/// renders, so the two can never disagree.
+/// renders, so the two can never disagree. An off-list value falls back to
+/// [`DEFAULT_DAYS`] and is never clamped to the nearest period.
 pub fn parse_days(raw: Option<&str>) -> i64 {
     raw.and_then(|s| s.trim().parse::<i64>().ok())
         .filter(|days| PERIODS.iter().any(|(value, _)| value == days))

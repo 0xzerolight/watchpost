@@ -37,8 +37,11 @@ const FAVICON_BYTES: &[u8] = include_bytes!("../../assets/favicon.svg");
 
 /// Every embedded asset: filename, bytes, content type.
 ///
-/// One table, so adding an asset is one line and it is served, hashed and
-/// covered by the tests below without touching anything else.
+/// One table, so a row here is all it takes for an asset to be served, hashed
+/// and covered by the tests below. Each row names its file through one of the
+/// `pub const`s above, which is what templates link by. A vendored file also
+/// carries its version in the filename and an entry in
+/// `assets/vendor/MANIFEST.txt`.
 const ASSETS: &[(&str, &[u8], &str)] = &[
     (
         PICO_CSS,
