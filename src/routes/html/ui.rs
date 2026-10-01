@@ -117,20 +117,29 @@ pub fn notice(kind: Notice, body: Markup) -> Markup {
 /// The page every failed request renders: what went wrong, in the words the
 /// user is allowed to have, plus one link out of the dead end.
 ///
+/// The tone follows whose problem it is. A 5xx is ours, and it is an alert. A
+/// 4xx is a stale bookmark, a mistyped id or an expired form, so it gets the
+/// polite status tone. A red alert for a missing page shouted at a reader who
+/// had done nothing wrong. The status code goes in the tab title rather than in
+/// a subtitle, which only repeated the heading in HTTP's words.
+///
 /// The CSRF token is deliberately empty. Nothing here mutates, and an error
 /// response has no business minting a token — a page rendered from a request
 /// that never reached a handler would otherwise carry a token whose cookie the
 /// response may not even set.
 pub fn error_page(status: StatusCode, headline: &str, detail: &str) -> Markup {
-    let code = status.as_u16();
-    let reason = status.canonical_reason().unwrap_or("Error");
+    let tone = if status.is_server_error() {
+        Notice::Error
+    } else {
+        Notice::Info
+    };
     super::base(
-        "Error",
+        &format!("{} {headline}", status.as_u16()),
         NavItem::None,
         &CsrfToken(String::new()),
         html! {
-            (page_header(headline, Some(html! { (code) " " (reason) }), None))
-            (notice(Notice::Error, html! { (detail) }))
+            (page_header(headline, None, None))
+            (notice(tone, html! { (detail) }))
             p { a href="/repos" { "Back to repos" } }
         },
     )
@@ -391,20 +400,39 @@ mod tests {
         let out = error_page(StatusCode::NOT_FOUND, "Not found", "No such thing.").into_string();
 
         assert!(out.starts_with("<!DOCTYPE html>"), "{out}");
-        assert!(out.contains("<h1>Not found</h1>"), "{out}");
-        assert!(out.contains("404"), "{out}");
+        // The code lives in the tab title. A subtitle saying "404 Not Found"
+        // under an h1 saying "Not found" said the same thing twice.
         assert!(
-            out.contains(r#"class="wp-notice wp-notice-error" role="alert">No such thing."#),
+            out.contains("<title>404 Not found · watchpost</title>"),
             "{out}"
         );
+        assert!(out.contains("<hgroup><h1>Not found</h1></hgroup>"), "{out}");
+        // A stale bookmark is not an emergency: a client error gets the polite
+        // status tone, not the alert a screenreader interrupts for.
+        assert!(
+            out.contains(r#"<p class="wp-notice wp-notice-info" role="status">No such thing.</p>"#),
+            "{out}"
+        );
+        assert!(!out.contains("wp-notice-error"), "{out}");
         // A dead end without a link back is the whole complaint about error
         // pages, so the link is part of the contract.
         assert!(
             out.contains(r#"<a href="/repos">Back to repos</a>"#),
             "{out}"
         );
-        // Outside the nav: neither entry may claim to be the current page.
+        // The nav stays, and no entry claims to be the current page.
+        assert!(out.contains(r#"href="/analytics""#), "{out}");
         assert!(!out.contains("aria-current"), "{out}");
+    }
+
+    #[test]
+    fn a_server_error_page_still_alerts() {
+        let out = error_page(StatusCode::INTERNAL_SERVER_ERROR, "Boom", "Logged.").into_string();
+        assert!(out.contains("<title>500 Boom · watchpost</title>"), "{out}");
+        assert!(
+            out.contains(r#"<p class="wp-notice wp-notice-error" role="alert">Logged.</p>"#),
+            "{out}"
+        );
     }
 
     #[test]

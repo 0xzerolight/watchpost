@@ -81,6 +81,8 @@ pub enum AppError {
     Gh(#[from] GhError),
     #[error("not found")]
     NotFound,
+    #[error("method not allowed")]
+    MethodNotAllowed,
     #[error("csrf validation failed")]
     Csrf,
 }
@@ -104,6 +106,15 @@ impl axum::response::IntoResponse for AppError {
                 S::NOT_FOUND,
                 "Not found",
                 "That page or item does not exist.",
+            ),
+            // A GET on a POST-only path is what a typed or bookmarked URL
+            // produces. The copy names neither the method nor the path: the
+            // request is the client's, and echoing it back is formatting
+            // request data into a response.
+            AppError::MethodNotAllowed => (
+                S::METHOD_NOT_ALLOWED,
+                "Not a page",
+                "That address only takes actions from the buttons and forms on watchpost pages.",
             ),
             AppError::Csrf => (
                 S::FORBIDDEN,
@@ -194,6 +205,45 @@ mod tests {
         assert!(body.contains("Reload the page and try again."), "{body}");
         // The internal wording must not be what the user reads.
         assert!(!body.contains("csrf validation failed"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_method_has_its_own_status_and_copy() {
+        let (status, body) = rendered(AppError::MethodNotAllowed).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert!(body.contains("<h1>Not a page</h1>"), "{body}");
+        assert!(
+            body.contains(
+                "That address only takes actions from the buttons and forms on watchpost pages."
+            ),
+            "{body}"
+        );
+        // The operator's wording stays in the log.
+        assert!(!body.contains("method not allowed"), "{body}");
+    }
+
+    /// The tone follows whose problem it is: a 5xx interrupts, a 4xx is a
+    /// polite status line.
+    #[tokio::test]
+    async fn only_a_server_error_raises_an_alert() {
+        let (_, body) = rendered(AppError::Db(DbError::Backup("x".to_owned()))).await;
+        assert!(
+            body.contains(r#"class="wp-notice wp-notice-error" role="alert""#),
+            "{body}"
+        );
+
+        for err in [
+            AppError::NotFound,
+            AppError::Csrf,
+            AppError::MethodNotAllowed,
+        ] {
+            let (_, body) = rendered(err).await;
+            assert!(
+                body.contains(r#"class="wp-notice wp-notice-info" role="status""#),
+                "{body}"
+            );
+            assert!(!body.contains("wp-notice-error"), "{body}");
+        }
     }
 
     #[test]
