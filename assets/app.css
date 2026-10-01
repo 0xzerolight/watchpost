@@ -78,19 +78,35 @@
   /*
    * Dark: the same eight hues re-stepped for the dark card surface, not a
    * separate palette — tuned to the dark lightness band and 3:1 against
-   * `#181c25`.
+   * `#181c25`. Slot 5 has its own dark step (#3a9a3a, 4.8:1 on `#181c25`)
+   * instead of repeating the light green. Under the same simulated
+   * protanopia/deuteranopia the palette's worst adjacent pair does not involve
+   * slot 5, so the figures above still hold.
    */
   --wp-d-0: #3987e5;
   --wp-d-1: #d95926;
   --wp-d-2: #199e70;
   --wp-d-3: #c98500;
   --wp-d-4: #d55181;
-  --wp-d-5: #008300;
+  --wp-d-5: #3a9a3a;
   --wp-d-6: #9085e9;
   --wp-d-7: #e66767;
   --wp-d-flash: #4a4020;
   /* One step off the `#181c25` card surface, as above. */
   --wp-d-grid: #1f2430;
+  /*
+   * Hairline border for floating surfaces and tiles. Pico's card-border token
+   * is the card surface itself in dark, about 1.1:1 on the page, so a tip or a
+   * tile drawn with it has no edge at all. One step off the page, as the light
+   * scheme's `--pico-muted-border-color` is.
+   */
+  --wp-d-border: #2a3140;
+  /*
+   * Pico's dark muted ink, #7b8495, sits just under AA on the `#181c25` card
+   * surface, where the card footers, KPI labels and chart ticks use it.
+   * #8891a1 measures 5.4:1 there and 5.6:1 on the page.
+   */
+  --wp-d-muted: #8891a1;
 
   /*
    * The slots that the rules below and app.js read. `getComputedStyle`
@@ -109,6 +125,22 @@
   --wp-flash-bg: var(--wp-l-flash);
   --wp-chart-grid: var(--wp-l-grid);
   --wp-chart-tick: var(--pico-muted-color, #6b7280);
+
+  /*
+   * The hairline the tips, the toast, the skip link and the KPI tiles are
+   * drawn with. The dark blocks below point it at `--wp-d-border`.
+   */
+  --wp-border: var(--pico-muted-border-color);
+
+  /*
+   * Delta text. Text needs 4.5:1, which the green and red marker slots do
+   * not reach in every scheme, so deltas read Pico's own ins/del text colours,
+   * the ones the success and error notices already use. Pico defines both per
+   * scheme on this same element, so these follow the theme without a dark
+   * remap of their own.
+   */
+  --wp-delta-up: var(--pico-ins-color);
+  --wp-delta-down: var(--pico-del-color);
 }
 
 /*
@@ -119,6 +151,8 @@
  * toggle, if one is ever added) needs in order to force a scheme against the
  * OS. The `:not([data-theme=light])` guard is the other half of that: forcing
  * light has to survive a dark OS.
+ * `--pico-muted-color` is Pico's own token: these selectors match Pico's dark
+ * blocks at equal weight and come later, so the override wins in both.
  */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -132,6 +166,8 @@
     --wp-marker-7: var(--wp-d-7);
     --wp-flash-bg: var(--wp-d-flash);
     --wp-chart-grid: var(--wp-d-grid);
+    --wp-border: var(--wp-d-border);
+    --pico-muted-color: var(--wp-d-muted);
   }
 }
 
@@ -146,6 +182,8 @@
   --wp-marker-7: var(--wp-d-7);
   --wp-flash-bg: var(--wp-d-flash);
   --wp-chart-grid: var(--wp-d-grid);
+  --wp-border: var(--wp-d-border);
+  --pico-muted-color: var(--wp-d-muted);
 }
 
 /*
@@ -396,8 +434,10 @@
 /*
  * Direction is carried by the sign character first and the colour second, so
  * the row still reads on a monochrome screen and for a reader who cannot
- * separate the two hues. Slots 5 and 7 are the palette's green and red, both
- * already validated at 3:1 against the page surface in either scheme.
+ * separate the two hues. The colour is on text, so it has to reach 4.5:1, not
+ * the 3:1 that is enough for a chart mark. The green and red marker slots do
+ * not reach it in every scheme; `--wp-delta-*` (Pico's ins/del text colours)
+ * measure at least 5.6:1 on the page and on a card in either scheme.
  */
 .wp-delta {
   font-size: var(--wp-text-sm);
@@ -406,11 +446,11 @@
 }
 
 .wp-delta-up {
-  color: var(--wp-marker-5);
+  color: var(--wp-delta-up);
 }
 
 .wp-delta-down {
-  color: var(--wp-marker-7);
+  color: var(--wp-delta-down);
 }
 
 /* Kind slots: set the colour, let `.wp-chip` and friends read it. */
@@ -523,7 +563,7 @@
   z-index: 10;
   max-width: 22rem;
   padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
@@ -546,7 +586,7 @@
   z-index: 10;
   max-width: 22rem;
   padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
@@ -651,7 +691,7 @@ tr.wp-edit-row [name="kind"] {
   top: var(--wp-space-2);
   left: var(--wp-space-2);
   padding: var(--wp-space-2) var(--wp-space-4);
-  border: 1px solid var(--pico-primary, #2f6fd0);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   text-decoration: none;
@@ -887,7 +927,7 @@ tr.wp-edit-row [name="kind"] {
   gap: var(--wp-space-3);
   max-width: 28rem;
   padding: var(--wp-space-3) var(--wp-space-4);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));

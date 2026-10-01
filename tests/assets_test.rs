@@ -6,6 +6,7 @@
 //! and a page that loses `historyCacheSize = 0` only breaks on the back button.
 //! Both failures are invisible to a smoke test, so they are pinned here.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -97,6 +98,78 @@ async fn app_css_is_served_as_css() {
 async fn app_css_ignores_the_cache_busting_query() {
     let resp = get("/assets/app.css?v=9.9.9").await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// The declarations of the first rule whose selector line is exactly
+/// `selector`, up to its closing brace. Panics when there is none, so a
+/// renamed selector fails loudly instead of passing vacuously. An indented
+/// selector (a rule inside `@media`) is matched with its indentation.
+fn rule<'a>(css: &'a str, selector: &str) -> &'a str {
+    let open = format!("\n{selector} {{");
+    css.split_once(open.as_str())
+        .unwrap_or_else(|| panic!("no `{selector}` rule in app.css"))
+        .1
+        .split('}')
+        .next()
+        .unwrap()
+}
+
+/// The custom properties a block declares, by name.
+fn declared(block: &str) -> BTreeSet<&str> {
+    block
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.starts_with("--")
+                .then(|| line.split(':').next().unwrap())
+        })
+        .collect()
+}
+
+/// The two dark blocks are one remapping written twice: the media query that
+/// follows the OS, and `[data-theme="dark"]` for forcing a scheme. A token
+/// added to one and forgotten in the other is right in one mode of dark and
+/// wrong in the other, which no other test would notice.
+#[tokio::test]
+async fn both_dark_blocks_remap_the_same_tokens() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let media = declared(rule(&css, r#"  :root:not([data-theme="light"])"#));
+    let attr = declared(rule(&css, r#"[data-theme="dark"]"#));
+    assert!(!media.is_empty(), "no dark media block found");
+    assert_eq!(media, attr, "the two dark blocks have drifted apart");
+    for name in ["--wp-marker-5", "--wp-border", "--pico-muted-color"] {
+        assert!(media.contains(name), "the dark blocks do not set {name}");
+    }
+}
+
+/// Delta text used to wear the green and red chart-mark slots, which are
+/// picked for 3:1 as marks and measured 3.6:1 and 3.95:1 as text. Text needs
+/// 4.5:1, so deltas read Pico's own ins/del text colours.
+#[tokio::test]
+async fn deltas_read_text_colours_and_floating_surfaces_share_one_border() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let root = rule(&css, ":root");
+    for decl in [
+        "--wp-delta-up: var(--pico-ins-color);",
+        "--wp-delta-down: var(--pico-del-color);",
+        "--wp-border: var(--pico-muted-border-color);",
+    ] {
+        assert!(root.contains(decl), ":root is missing `{decl}`");
+    }
+    assert_eq!(
+        rule(&css, ".wp-delta-up").trim(),
+        "color: var(--wp-delta-up);"
+    );
+    assert_eq!(
+        rule(&css, ".wp-delta-down").trim(),
+        "color: var(--wp-delta-down);"
+    );
+    for selector in ["#marker-tip", "#chart-tip", ".wp-toast", ".wp-skip"] {
+        assert!(
+            rule(&css, selector).contains("border: 1px solid var(--wp-border);"),
+            "{selector} does not use --wp-border"
+        );
+    }
 }
 
 #[tokio::test]
