@@ -20,6 +20,11 @@ pub enum NavItem {
     Home,
     Analytics,
     Settings,
+    /// A repo page: inside the Repositories section without being its page.
+    Repo,
+    /// First-run setup: the shell shows the brand and no links, because
+    /// every link would only redirect back to `/setup`.
+    Setup,
     None,
 }
 
@@ -38,6 +43,23 @@ impl NavItem {
             LandingPage::Settings => Self::Settings,
         }
     }
+
+    /// The `aria-current` value this page gives `page`'s nav link, if any.
+    ///
+    /// `"page"` when the link is this page. A repo page is not one of the nav's
+    /// destinations, but it lives under Repositories, so that link says
+    /// `"true"`: the current item in a set, a section rather than this page.
+    /// Marking nothing, as repo pages used to with [`NavItem::None`], left a
+    /// reader inside a repo with no sign of where they were.
+    pub fn aria_current(self, page: LandingPage) -> Option<&'static str> {
+        if Self::of(page) == self {
+            Some("page")
+        } else if self == Self::Repo && page == LandingPage::Repos {
+            Some("true")
+        } else {
+            None
+        }
+    }
 }
 
 /// Which of the three notice tones a message carries.
@@ -51,12 +73,14 @@ pub enum Notice {
 /// A page's title block: heading, optional subtitle, optional action buttons.
 ///
 /// The heading and subtitle share an `hgroup` so the subtitle is announced as
-/// part of the title rather than as a stray paragraph.
+/// part of the title rather than as a stray paragraph. The title goes through
+/// [`slash_breaks`], so an `owner/repo` heading wraps after the owner on a
+/// phone instead of pushing the page wider.
 pub fn page_header(title: &str, subtitle: Option<Markup>, actions: Option<Markup>) -> Markup {
     html! {
         header class="wp-page-header" {
             hgroup {
-                h1 { (title) }
+                h1 { (slash_breaks(title)) }
                 @if let Some(subtitle) = subtitle {
                     p { (subtitle) }
                 }
@@ -64,6 +88,23 @@ pub fn page_header(title: &str, subtitle: Option<Markup>, actions: Option<Markup
             @if let Some(actions) = actions {
                 div class="wp-actions" { (actions) }
             }
+        }
+    }
+}
+
+/// `text` with a line-break opportunity (`<wbr>`) after every `/`, each part
+/// escaped as usual.
+///
+/// `owner/repo` is one unbreakable word to a browser, and at phone width
+/// `0xzerolight/anki_miner_note` ran past the viewport. `overflow-wrap:
+/// anywhere` alone would break it mid-name; the slash is where a reader
+/// expects the break. Markup rather than a string with a zero-width space, so
+/// a copied name pastes back exactly as it was.
+pub fn slash_breaks(text: &str) -> Markup {
+    html! {
+        @for (i, part) in text.split('/').enumerate() {
+            @if i > 0 { "/" wbr; }
+            (part)
         }
     }
 }
@@ -170,10 +211,12 @@ pub fn spinner(id: &str) -> Markup {
 ///
 /// Pico renders `data-tooltip` on hover/focus; `tabindex` makes the message
 /// reachable without a pointer, and the label keeps the bare glyph meaningful
-/// to a screenreader.
+/// to a screenreader. `data-placement="left"` opens the tooltip towards the
+/// content. Centred, its invisible box hung past the right edge of a card or a
+/// table and widened the page, even while it was not showing.
 pub fn error_glyph(error: &str) -> Markup {
     html! {
-        span class="wp-danger" data-tooltip=(error) tabindex="0"
+        span class="wp-danger" data-tooltip=(error) data-placement="left" tabindex="0"
             role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
     }
 }
@@ -542,6 +585,27 @@ mod tests {
         );
     }
 
+    /// `owner/repo` has no break opportunity, so a long name pushed the h1
+    /// past a phone's edge and the whole page scrolled sideways.
+    #[test]
+    fn page_header_breaks_a_repo_name_after_its_slash() {
+        let out = page_header("octo/aaa", None, None).into_string();
+        assert_eq!(
+            out,
+            r#"<header class="wp-page-header"><hgroup><h1>octo/<wbr>aaa</h1></hgroup></header>"#
+        );
+    }
+
+    #[test]
+    fn slash_breaks_offers_a_break_after_each_slash_and_escapes_the_rest() {
+        assert_eq!(slash_breaks("Repos").into_string(), "Repos");
+        assert_eq!(slash_breaks("a/b/c").into_string(), "a/<wbr>b/<wbr>c");
+        assert_eq!(
+            slash_breaks("<x>/&y").into_string(),
+            "&lt;x&gt;/<wbr>&amp;y"
+        );
+    }
+
     #[test]
     fn timestamp_carries_both_the_exact_and_the_relative_form() {
         let at = "2026-08-17T09:05:00Z";
@@ -659,5 +723,8 @@ mod tests {
             out.contains(r#"data-tooltip="boom &quot;x&quot;""#),
             "{out}"
         );
+        // Opens towards the content: centred, the hidden tooltip box hung past
+        // the right edge and widened the page on a phone.
+        assert!(out.contains(r#"data-placement="left""#), "{out}");
     }
 }

@@ -781,6 +781,43 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * The nav. Pico marks `aria-current` only by switching to its hover shade of
+ * link blue, about 1.25:1 against the other links: a difference of colour
+ * alone. The current entry takes body ink, a heavier weight and an accent
+ * underline, so it reads at a glance in both schemes. `[aria-current]` rather
+ * than `="page"`, so the section-level `"true"` a repo page sets matches too.
+ * (0,2,3), above Pico's `nav li :where(a):not(:hover)` underline reset.
+ */
+body > nav a[aria-current]:not([aria-current="false"]) {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--pico-primary);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.35em;
+}
+
+/* The brand is a name, not one more link in the row. */
+.wp-brand {
+  color: inherit;
+}
+
+/*
+ * Below 40rem the two lists may wrap, so the links drop under the brand
+ * instead of running off a 320px screen. The spacing goes down through Pico's
+ * own token rather than a padding override: the same token sets the lists'
+ * compensating negative margins, and the two have to move together or the
+ * last link's edge drifts off the container's.
+ */
+@media (max-width: 40rem) {
+  body > nav {
+    --pico-nav-element-spacing-horizontal: 0.3rem;
+    flex-wrap: wrap;
+    row-gap: var(--wp-space-1);
+  }
+}
+
+/*
  * Present to a screenreader, absent on screen — for labels whose purpose is
  * obvious from context (`field_compact`). The 1px box with `clip-path` is the
  * form that survives: zero-size or `text-indent` elements are skipped by some
@@ -813,9 +850,30 @@ tr.wp-edit-row [name="kind"] {
   margin-block-end: var(--wp-space-5);
 }
 
-/* Pico's hgroup margin would push the actions off the title's baseline. */
+/*
+ * Pico's hgroup margin would push the actions off the title's baseline. The
+ * hgroup is a flex item, so without `min-width: 0` it cannot shrink below its
+ * longest word and a long repo name widens the page instead of wrapping.
+ */
 .wp-page-header hgroup {
+  min-width: 0;
+  max-width: 100%;
   margin-bottom: 0;
+}
+
+/*
+ * The last resort after `slash_breaks`' break after the owner: a name with no
+ * slash, or a repo part longer than the screen, still breaks rather than
+ * overflowing.
+ */
+.wp-page-header h1 {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 40rem) {
+  .wp-page-header h1 {
+    font-size: 1.75rem;
+  }
 }
 
 /*
@@ -938,6 +996,16 @@ tr.wp-edit-row [name="kind"] {
   font-size: var(--wp-text-sm);
 }
 
+/*
+ * The wrapper is the containing block for anything absolutely positioned
+ * inside it: the visually hidden labels of an edit row, which otherwise
+ * resolve against the page and widen it (scrollWidth 551 at 390px after
+ * pressing Edit). As the containing block, the scroller clips them.
+ */
+.wp-table-wrap {
+  position: relative;
+}
+
 /* The wrapper already scrolls (Pico's `.overflow-auto`); the table inside it
  * keeps its own bottom margin, which would stack with the wrapper's. */
 .wp-table-wrap > table {
@@ -1043,6 +1111,16 @@ tr.wp-edit-row [name="kind"] {
   background: transparent;
   color: inherit;
   line-height: 1;
+}
+
+/*
+ * The toast pins to the right; on a phone a two-line message reached the left
+ * edge with no gutter, so both sides get the same inset.
+ */
+@media (max-width: 40rem) {
+  .wp-toast {
+    left: var(--wp-space-4);
+  }
 }
 
 @keyframes wp-toast-in {

@@ -653,3 +653,26 @@ async fn the_repositories_page_reuses_an_existing_token() {
         serde_json::json!({ "x-csrf-token": TOKEN })
     );
 }
+
+/// The nav's current entry used to differ from its neighbours by one shade of
+/// blue. A long repo name, an edit row's hidden labels and a sync-error tooltip
+/// each widened a phone page past the viewport.
+#[tokio::test]
+async fn the_shell_marks_its_section_and_keeps_to_the_viewport() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let current = rule(
+        &css,
+        r#"body > nav a[aria-current]:not([aria-current="false"])"#,
+    );
+    for decl in [
+        "color: inherit;",
+        "font-weight: 600;",
+        "text-decoration-thickness: 2px;",
+    ] {
+        assert!(current.contains(decl), "nav current is missing `{decl}`");
+    }
+    assert!(rule(&css, ".wp-brand").contains("color: inherit;"));
+    assert!(rule(&css, ".wp-page-header hgroup").contains("min-width: 0;"));
+    assert!(rule(&css, ".wp-page-header h1").contains("overflow-wrap: anywhere;"));
+    assert!(rule(&css, ".wp-table-wrap").contains("position: relative;"));
+}

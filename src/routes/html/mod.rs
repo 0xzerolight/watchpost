@@ -70,18 +70,23 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                 // on every page before reaching the content.
                 a href="#main" class="wp-skip" { "Skip to content" }
                 nav class="container" {
-                    ul { li { a href="/" { strong { "watchpost" } } } }
+                    // The brand is a name, not a sixth link, so it is styled
+                    // as ink (`.wp-brand`) rather than link blue.
+                    ul { li { a href="/" class="wp-brand" { strong { "watchpost" } } } }
                     // One loop over `LANDING_PAGES` rather than three literals:
                     // the nav's hrefs and the start page setting's destinations
                     // are then the same list, so a nav link cannot point at a
                     // path the setting would never produce, or the other way
-                    // round. The array's order is the nav's order.
-                    ul {
-                        @for page in crate::landing::LANDING_PAGES {
-                            li {
-                                a href=(page.path())
-                                    aria-current=[(NavItem::of(page) == nav).then_some("page")] {
-                                    (page.label())
+                    // round. The array's order is the nav's order. The setup
+                    // page has no list at all: every link would bounce back.
+                    @if nav != NavItem::Setup {
+                        ul {
+                            @for page in crate::landing::LANDING_PAGES {
+                                li {
+                                    a href=(page.path())
+                                        aria-current=[nav.aria_current(page)] {
+                                        (page.label())
+                                    }
                                 }
                             }
                         }
@@ -525,5 +530,52 @@ mod tests {
         assert_eq!(get_hx_target(&headers), None);
         headers.insert("hx-target", "#wp-list".parse().unwrap());
         assert_eq!(get_hx_target(&headers), Some("#wp-list"));
+    }
+
+    fn shell(nav: NavItem) -> String {
+        base("T", nav, &CsrfToken(String::new()), html! {}).into_string()
+    }
+
+    /// A repo page is not a nav destination but lives under Repositories.
+    /// `"true"` marks the section without claiming to be the page.
+    #[test]
+    fn a_repo_page_marks_repositories_as_its_section() {
+        let out = shell(NavItem::Repo);
+        assert!(
+            out.contains(r#"<a href="/repos" aria-current="true">Repositories</a>"#),
+            "{out}"
+        );
+        assert_eq!(out.matches("aria-current").count(), 1, "{out}");
+    }
+
+    /// Before a token exists, every nav link would only redirect back to
+    /// `/setup`.
+    #[test]
+    fn the_setup_shell_shows_the_brand_and_no_links() {
+        let out = shell(NavItem::Setup);
+        assert!(
+            out.contains(r#"<a href="/" class="wp-brand"><strong>watchpost</strong></a>"#),
+            "{out}"
+        );
+        for href in [
+            r#"href="/repos""#,
+            r#"href="/analytics""#,
+            r#"href="/settings""#,
+        ] {
+            assert!(!out.contains(href), "{href} in {out}");
+        }
+    }
+
+    #[test]
+    fn a_page_outside_the_nav_keeps_every_link_and_marks_none() {
+        let out = shell(NavItem::None);
+        for href in [
+            r#"href="/repos""#,
+            r#"href="/analytics""#,
+            r#"href="/settings""#,
+        ] {
+            assert!(out.contains(href), "{href} missing from {out}");
+        }
+        assert!(!out.contains("aria-current"), "{out}");
     }
 }
