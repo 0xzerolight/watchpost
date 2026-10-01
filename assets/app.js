@@ -2365,10 +2365,63 @@
   });
 
   // -------------------------------------------------------------------------
+  // Announcements
+  // -------------------------------------------------------------------------
+
+  /*
+   * Speak a confirmation that arrived inside a swap.
+   *
+   * `#wp-live` (rendered by `base`, outside every swap target) is the page's
+   * one polite live region. Text marked `data-announce` in a settled swap is
+   * copied into it, because a status node inserted together with its text is
+   * the one thing a live region cannot announce reliably.
+   *
+   * Only a change is written: a poll re-renders "Syncing…" every 2s, and
+   * writing it each time would read it out every 2s. A request the reader
+   * started clears the region and the memory first, so a second "Event
+   * added." in a row is still a change and is still heard. `boot` seeds the
+   * memory with the text the page loaded with, so a page load says nothing.
+   */
+  var lastAnnounced = null;
+
+  function announcement(root) {
+    if (!root || !root.querySelector) {
+      return "";
+    }
+    var el =
+      root.matches && root.matches("[data-announce]")
+        ? root
+        : root.querySelector("[data-announce]");
+    return el ? el.textContent.replace(/\s+/g, " ").trim() : "";
+  }
+
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    if (!readerStarted(evt.detail)) {
+      return;
+    }
+    lastAnnounced = null;
+    var live = document.getElementById("wp-live");
+    if (live) {
+      live.textContent = "";
+    }
+  });
+
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    var live = document.getElementById("wp-live");
+    var text = announcement(evt.target);
+    if (!live || !text || text === lastAnnounced) {
+      return;
+    }
+    lastAnnounced = text;
+    live.textContent = text;
+  });
+
+  // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
 
   function boot() {
+    lastAnnounced = announcement(document);
     applyTheme();
     initSparklines(document);
     // Charts filter the page themselves as the last step of rendering, so the

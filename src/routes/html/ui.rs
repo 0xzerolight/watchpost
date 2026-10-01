@@ -145,13 +145,35 @@ pub fn empty_row(colspan: u8, message: &str) -> Markup {
 /// polite `status`. Getting that mapping wrong either shouts routine
 /// confirmations or silently swallows failures.
 pub fn notice(kind: Notice, body: Markup) -> Markup {
-    let (class, role) = match kind {
-        Notice::Success => ("wp-notice wp-notice-success", "status"),
-        Notice::Error => ("wp-notice wp-notice-error", "alert"),
-        Notice::Info => ("wp-notice wp-notice-info", "status"),
+    let role = match kind {
+        Notice::Error => "alert",
+        Notice::Success | Notice::Info => "status",
     };
     html! {
-        p class=(class) role=(role) { (body) }
+        p class=(notice_class(kind)) role=(role) { (body) }
+    }
+}
+
+/// A notice whose text a screenreader hears through the page's one live
+/// region (`#wp-live`, rendered by `base`) instead of through a role of its
+/// own.
+///
+/// [`notice`]'s role suits a message that is in the page when it loads. A
+/// message that arrives inside an htmx swap is a node inserted together with
+/// its text, which some screenreaders announce and others skip, and the ones
+/// that announce it would then hear the live region say it again. So this
+/// carries `data-announce`, which app.js copies into the region, and no role.
+pub fn announced(kind: Notice, body: Markup) -> Markup {
+    html! {
+        p class=(notice_class(kind)) data-announce { (body) }
+    }
+}
+
+fn notice_class(kind: Notice) -> &'static str {
+    match kind {
+        Notice::Success => "wp-notice wp-notice-success",
+        Notice::Error => "wp-notice wp-notice-error",
+        Notice::Info => "wp-notice wp-notice-info",
     }
 }
 
@@ -757,5 +779,22 @@ mod tests {
             signed(i64::MIN),
             format!("\u{2212}{}", i64::MIN.unsigned_abs())
         );
+    }
+
+    /// A notice that arrives in a swap carries no role of its own: the page's
+    /// one live region speaks it, and a role here would say it twice.
+    #[test]
+    fn an_announced_notice_looks_like_a_notice_and_carries_no_role() {
+        let out = announced(Notice::Success, html! { "Event added." }).into_string();
+        assert_eq!(
+            out,
+            r#"<p class="wp-notice wp-notice-success" data-announce>Event added.</p>"#
+        );
+        let out = announced(Notice::Error, html! { "boom" }).into_string();
+        assert!(
+            out.contains(r#"class="wp-notice wp-notice-error""#),
+            "{out}"
+        );
+        assert!(!out.contains("role="), "{out}");
     }
 }

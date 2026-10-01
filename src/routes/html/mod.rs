@@ -108,6 +108,7 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                     }
                     (inner)
                 }
+                (live_region())
                 (toast_region())
                 (confirm_dialog())
             }
@@ -133,6 +134,21 @@ fn toast_region() -> Markup {
             button type="button" class="wp-toast-action" hidden {}
             button type="button" class="wp-toast-close" aria-label="Dismiss" { "×" }
         }
+    }
+}
+
+/// The page's one polite live region, for confirmations that arrive inside an
+/// htmx swap: "Event added.", the sync panel's outcome.
+///
+/// A live region announces changes to a node that was already in the
+/// document; a status inserted together with its text is not reliably
+/// announced. So swapped confirmations carry `data-announce` and no role
+/// ([`announced`]), and app.js copies their text in here, where
+/// no swap reaches. It ships empty, so a page load announces nothing. Polite,
+/// unlike the toast's assertive alert, which is kept for failures.
+fn live_region() -> Markup {
+    html! {
+        p id="wp-live" class="wp-visually-hidden" role="status" {}
     }
 }
 
@@ -611,6 +627,19 @@ mod tests {
                 "Charts and editing need JavaScript; the tables and totals on this page are complete without it.",
                 "</p></noscript><p>body</p></main>"
             )),
+            "{out}"
+        );
+    }
+
+    /// Confirmations that arrive inside a swap are spoken by one region no
+    /// swap replaces: outside `main`, on every page, empty at load so a page
+    /// load says nothing.
+    #[test]
+    fn every_page_has_one_empty_live_region_outside_main() {
+        let out = shell(NavItem::Home);
+        assert_eq!(out.matches(r#"id="wp-live""#).count(), 1, "{out}");
+        assert!(
+            out.contains(r#"</main><p id="wp-live" class="wp-visually-hidden" role="status"></p>"#),
             "{out}"
         );
     }

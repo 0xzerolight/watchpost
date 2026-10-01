@@ -283,6 +283,11 @@ async fn app_js_defines_the_watchpost_namespace() {
         // The general fallback before it: the nearest container that takes
         // parked focus, which is how a sync status keeps the keyboard.
         r#"[tabindex="-1"]:not(#main)"#,
+        // The one announcer for swapped confirmations. Lose the hook and
+        // "Event added." and the sync outcome go back to being heard by some
+        // screenreaders and not others.
+        "data-announce",
+        r#"getElementById("wp-live")"#,
         // Polls must not record or consume a focus id — this is what tells a
         // poll from a press.
         "triggeringEvent",
