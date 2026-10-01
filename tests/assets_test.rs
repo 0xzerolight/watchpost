@@ -164,7 +164,7 @@ async fn deltas_read_text_colours_and_floating_surfaces_share_one_border() {
         rule(&css, ".wp-delta-down").trim(),
         "color: var(--wp-delta-down);"
     );
-    for selector in ["#marker-tip", "#chart-tip", ".wp-toast", ".wp-skip"] {
+    for selector in ["#chart-tip", ".wp-toast", ".wp-skip"] {
         assert!(
             rule(&css, selector).contains("border: 1px solid var(--wp-border);"),
             "{selector} does not use --wp-border"
@@ -711,5 +711,53 @@ async fn numeric_tables_share_one_style_and_wrappers_show_their_scroll_edge() {
         rule(&css, ".wp-table-wrap")
             .contains("background-attachment: local, local, scroll, scroll;"),
         "no scroll-edge cue on the wrapper"
+    );
+}
+
+/// Off-scale literals (0.85rem, 0.8rem) sat beside the 0.8125rem step, so two
+/// "small" sizes shared a row; h2 was 28px under a 32px h1; and the two tips
+/// were identical blocks that could drift. Touch targets grow only under a
+/// coarse pointer, so the desktop look is unchanged.
+#[tokio::test]
+async fn type_and_spacing_come_from_the_scale() {
+    let css = body_string(get("/assets/app.css").await).await;
+    for literal in ["0.85rem", "0.8rem"] {
+        assert!(
+            !css.contains(literal),
+            "off-scale literal {literal} in app.css"
+        );
+    }
+    let root = rule(&css, ":root");
+    for token in [
+        "--wp-section-gap:",
+        "--wp-text-h2:",
+        "--wp-text-figure:",
+        "--wp-text-figure-sm:",
+        "--wp-figure-numeric:",
+    ] {
+        assert!(root.contains(token), ":root is missing {token}");
+    }
+    assert!(rule(&css, "main h2").contains("font-size: var(--wp-text-h2);"));
+    assert!(rule(&css, "main > section").contains("margin-block-end: var(--wp-section-gap);"));
+    assert!(
+        rule(&css, ".wp-field-inline")
+            .contains("--pico-form-element-spacing-vertical: var(--wp-space-1);")
+    );
+    // One tip rule. Stated so that it holds both now (`#marker-tip,\n#chart-tip {`)
+    // and after the post-merge cleanup drops the retired marker tip
+    // (`\n#chart-tip {`): exactly one rule opens on `#chart-tip`, and the
+    // marker tip never has a block of its own again.
+    assert_eq!(
+        css.matches("\n#chart-tip {").count(),
+        1,
+        "tip rules are not merged"
+    );
+    assert!(
+        !css.contains("\n#marker-tip {"),
+        "the marker tip has its own rule again"
+    );
+    assert!(
+        css.contains("@media (pointer: coarse)"),
+        "no touch-target block"
     );
 }

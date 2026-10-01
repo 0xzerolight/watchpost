@@ -26,6 +26,24 @@
   --wp-space-6: 2rem;
   --wp-text-sm: 0.8125rem;
   --wp-text-xs: 0.75rem;
+  /*
+   * Section labels. Pico sets h2 at 1.75rem/700, 4px under the 2rem/700 h1,
+   * so a page title and its first section read as two titles. One step down
+   * and a lighter weight make the h2 a label for what follows.
+   */
+  --wp-text-h2: 1.25rem;
+  /* The gap between a page's top-level sections, and under its header. */
+  --wp-section-gap: var(--wp-space-6);
+  /*
+   * Headline figures: a KPI tile, a portfolio total, a dashboard card stat.
+   * One size pair and one digit style for all three, so a number looks the
+   * same wherever it appears. Tabular rather than proportional: these figures
+   * flip between periods in place (`data-period-value`), and equal-width
+   * digits keep a tile from changing width under the reader when they do.
+   */
+  --wp-text-figure: 1.5rem;
+  --wp-text-figure-sm: 1rem;
+  --wp-figure-numeric: tabular-nums;
   /* Larger than any element is tall, so a pill stays a pill at any height. */
   --wp-radius-pill: 999px;
 
@@ -434,12 +452,9 @@
  * Recent-changes feed. One row per repo per day, each row a date, a repo link
  * and however many deltas moved that day. `flex-wrap` on the row rather than a
  * grid: the delta count varies from one to seven, and a grid would either
- * reserve seven columns of empty space or clip the seventh.
+ * reserve seven columns of empty space or clip the seventh. The feed is a
+ * top-level section, so its bottom margin is the section gap.
  */
-.wp-changes {
-  margin-bottom: var(--wp-space-5);
-}
-
 .wp-changes ul {
   margin: 0;
   padding: 0;
@@ -620,30 +635,13 @@
   to { background-color: transparent; }
 }
 
-/* Floating tip shown next to a hovered chart marker; positioned by app.js. */
-#marker-tip {
-  display: none;
-  position: absolute;
-  z-index: 10;
-  max-width: 22rem;
-  padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--wp-border);
-  border-radius: var(--pico-border-radius, 0.25rem);
-  background: var(--pico-card-background-color, #fff);
-  box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
-  font-size: 0.85rem;
-  pointer-events: none;
-}
-
-#marker-tip.wp-visible {
-  display: block;
-}
-
 /*
- * The chart tooltip — the HTML replacement for Chart.js's canvas-drawn one
- * (`externalTooltip` in app.js). Same face as the marker tip; the shared
- * rule keeps the two indistinguishable at a glance.
+ * The two floating tips: the marker tip beside a hovered event marker, and the
+ * chart tooltip (`externalTooltip` in app.js), the HTML replacement for
+ * Chart.js's canvas-drawn one. One rule for both, so they cannot drift apart;
+ * app.js positions them.
  */
+#marker-tip,
 #chart-tip {
   display: none;
   position: absolute;
@@ -654,10 +652,11 @@
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
-  font-size: 0.85rem;
+  font-size: var(--wp-text-sm);
   pointer-events: none;
 }
 
+#marker-tip.wp-visible,
 #chart-tip.wp-visible {
   display: block;
 }
@@ -706,7 +705,7 @@
   width: auto;
   margin: 0 var(--wp-space-1) 0 0;
   padding: 0.15rem 0.6rem;
-  font-size: 0.8rem;
+  font-size: var(--wp-text-sm);
 }
 
 /*
@@ -855,7 +854,7 @@ body > nav a[aria-current]:not([aria-current="false"]) {
   justify-content: space-between;
   gap: var(--wp-space-4);
   flex-wrap: wrap;
-  margin-block-end: var(--wp-space-5);
+  margin-block-end: var(--wp-section-gap);
 }
 
 /*
@@ -929,11 +928,32 @@ body > nav a[aria-current]:not([aria-current="false"]) {
 }
 
 /*
+ * Section rhythm. Pico's `section` margin is one `--pico-spacing`, so a chart's
+ * axis ran into the next heading 16px below; every top-level section ends on
+ * the same gap as the page header. `main` scopes the h2 size so the confirm
+ * dialog's own heading keeps Pico's.
+ */
+main > section {
+  margin-block-end: var(--wp-section-gap);
+}
+
+main h2 {
+  font-size: var(--wp-text-h2);
+  font-weight: 600;
+}
+
+/*
  * A label and its control on one line. Pico stretches a `<select>` to its
  * container's width and gives it a form-layout bottom margin, both of which
  * turn a one-control row into a full-width bar with a gap hanging under it.
+ * It also sizes the select for a page-width form, 50px tall beside a heading.
+ * Overriding Pico's own spacing variables, as the edit row does, brings it to
+ * the toolbar buttons' box: the same padding, `--wp-text-sm` and border, so the
+ * two are the same height.
  */
 .wp-field-inline {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-3);
   display: flex;
   align-items: center;
   gap: var(--wp-space-2);
@@ -943,6 +963,7 @@ body > nav a[aria-current]:not([aria-current="false"]) {
 .wp-field-inline > select {
   width: auto;
   margin-bottom: 0;
+  font-size: var(--wp-text-sm);
 }
 
 /* Trailing alignment, for dialog footers and anything else read right-to-left. */
@@ -1236,7 +1257,48 @@ body > nav a[aria-current]:not([aria-current="false"]) {
 .wp-grow { flex: 1 1 auto; }
 .wp-muted { color: var(--pico-muted-color, #6b7280); }
 .wp-danger { color: var(--pico-del-color, #b3261e); }
-.wp-small { font-size: 0.85rem; }
+.wp-small { font-size: var(--wp-text-sm); }
+
+/*
+ * Touch targets. On a coarse pointer the small controls grow their hit area
+ * to WCAG 2.5.8's 24px or more: Edit and Delete get 36px, being a destructive
+ * pair 4px apart. The type, colours and widths stay as drawn, and a mouse
+ * never sees any of this. It sits after every rule it adjusts, which share its
+ * weight.
+ */
+@media (pointer: coarse) {
+  th a[data-sort-link] {
+    display: inline-flex;
+    align-items: center;
+    padding-block: 0.6rem;
+  }
+
+  main summary {
+    padding-block: 0.6rem;
+  }
+
+  .wp-chip {
+    min-height: 2rem;
+  }
+
+  .wp-row[role="group"] {
+    row-gap: var(--wp-space-2);
+  }
+
+  .wp-action {
+    min-height: 2.25rem;
+    margin-right: var(--wp-space-2);
+  }
+
+  .wp-export a {
+    display: inline-block;
+    padding: 0.5rem 0.25rem;
+  }
+
+  .wp-toast-close {
+    padding: 0.5rem;
+  }
+}
 
 /*
  * htmx request indicators. These are htmx's own injected rules, moved here
