@@ -686,3 +686,30 @@ async fn a_chart_box_takes_its_width_from_the_layout_not_its_canvas() {
     let css = body_string(get("/assets/app.css").await).await;
     assert!(rule(&css, ".chart-box").contains("contain: inline-size;"));
 }
+
+/// The leaderboard right-aligned its figures in tabular digits; the traffic
+/// tables did not, and their sort headers were link-blue and underlined. One
+/// class now carries the look, and every wrapper says when it scrolls.
+#[tokio::test]
+async fn numeric_tables_share_one_style_and_wrappers_show_their_scroll_edge() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let figures = rule(&css, ".wp-num-table :is(th, td):not(:first-child)");
+    for decl in [
+        "text-align: right;",
+        "font-variant-numeric: tabular-nums;",
+        "white-space: nowrap;",
+        "width: 1%;",
+    ] {
+        assert!(figures.contains(decl), ".wp-num-table is missing `{decl}`");
+    }
+    assert!(
+        rule(&css, ".wp-num-table :is(th, td):first-child").contains("overflow-wrap: anywhere;")
+    );
+    assert!(rule(&css, ".wp-num-table caption").contains("caption-side: top;"));
+    assert!(rule(&css, ".wp-num-table th a").contains("text-decoration: none;"));
+    assert!(
+        rule(&css, ".wp-table-wrap")
+            .contains("background-attachment: local, local, scroll, scroll;"),
+        "no scroll-edge cue on the wrapper"
+    );
+}

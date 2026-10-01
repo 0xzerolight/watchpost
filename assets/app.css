@@ -1005,19 +1005,98 @@ body > nav a[aria-current]:not([aria-current="false"]) {
 }
 
 /*
- * The wrapper is the containing block for anything absolutely positioned
- * inside it: the visually hidden labels of an edit row, which otherwise
- * resolve against the page and widen it (scrollWidth 551 at 390px after
- * pressing Edit). As the containing block, the scroller clips them.
+ * The table wrapper. It is the containing block for anything absolutely
+ * positioned inside it: the visually hidden labels of an edit row, which
+ * otherwise resolve against the page and widen it (scrollWidth 551 at 390px
+ * after pressing Edit). As the containing block, the scroller clips them.
+ *
+ * The background is a scroll-edge cue with no script. Two covers in the page
+ * colour scroll with the content (`local`), and two soft shades stay on the
+ * wrapper's edges (`scroll`). At rest a cover hides the shade; once a column
+ * is cut off, its side's cover has scrolled away and the shade shows. The
+ * shade is a tint of the ink, so it follows the scheme with no dark remap.
  */
 .wp-table-wrap {
+  --wp-scroll-shade: color-mix(in srgb, var(--pico-color) 22%, transparent);
   position: relative;
+  background-image:
+    linear-gradient(to right, var(--pico-background-color) 30%, transparent),
+    linear-gradient(to left, var(--pico-background-color) 30%, transparent),
+    radial-gradient(farthest-side at 0 50%, var(--wp-scroll-shade), transparent),
+    radial-gradient(farthest-side at 100% 50%, var(--wp-scroll-shade), transparent);
+  background-position: left center, right center, left center, right center;
+  background-size: 2.5rem 100%, 2.5rem 100%, 0.75rem 100%, 0.75rem 100%;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/*
+ * Pico paints every cell in the page colour, which would cover the cue above.
+ * Transparent cells look the same on the page and let the wrapper's background
+ * (and a `tr`'s `.wp-flash` highlight) show through.
+ */
+.wp-table-wrap > table :is(th, td) {
+  background-color: transparent;
 }
 
 /* The wrapper already scrolls (Pico's `.overflow-auto`); the table inside it
  * keeps its own bottom margin, which would stack with the wrapper's. */
 .wp-table-wrap > table {
   margin-bottom: 0;
+}
+
+/*
+ * The one numeric-table style: the leaderboard and the traffic-source tables.
+ * The first column is the row's label and takes the spare width, wrapping
+ * anywhere so a 90-character path stays inside it. Every other column is a
+ * figure, right-aligned in tabular digits so a column reads as a ranking down
+ * its units digit. `width: 1%` plus `nowrap` shrinks those columns to their
+ * widest number.
+ */
+.wp-num-table :is(th, td):not(:first-child) {
+  width: 1%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wp-num-table :is(th, td):first-child {
+  overflow-wrap: anywhere;
+}
+
+/* A caption is the table's sub-heading: above it, flush left, small. */
+.wp-num-table caption {
+  caption-side: top;
+  padding: 0 0 var(--wp-space-2);
+  font-size: var(--wp-text-sm);
+  font-weight: 600;
+  text-align: left;
+}
+
+.wp-num-table caption > :is(h2, h3, h4) {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+/*
+ * Sort links read as the column's label, not as blue body links. The
+ * chevron already says the column sorts; the underline comes back on hover
+ * and keyboard focus.
+ */
+.wp-num-table th a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.wp-num-table th a:is(:hover, :focus-visible) {
+  text-decoration: underline;
+}
+
+@media (max-width: 40rem) {
+  .wp-num-table :is(th, td) {
+    padding-inline: var(--wp-space-2);
+  }
 }
 
 /*
