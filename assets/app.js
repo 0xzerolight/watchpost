@@ -2293,15 +2293,52 @@
     }
   }
 
+  /*
+   * The repo switcher is a Pico `details.dropdown`. Pico closes it on an
+   * outside click with a full-screen overlay under the menu, but anything
+   * stacked above that overlay still takes the click itself. Closing every
+   * open menu the click was not inside covers those.
+   */
+  function closeMenus(except) {
+    var menus = document.querySelectorAll("details.dropdown[open]");
+    for (var i = 0; i < menus.length; i++) {
+      if (menus[i] !== except) {
+        menus[i].open = false;
+      }
+    }
+  }
+
   document.addEventListener("click", function (evt) {
     var target = evt.target;
     if (!target || !target.closest) {
       return;
     }
+    closeMenus(target.closest("details.dropdown"));
     var toggle = target.closest("[data-more-toggle]");
     var table = toggle ? toggle.closest("table[data-more]") : null;
     if (table) {
       setMore(table, table.classList.contains("wp-collapsed"));
+    }
+  });
+
+  /*
+   * Escape closes an open switcher; Pico does nothing with it. Focus goes back
+   * to the summary when it was inside the menu, so the keyboard is not left on
+   * a link that just disappeared.
+   */
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Escape") {
+      return;
+    }
+    var menu = document.querySelector("details.dropdown[open]");
+    if (!menu) {
+      return;
+    }
+    var hadFocus = menu.contains(document.activeElement);
+    menu.open = false;
+    var summary = menu.querySelector("summary");
+    if (hadFocus && summary) {
+      summary.focus();
     }
   });
 

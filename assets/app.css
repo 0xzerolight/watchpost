@@ -1092,6 +1092,88 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * The crumb above a repo's title: where the page sits, and the way up. Small
+ * and muted so the title still leads. Pico lays every `nav` out as a
+ * space-between flex row, which a single link does not want.
+ */
+.wp-crumb {
+  display: block;
+  margin-block-end: var(--wp-space-1);
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-crumb a {
+  color: inherit;
+}
+
+/* The sync-failure glyph beside a title, at text size rather than heading size. */
+.wp-title-glyph {
+  font-size: 0.5em;
+  vertical-align: middle;
+}
+
+/*
+ * Previous, switcher, next. Pico's form spacing variables bring the
+ * switcher's summary to the toolbar's box, as `.wp-field-inline` does for the
+ * period select. The group, not the `<details>`, is the menu's containing
+ * block. Anchored to the group's left edge the menu stays on screen when the
+ * actions wrap under the title on a phone; hung from the summary it ran off
+ * the right edge.
+ */
+.wp-repo-nav {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-3);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--wp-space-3);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-repo-nav details.dropdown {
+  position: static;
+  margin: 0;
+}
+
+.wp-repo-nav details.dropdown > summary {
+  height: auto;
+  line-height: 1.5;
+}
+
+/*
+ * The menu: as wide as its longest name up to a phone's width, past which
+ * names wrap; past about a screen of repos it scrolls instead of running
+ * down the page.
+ */
+.wp-repo-nav details.dropdown > summary + ul {
+  right: auto;
+  left: 0;
+  width: max-content;
+  max-width: min(28rem, calc(100vw - 2 * var(--wp-space-4)));
+  max-height: 60vh;
+  overflow-y: auto;
+  white-space: normal;
+}
+
+.wp-repo-nav details.dropdown > summary + ul a {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The header's small-text links are still finger targets on a phone: block
+ * padding lifts them to 24px tall without changing the text size the muted
+ * row wants.
+ */
+.wp-crumb a,
+.wp-repo-nav > a,
+.wp-export a {
+  display: inline-block;
+  padding-block: var(--wp-space-1);
+}
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab

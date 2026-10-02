@@ -20,6 +20,7 @@ use axum::http::HeaderMap;
 use maud::Markup;
 use rusqlite::Connection;
 use serde::Deserialize;
+use url::Url;
 
 use crate::csrf::CsrfToken;
 use crate::db::queries;
@@ -90,6 +91,7 @@ pub async fn repo_page(
     let mut page = loaded;
     refs_sort.apply(&mut page.referrers);
     paths_sort.apply(&mut page.paths);
+    let github = github_url(&state.cfg.github_page_base, &page.repo.name);
 
     let view = RepoView {
         repo: &page.repo,
@@ -99,6 +101,8 @@ pub async fn repo_page(
         paths: &page.paths,
         events: &page.events,
         kinds: &page.kinds,
+        repos: &page.repos,
+        github_url: github.as_deref(),
         popular: PopularParams {
             repo_id,
             repo_name: &page.repo.name,
@@ -111,7 +115,9 @@ pub async fn repo_page(
 
     Ok(match fragment(&headers) {
         Fragment::Table(kind) => popular_table(kind, view.rows(kind), &view.popular),
-        Fragment::Full => base(&page.repo.name, NavItem::None, &csrf, repo_body(&view)),
+        // `Repo`, not `None`: a repo page lives inside the Repositories
+        // section, and the nav says so.
+        Fragment::Full => base(&page.repo.name, NavItem::Repo, &csrf, repo_body(&view)),
     })
 }
 
@@ -124,6 +130,7 @@ struct PageData {
     paths: Vec<PopularItem>,
     events: Vec<Event>,
     kinds: Vec<String>,
+    repos: Vec<(i64, String)>,
 }
 
 /// `None` means no such repo — the handler turns that into a 404.
@@ -149,6 +156,13 @@ fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageDat
         paths: queries::popular_items(conn, repo_id, PopularKind::Paths, 0)?,
         events: queries::events_for_repo(conn, repo_id, None)?,
         kinds: queries::event_kinds(conn, repo_id)?,
+        // The switcher's list, from the dashboard's own query so the two
+        // order repos the same way. Inside this closure, so a render is still
+        // one trip to the database.
+        repos: queries::repo_overview(conn)?
+            .into_iter()
+            .map(|repo| (repo.repo_id, repo.name))
+            .collect(),
     }))
 }
 
@@ -202,6 +216,23 @@ fn values(rows: Vec<(String, Option<i64>)>) -> Vec<Option<i64>> {
     rows.into_iter().map(|(_, value)| value).collect()
 }
 
+/// The repo's page on GitHub: the configured page base plus `owner/name`, one
+/// path segment each.
+///
+/// Segment by segment rather than `Url::join(name)`: a join reads its argument
+/// as a relative URL, so a name holding `:` or `..` would be interpreted
+/// rather than encoded, and the name comes from GitHub, not from us. `None`
+/// for a base that cannot take path segments, where no link beats a wrong
+/// one.
+fn github_url(base: &Url, name: &str) -> Option<String> {
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .extend(name.split('/'));
+    Some(url.into())
+}
+
 /// htmx sends the bare element id in `HX-Target`; the `#` is stripped so a
 /// hand-written selector matches too. An unrecognised target — including the
 /// `#period-scope` this route used to answer — gets the whole page, which is
@@ -211,5 +242,35 @@ fn fragment(headers: &HeaderMap) -> Fragment {
         Some("refs-table") => Fragment::Table(PopularKind::Referrers),
         Some("paths-table") => Fragment::Table(PopularKind::Paths),
         _ => Fragment::Full,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_github_link_is_the_page_base_plus_the_name() {
+        let base: Url = "https://github.com".parse().unwrap();
+        assert_eq!(
+            github_url(&base, "0xzerolight/anki_miner").as_deref(),
+            Some("https://github.com/0xzerolight/anki_miner")
+        );
+    }
+
+    /// The name comes from GitHub, not from us: each part is encoded as a
+    /// path segment and never read as a URL of its own.
+    #[test]
+    fn a_name_is_encoded_segment_by_segment_never_interpreted() {
+        let base: Url = "https://github.com/".parse().unwrap();
+        assert_eq!(
+            github_url(&base, "octo/<x> y").as_deref(),
+            Some("https://github.com/octo/%3Cx%3E%20y")
+        );
+        // `Url::join` would have read this as a scheme and left github.com.
+        assert_eq!(
+            github_url(&base, "javascript:alert(1)").as_deref(),
+            Some("https://github.com/javascript:alert(1)")
+        );
     }
 }

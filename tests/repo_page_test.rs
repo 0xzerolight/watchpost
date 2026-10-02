@@ -1000,6 +1000,14 @@ async fn the_repo_page_client_hooks_ship_in_the_assets() {
         "function showAllEvents(",
         "showAllEvents();",
         "function revealRow(",
+        // Repo switcher (REPO-07): an outside click and Escape close the
+        // open dropdown, which Pico's overlay does not always catch. The
+        // Escape needle is the focus-return line, which only the switcher's
+        // keydown listener contains; `evt.key !== "Escape"` alone already
+        // matches the toast's handler and would pin nothing.
+        "function closeMenus(",
+        "details.dropdown[open]",
+        "var hadFocus = menu.contains(document.activeElement);",
     ] {
         assert!(js.contains(name), "app.js is missing {name}");
     }
@@ -1007,6 +1015,127 @@ async fn the_repo_page_client_hooks_ship_in_the_assets() {
     assert!(
         css.contains(".wp-collapsed .wp-more-row {\n  display: none;\n}"),
         "app.css no longer hides the rows past the cut"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
+
+/// Where you are and where to go next: the section in the nav, a crumb up,
+/// every tracked repo one click away, the neighbours by name, and the repo
+/// itself on GitHub.
+#[tokio::test]
+async fn the_header_places_the_repo_and_links_onward() {
+    let h = harness();
+    h.seed_repo(1, "octo/aaa").await;
+    h.seed_repo(2, "octo/bbb").await;
+    h.seed_repo(3, "octo/ccc").await;
+
+    let first = body_string(h.get("/repos/1").await).await;
+    assert!(
+        first.contains(r#"<a href="/repos" aria-current="true">Repositories</a>"#),
+        "{first}"
+    );
+    assert!(
+        first.contains(concat!(
+            r#"<nav class="wp-crumb" aria-label="Breadcrumb">"#,
+            r#"<a href="/repos" data-period-link>Repositories</a>"#
+        )),
+        "{first}"
+    );
+    assert!(
+        first.contains(
+            r#"<details class="dropdown wp-switch"><summary>Switch repository</summary>"#
+        ),
+        "{first}"
+    );
+    assert!(
+        first.contains(
+            r#"<a href="/repos/1" data-period-link aria-current="page">octo/<wbr>aaa</a>"#
+        ),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"<a href="/repos/3" data-period-link>octo/<wbr>ccc</a>"#),
+        "{first}"
+    );
+    assert!(!first.contains(r#"rel="prev""#), "{first}");
+    assert!(
+        first.contains(concat!(
+            r#"<a href="/repos/2" data-period-link rel="next">Next"#,
+            r#"<span class="wp-visually-hidden">: octo/bbb</span>"#
+        )),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"<a href="http://127.0.0.1:1/octo/aaa" rel="noopener noreferrer">GitHub"#),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"Export <a href="/repos/1/export.csv" download>CSV</a>"#),
+        "{first}"
+    );
+
+    let last = body_string(h.get("/repos/3").await).await;
+    assert!(
+        last.contains(r#"<a href="/repos/2" data-period-link rel="prev">"#),
+        "{last}"
+    );
+    assert!(!last.contains(r#"rel="next""#), "{last}");
+}
+
+#[tokio::test]
+async fn a_lone_repo_has_no_switcher() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(!body.contains("wp-repo-nav"), "{body}");
+    // The crumb does not depend on having neighbours.
+    assert!(body.contains(r#"class="wp-crumb""#), "{body}");
+}
+
+#[tokio::test]
+async fn a_hostile_repo_name_is_escaped_in_the_switcher() {
+    let h = harness();
+    h.seed_repo(1, "octo/aaa").await;
+    h.seed_repo(2, "octo/<b>x</b>").await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(!body.contains("<b>x</b>"), "{body}");
+    assert!(
+        body.contains("octo/<wbr>&lt;b&gt;x&lt;/<wbr>b&gt;"),
+        "{body}"
+    );
+}
+
+/// A failed last sync shows where the reader is already looking: beside
+/// the name.
+#[tokio::test]
+async fn a_failed_sync_marks_the_title() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.state
+        .db
+        .call(|c| {
+            c.execute(
+                "UPDATE repos SET last_error = 'GitHub answered 502' WHERE id = 1",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(
+        body.contains(r#"<h1>octo/<wbr>aaa <span class="wp-title-glyph"><span class="wp-danger""#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"aria-label="Last sync failed: GitHub answered 502""#),
+        "{body}"
     );
 }
 

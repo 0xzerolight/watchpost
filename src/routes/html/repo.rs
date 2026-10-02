@@ -19,8 +19,8 @@ use serde::Serialize;
 
 use crate::routes::html::{
     ALL_DAYS, Notice, PERIOD_COUNT, PERIODS, announced, date_stamp, delta_badge, empty_row,
-    empty_state, field, field_compact, json_script, kind_class, page_header, period_select, plural,
-    render_markdown, spinner, table_wrap,
+    empty_state, error_glyph, field, field_compact, json_script, kind_class, period_select, plural,
+    render_markdown, slash_breaks, spinner, table_wrap,
 };
 use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
@@ -451,6 +451,12 @@ pub struct RepoView<'a> {
     pub events: &'a [Event],
     /// Distinct event kinds on this repo, for the filter chips and datalist.
     pub kinds: &'a [String],
+    /// Every tracked repo as `(id, name)`, ordered by name like the
+    /// dashboard, for the switcher and previous/next.
+    pub repos: &'a [(i64, String)],
+    /// This repo on GitHub. The handler builds it from the configured page
+    /// base, so the template never sees `Config`.
+    pub github_url: Option<&'a str>,
     pub popular: PopularParams<'a>,
     /// Display zone, for the new-event date default. The chart columns below
     /// are UTC day keys and stay that way.
@@ -467,6 +473,16 @@ impl RepoView<'_> {
 }
 
 /// The full page body, for wrapping in [`super::base`].
+///
+/// The header is written out here instead of going through `page_header`,
+/// which takes its title as text. This title carries markup: the
+/// sync-failure glyph beside the name. It keeps that function's shape (the
+/// same `wp-page-header`, `hgroup` and `wp-actions`), so the shared rules
+/// style both.
+///
+/// The crumb sits above the header as its own landmark. Inside the `hgroup`
+/// it would make the title a middle child, which Pico styles as a muted
+/// subtitle whenever there is no description after it.
 pub fn repo_body(view: &RepoView) -> Markup {
     let repo = view.repo;
     // `homepage` is set by the upstream repo owner on GitHub, so it is
@@ -478,16 +494,38 @@ pub fn repo_body(view: &RepoView) -> Markup {
         .as_ref()
         .filter(|homepage| validate_event_url(homepage).is_ok());
     html! {
-        (page_header(
-            &repo.name,
-            repo.description.as_ref().map(|description| html! { (description) }),
-            Some(html! {
+        // Where this page sits, and the one-click way up. The nav marks the
+        // section too (`NavItem::Repo`).
+        nav class="wp-crumb" aria-label="Breadcrumb" {
+            a href="/repos" data-period-link { "Repositories" }
+            span aria-hidden="true" { " /" }
+        }
+        header class="wp-page-header" {
+            hgroup {
+                h1 {
+                    (slash_breaks(&repo.name))
+                    @if let Some(error) = &repo.last_error {
+                        " "
+                        span class="wp-title-glyph" { (error_glyph(error)) }
+                    }
+                }
+                @if let Some(description) = &repo.description {
+                    p { (description) }
+                }
+            }
+            div class="wp-actions" {
+                (repo_nav(view.popular.repo_id, view.repos))
+                @if let Some(github) = view.github_url {
+                    a href=(github) rel="noopener noreferrer" {
+                        "GitHub" span aria-hidden="true" { " ↗" }
+                    }
+                }
                 @if let Some(homepage) = homepage {
                     a href=(homepage) rel="noopener noreferrer" { (homepage) }
                 }
                 (export_links(view.popular.repo_id))
-            }),
-        ))
+            }
+        }
         (charts_section(view))
         (popular_section(view))
         (events_section(&EventsView {
@@ -501,7 +539,7 @@ pub fn repo_body(view: &RepoView) -> Markup {
     }
 }
 
-/// The two download links.
+/// The two download links, as one compact group: "Export CSV · JSON".
 ///
 /// Plain anchors carrying `download`, deliberately without `hx-get`: htmx
 /// would swap a CSV body into the page instead of saving it, and the
@@ -511,10 +549,63 @@ pub fn repo_body(view: &RepoView) -> Markup {
 fn export_links(repo_id: i64) -> Markup {
     html! {
         span class="wp-export wp-small wp-muted" {
-            "Export: "
+            "Export "
             a href=(format!("/repos/{repo_id}/export.csv")) download { "CSV" }
             " · "
             a href=(format!("/repos/{repo_id}/export.json")) download { "JSON" }
+        }
+    }
+}
+
+/// Previous, the switcher and next: a walk through every tracked repo in the
+/// dashboard's order (by name) without going back to the dashboard.
+///
+/// A Pico `details.dropdown` rather than a `<select>`: the entries are links,
+/// so the switcher works with JavaScript off and an entry opens in a new tab.
+/// `dropdown` is Pico's vendored class, the one unprefixed class here. The
+/// group is absent with fewer than two repos, where there is nowhere to go.
+/// Every link carries `data-period-link`, so the client can carry the chosen
+/// period along. Previous and Next name their repo for a screenreader. On
+/// screen the arrow and the word are enough, because the name is one click
+/// away in the switcher.
+fn repo_nav(current: i64, repos: &[(i64, String)]) -> Markup {
+    if repos.len() < 2 {
+        return html! {};
+    }
+    let here = repos.iter().position(|(id, _)| *id == current);
+    let prev = here
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| repos.get(i));
+    let next = here.and_then(|i| repos.get(i + 1));
+    html! {
+        div class="wp-repo-nav" {
+            @if let Some((id, name)) = prev {
+                a href=(format!("/repos/{id}")) data-period-link rel="prev" {
+                    span aria-hidden="true" { "‹ " }
+                    "Previous"
+                    span class="wp-visually-hidden" { ": " (name) }
+                }
+            }
+            details class="dropdown wp-switch" {
+                summary { "Switch repository" }
+                ul {
+                    @for (id, name) in repos {
+                        li {
+                            a href=(format!("/repos/{id}")) data-period-link
+                                aria-current=[(*id == current).then_some("page")] {
+                                (slash_breaks(name))
+                            }
+                        }
+                    }
+                }
+            }
+            @if let Some((id, name)) = next {
+                a href=(format!("/repos/{id}")) data-period-link rel="next" {
+                    "Next"
+                    span class="wp-visually-hidden" { ": " (name) }
+                    span aria-hidden="true" { " ›" }
+                }
+            }
         }
     }
 }
@@ -1800,6 +1891,8 @@ mod tests {
             paths: &[],
             events: &[],
             kinds: &[],
+            repos: &[],
+            github_url: None,
             popular: params(),
             tz: Tz::UTC,
         }
