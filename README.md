@@ -19,7 +19,7 @@ Please leave a ⭐ star if watchpost is useful - it helps others find it :).
 <h3 align="center">Demo</h3>
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="A watchpost repo page in dark mode: stat tiles for stars, views, clones and downloads over a full-width star chart spanning 90 days, promo event markers dotted along its top." width="720">
+  <img src="assets/screenshot.png" alt="A watchpost repo page in dark mode: stat tiles for stars, views, clones and downloads over a full-width star chart of its whole history, promo event markers dotted along its top." width="720">
 </p>
 
 <p align="center">
