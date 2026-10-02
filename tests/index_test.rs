@@ -405,6 +405,24 @@ async fn the_leaderboard_glyph_wraps_a_long_category_instead_of_clipping_it() {
 }
 
 #[tokio::test]
+async fn a_card_time_sits_above_the_stretched_link_so_its_exact_instant_shows() {
+    // The title link's ::after covers the whole card. A footer <time> under
+    // it never receives the hover, so its title, the exact instant, was lost.
+    // `last_synced_at_renders_as_relative_time` pins the <time> itself.
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+    let rule = css
+        .split_once("\n.wp-card time {")
+        .unwrap_or_else(|| panic!("no card time rule in app.css"))
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(rule.contains("position: relative;"), "{rule}");
+    assert!(rule.contains("z-index: 2;"), "{rule}");
+}
+
+#[tokio::test]
 async fn last_synced_at_renders_as_relative_time() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A, true).await;
