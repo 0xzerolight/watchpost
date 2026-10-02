@@ -549,6 +549,45 @@ async fn a_chosen_period_shows_its_growth_badge() {
     );
 }
 
+/// The captions are server truth like the figures: the selected period's
+/// shows with JS off, and at All each tile names the day its series starts.
+#[tokio::test]
+async fn kpi_tiles_say_what_each_figure_covers() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(40), 100).await;
+    h.seed_stars(ID_A, days_ago(1), 140).await;
+    h.seed_views(ID_A, days_ago(2), 5, 3).await;
+
+    let body = body_string(h.get("/repos/1?days=30").await).await;
+    assert!(
+        body.contains(r#"<span data-period-value="30" class="wp-delta wp-delta-up">+40</span>"#),
+        "{body}"
+    );
+    assert_eq!(
+        body.matches(r#"<span data-period-value="30" class="wp-kpi-caption">in 30 days</span>"#)
+            .count(),
+        2,
+        "{body}"
+    );
+
+    let all = body_string(h.get("/repos/1?days=-1").await).await;
+    assert!(
+        all.contains(&format!(
+            r#"<span data-period-value="-1" class="wp-kpi-caption">since <time datetime="{}">"#,
+            days_ago(40)
+        )),
+        "{all}"
+    );
+    assert!(
+        all.contains(&format!(
+            r#"<span data-period-value="-1" class="wp-kpi-caption">since <time datetime="{}">"#,
+            days_ago(2)
+        )),
+        "{all}"
+    );
+}
+
 #[tokio::test]
 async fn pulls_only_repo_charts_from_first_pull_observation() {
     let h = harness();

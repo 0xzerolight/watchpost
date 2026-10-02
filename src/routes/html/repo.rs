@@ -67,7 +67,8 @@ pub struct ChartPayload {
 /// Field names are the wire contract with `CHART_SPECS` in `assets/app.js` —
 /// renaming one here silently empties a chart there. A new series needs a
 /// field here, a place in `cards()` and a dataset in `CHART_SPECS`; a new
-/// canvas id also needs its own arm in `KpiData::figures`.
+/// canvas id also needs its own arm in `KpiData::figures` and in
+/// [`ChartSeries::primary`].
 #[derive(Debug, Serialize)]
 pub struct ChartSeries {
     pub stars: Vec<Option<i64>>,
@@ -130,6 +131,18 @@ impl ChartSeries {
             .into_iter()
             .find(|&(_, _, observed)| observed)
             .map(|(_, canvas_id, _)| canvas_id)
+    }
+
+    /// The series a tile's figure is read from, by canvas id: the one its
+    /// "since" date comes from. The arms mirror [`KpiData::figures`].
+    fn primary(&self, canvas_id: &str) -> &[Option<i64>] {
+        match canvas_id {
+            "chart_views" => &self.views_count,
+            "chart_clones" => &self.clones_count,
+            "chart_downloads" => &self.downloads_total,
+            "chart_pulls" => &self.pulls_total,
+            _ => &self.stars,
+        }
     }
 }
 
@@ -202,6 +215,7 @@ impl KpiData {
 
 /// A tile's big value: a level is one static number, a rate is one number per
 /// period with all but the selected one hidden.
+#[derive(Clone, Copy)]
 enum KpiValue<'a> {
     Level(Option<i64>),
     PerPeriod(&'a [Option<i64>; PERIOD_COUNT]),
@@ -548,30 +562,59 @@ fn charts_section(view: &RepoView) -> Markup {
     }
 }
 
-/// One tile per observed metric. Buttons, not links — a tile navigates
+/// One tile per observed metric. Buttons, not links: a tile navigates
 /// nowhere; it presses, and the pressed tile is the one whose hero panel is
 /// showing.
 fn kpi_row(view: &RepoView, default_id: &str) -> Markup {
     let days = view.payload.days;
+    let (labels, series) = (&view.payload.labels, &view.payload.series);
     html! {
         div class="wp-kpis" role="group" aria-label="Metrics" {
-            @for (title, canvas_id, observed) in view.payload.series.cards() {
+            @for (title, canvas_id, observed) in series.cards() {
                 @if observed {
-                    (kpi_tile(title, canvas_id, view.kpis, days, canvas_id == default_id))
+                    (kpi_tile(
+                        title,
+                        canvas_id,
+                        view.kpis,
+                        first_observed(labels, series.primary(canvas_id)),
+                        days,
+                        canvas_id == default_id,
+                    ))
                 }
             }
         }
     }
 }
 
-/// Label, big value, and — for level metrics — a per-period delta badge.
+/// Label, big value, and one muted line saying what the value covers.
 ///
 /// A rate metric's value is itself per-period (the window's sum), rendered as
 /// the leaderboard renders its cells: every period's figure in the markup,
 /// all but the selected one hidden, so the numbers are correct with JS off
-/// and a period change writes no text.
-fn kpi_tile(title: &str, canvas_id: &str, kpis: &KpiData, days: i64, pressed: bool) -> Markup {
+/// and a period change writes no text. A level metric's value is static, and
+/// its line carries the per-period delta badge.
+///
+/// The caption is what stops a tile from being three kinds of number that
+/// look alike: a level (103 stars), a window's sum (1188 views) and a window's
+/// change (+18). It names the window ("in 30 days") or, at All, where the
+/// series starts ("since Feb 12"). A window with nothing observed gets an
+/// empty caption rather than one vouching for a dash.
+fn kpi_tile(
+    title: &str,
+    canvas_id: &str,
+    kpis: &KpiData,
+    since: Option<&str>,
+    days: i64,
+    pressed: bool,
+) -> Markup {
     let (value, delta) = kpis.figures(canvas_id);
+    // What the caption vouches for, per period: the delta on a level tile,
+    // the value itself on a rate tile.
+    let covered: &[Option<i64>; PERIOD_COUNT] = match (value, delta) {
+        (_, Some(deltas)) => deltas,
+        (KpiValue::PerPeriod(values), None) => values,
+        (KpiValue::Level(_), None) => &[None; PERIOD_COUNT],
+    };
     html! {
         button type="button" class="wp-kpi" data-kpi-tile=(canvas_id) aria-pressed=(pressed) {
             span class="wp-kpi-label wp-muted wp-small" { (title) }
@@ -589,8 +632,34 @@ fn kpi_tile(title: &str, canvas_id: &str, kpis: &KpiData, days: i64, pressed: bo
                     }
                 }
             }
-            @if let Some(values) = delta {
-                (delta_badge(values, days))
+            span class="wp-kpi-foot" {
+                @if let Some(values) = delta {
+                    (delta_badge(values, days))
+                }
+                (kpi_caption(covered, since, days))
+            }
+        }
+    }
+}
+
+/// One caption span per period, on the tile's `data-period-value` contract:
+/// all but the selected one `hidden`, flipped by `updatePeriodValues`.
+///
+/// A window reads "in 30 days" only when its figure was observed. At All the
+/// caption is the series' first observed day, because "all" over a repo
+/// watched since February is not the same span as over one watched since
+/// last week.
+fn kpi_caption(figures: &[Option<i64>; PERIOD_COUNT], since: Option<&str>, days: i64) -> Markup {
+    html! {
+        @for ((period, label), figure) in PERIODS.iter().zip(figures) {
+            span data-period-value=(period) hidden[*period != days] class="wp-kpi-caption" {
+                @if *period == ALL_DAYS {
+                    @if let Some(first) = since {
+                        "since " (date_stamp(first))
+                    }
+                } @else if figure.is_some() {
+                    "in " (label)
+                }
             }
         }
     }
@@ -1710,24 +1779,114 @@ mod tests {
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         // Views value: one span per period. Stars adds a delta badge, which
-        // carries no "All" span — one fewer. The total pins both present.
+        // carries no "All" span, so one fewer. Each tile then adds one
+        // caption per period. The total pins all four present.
         assert_eq!(
             out.matches("data-period-value").count(),
-            2 * PERIOD_COUNT - 1,
+            4 * PERIOD_COUNT - 1,
             "out was {out}"
         );
         assert!(
             out.contains(r#"<span data-period-value="30">"#),
             "out was {out}"
         );
-        // The unselected periods are hidden, the selected one is not.
+        // The unselected periods are hidden, the selected one is not: the
+        // views value, the stars delta and both captions.
         assert_eq!(
             out.matches(r#"data-period-value="7" hidden"#).count(),
-            2,
+            4,
             "out was {out}"
         );
         assert!(
             !out.contains(r#"data-period-value="30" hidden"#),
+            "out was {out}"
+        );
+    }
+
+    /// A tile says what its figure covers: the window it was taken over or,
+    /// at All, where the series starts. One caption per period ships, all
+    /// but the selected one hidden, so a period change writes no text.
+    #[test]
+    fn kpi_captions_ship_every_period_and_show_the_selected_one() {
+        let mut payload = payload(30, Some(3));
+        payload.series.views_count = vec![Some(2)];
+        let kpis = KpiData::of(&payload.series);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
+
+        assert_eq!(
+            out.matches(r#"class="wp-kpi-caption""#).count(),
+            2 * PERIOD_COUNT,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<span data-period-value="30" class="wp-kpi-caption">in 30 days</span>"#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(
+                r#"<span data-period-value="7" hidden class="wp-kpi-caption">in 7 days</span>"#
+            )
+            .count(),
+            2,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(
+                r#"<span data-period-value="365" hidden class="wp-kpi-caption">in 1 year</span>"#
+            )
+            .count(),
+            2,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<span data-period-value="-1" hidden class="wp-kpi-caption">since <time datetime="2026-08-17">"#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        // The delta and its caption share one line under the value.
+        assert!(
+            out.contains(r#"<span class="wp-kpi-foot"><span class="wp-kpi-delta">"#),
+            "out was {out}"
+        );
+    }
+
+    /// A window nobody observed gets no caption, never a confident "+0 in 7
+    /// days": the badge's dash is the whole answer.
+    #[test]
+    fn a_window_with_nothing_observed_gets_no_caption() {
+        let mut payload = payload(7, Some(3));
+        payload.labels = (1..=10).map(|day| format!("2026-08-{day:02}")).collect();
+        payload.series = ChartSeries {
+            stars: std::iter::once(Some(3))
+                .chain(std::iter::repeat_n(None, 9))
+                .collect(),
+            views_count: vec![None; 10],
+            views_uniques: vec![None; 10],
+            clones_count: vec![None; 10],
+            clones_uniques: vec![None; 10],
+            downloads_total: vec![None; 10],
+            pulls_total: vec![None; 10],
+        };
+        let kpis = KpiData::of(&payload.series);
+        let repo = repo();
+        let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
+
+        assert!(
+            out.contains(r#"<span data-period-value="7" class="wp-kpi-caption"></span>"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<span data-period-value="7" class="wp-delta wp-muted">—</span>"#),
+            "out was {out}"
+        );
+        assert!(!out.contains("+0"), "out was {out}");
+        // Over All the series was observed, so it says since when.
+        assert!(
+            out.contains(r#"since <time datetime="2026-08-01">"#),
             "out was {out}"
         );
     }

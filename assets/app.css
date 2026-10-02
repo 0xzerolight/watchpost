@@ -325,18 +325,55 @@
 }
 
 /*
- * Proportional figures, deliberately not the tables' `tabular-nums`: a big
- * standalone number set in equal-width digits reads loose, and a tile's value
- * aligns with nothing vertically.
+ * The headline figure. Size and digit style come from the shared figure
+ * tokens, so a tile's number looks like every other headline number. The
+ * digits are tabular because they flip between periods in place, and
+ * equal-width digits keep the tile from changing width under the reader.
  */
 .wp-kpi-value {
-  font-size: 1.4rem;
+  font-size: var(--wp-text-figure);
   line-height: 1.3;
-  font-variant-numeric: normal;
+  font-variant-numeric: var(--wp-figure-numeric);
 }
 
 .wp-kpi-delta {
   min-height: 1.2em;
+}
+
+/*
+ * The tile's last line: the delta, then what the figure covers ("in 30
+ * days", "since Feb 12"). It wraps rather than widening the tile. The space
+ * after the delta is the badge's own margin, not a flex `gap`: at All every
+ * badge is hidden, and a gap beside the empty delta would indent the caption.
+ */
+.wp-kpi-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  min-height: 1.2em;
+  font-size: var(--wp-text-sm);
+}
+
+.wp-kpi-foot .wp-delta {
+  margin-inline-end: var(--wp-space-1);
+}
+
+.wp-kpi-caption {
+  color: var(--pico-muted-color, #6b7280);
+}
+
+/*
+ * Two columns on a phone, with an odd last tile taking the whole row. Three
+ * tiles used to read as a pair plus an orphan with a hole beside it.
+ */
+@media (max-width: 40rem) {
+  .wp-kpis {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .wp-kpis > .wp-kpi:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
 }
 
 /*
