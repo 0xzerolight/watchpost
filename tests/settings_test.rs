@@ -373,11 +373,32 @@ async fn discover_upserts_from_github() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with(r#"<form id="repos-picker""#), "{body}");
-    assert!(body.contains("2 repos loaded from GitHub"), "{body}");
+    assert!(
+        body.contains("2 repositories loaded from GitHub · selections kept."),
+        "{body}"
+    );
     assert!(body.contains(REPO_A) && body.contains(REPO_B), "{body}");
     assert_eq!(h.known_names().await, vec![REPO_A, REPO_B]);
     // Discovery must not silently start tracking anything.
     assert!(h.tracked_ids().await.is_empty());
+}
+
+#[tokio::test]
+async fn one_discovered_repository_is_singular() {
+    let h = harness().await;
+    mount_json(
+        &h.server,
+        "/user/repos".into(),
+        json!([repo_json(ID_A, REPO_A)]),
+    )
+    .await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(h.post_form("/settings/discover", "", &token).await).await;
+    assert!(
+        body.contains("1 repository loaded from GitHub · selections kept."),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -397,7 +418,10 @@ async fn discover_error_shows_notice_not_500() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(body.contains("Could not load repos from GitHub"), "{body}");
+    assert!(
+        body.contains("Could not load repositories from GitHub: "),
+        "{body}"
+    );
     // The known list still renders, so the picker is not wiped by a failure.
     assert!(body.contains(REPO_A), "body was {body}");
 }
@@ -761,7 +785,7 @@ async fn sync_status_is_idle_before_any_cycle() {
     let h = harness().await;
     let body = body_string(h.get("/sync/status").await).await;
 
-    assert!(body.contains("No sync this session yet."), "{body}");
+    assert!(body.contains("No sync since watchpost started."), "{body}");
     assert!(body.contains("wp-notice-info"), "{body}");
     assert!(!body.contains("hx-trigger"), "body was {body}");
 }
@@ -1117,6 +1141,30 @@ async fn the_settings_page_renders_the_schedule_panel() {
     assert!(body.contains(r#"id="schedule-panel""#), "{body}");
     assert!(body.contains(r#"name="interval""#), "{body}");
     assert!(body.contains("Next sync"), "{body}");
+}
+
+/// Three buttons all named "Save" read as "Save, Save, Save" in a
+/// screenreader's button list. Each names what it saves, and the page is one
+/// reading column rather than a stack of full-width bars.
+#[tokio::test]
+async fn every_save_button_names_what_it_saves() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    for name in ["Save start page", "Save interval", "Save selection"] {
+        assert_eq!(
+            body.matches(&format!(">{name}</button>")).count(),
+            1,
+            "{name}: {body}"
+        );
+    }
+    assert!(!body.contains(">Save</button>"), "{body}");
+    assert!(
+        body.contains(r#"<div class="wp-narrow"><header class="wp-page-header">"#),
+        "{body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

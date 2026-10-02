@@ -1329,6 +1329,32 @@ main h2 {
   color: var(--pico-muted-color);
 }
 
+/*
+ * One reading column for the settings and setup pages. Pico sizes every form
+ * control to its container, so at 1440px a three-option select ran 1200px
+ * wide, and the notices, the picker and the fields read as a stack of
+ * full-width bars. 48rem keeps a label, its control and its Save button within
+ * one glance; a phone is narrower than that, so nothing changes there.
+ */
+.wp-narrow {
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+/*
+ * The shared section rhythm is set on `main > section`. Inside the column the
+ * sections sit one level down, so the column repeats it.
+ */
+.wp-narrow > section {
+  margin-block-end: var(--wp-section-gap);
+}
+
+/* A start page or an interval needs about twenty characters, not a column. */
+.wp-narrow select,
+.wp-narrow input:not([type="checkbox"], [type="radio"]) {
+  max-width: 22rem;
+}
+
 /* Layout utilities — enough for a row of controls, not a grid system. */
 .wp-row {
   display: flex;

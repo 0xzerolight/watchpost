@@ -80,7 +80,7 @@ pub async fn setup_page(csrf: CsrfToken) -> Markup {
     render(&csrf)
 }
 
-/// POST /setup — validate, save, and hand the browser to the dashboard.
+/// POST /setup — validate, save, and hand the browser to the picker.
 pub async fn setup_submit(State(state): State<Arc<AppState>>, body: String) -> Response {
     let raw = form_field(&body, "token").unwrap_or_default();
     match apply_token(&state, &raw).await {
@@ -94,10 +94,14 @@ pub async fn setup_submit(State(state): State<Arc<AppState>>, body: String) -> R
             });
 
             // The whole page changes, so htmx is told to navigate rather than
-            // to swap a fragment into the form it just submitted.
+            // to swap a fragment into the form it just submitted. Step two is
+            // picking repositories, so it goes to the picker rather than to a
+            // dashboard that has nothing tracked to show.
             let mut resp = StatusCode::OK.into_response();
-            resp.headers_mut()
-                .insert("hx-redirect", HeaderValue::from_static("/"));
+            resp.headers_mut().insert(
+                "hx-redirect",
+                HeaderValue::from_static("/settings#wp-repos"),
+            );
             resp
         }
         // The form alone, not the page: the form swaps itself `outerHTML`, so
@@ -166,36 +170,46 @@ pub fn form_field(body: &str, key: &str) -> Option<String> {
 
 /// The page, as a first visit sees it. A rejected submission never re-renders
 /// it: it answers with [`token_form`] alone.
+///
+/// [`NavItem::Setup`] gives the shell the brand and no links: every link
+/// would only redirect back here. The subtitle names the second step, so the
+/// reader knows Save token is not the end of it.
 fn render(csrf: &CsrfToken) -> Markup {
     base(
         "Setup",
-        NavItem::None,
+        NavItem::Setup,
         csrf,
         html! {
-            (page_header("Set up watchpost", None, None))
-            section {
-                p {
-                    "watchpost reads your repositories through the GitHub API, so it needs a \
-                     personal access token. A "
-                    a href="https://github.com/settings/personal-access-tokens/new"
-                        target="_blank" rel="noopener" { "fine-grained token" }
-                    " is the better choice; under "
-                    strong { "Repository permissions" }
-                    " grant:"
-                }
-                ul {
-                    @for (name, why) in PERMISSIONS {
-                        li { strong { (name) } " — " (why) }
+            div class="wp-narrow" {
+                (page_header(
+                    "Set up watchpost",
+                    Some(html! { "Step 1 of 2 — next you pick which repositories to track." }),
+                    None,
+                ))
+                section {
+                    p {
+                        "watchpost reads your repositories through the GitHub API, so it needs a \
+                         personal access token. A "
+                        a href="https://github.com/settings/personal-access-tokens/new"
+                            target="_blank" rel="noopener" { "fine-grained token" }
+                        " is the better choice; under "
+                        strong { "Repository permissions" }
+                        " grant:"
                     }
+                    ul {
+                        @for (name, why) in PERMISSIONS {
+                            li { strong { (name) } " — " (why) }
+                        }
+                    }
+                    p {
+                        "A classic token with the "
+                        code { "repo" }
+                        " scope also works. A missing permission costs that one part of a \
+                         collection pass rather than the pass, so you can start with less and \
+                         come back to it."
+                    }
+                    (token_form(None))
                 }
-                p {
-                    "A classic token with the "
-                    code { "repo" }
-                    " scope also works. A missing permission costs that one part of a \
-                     collection pass rather than the pass, so you can start with less and \
-                     come back to it."
-                }
-                (token_form(None))
             }
         },
     )

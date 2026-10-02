@@ -26,7 +26,9 @@ use crate::routes::html::settings::{
     ScheduleView, landing_panel, repos_picker, save_notice, schedule_panel, sync_status_fragment,
     token_panel,
 };
-use crate::routes::html::{NavItem, Notice, base, future_timestamp, get_hx_target, page_header};
+use crate::routes::html::{
+    NavItem, Notice, base, future_timestamp, get_hx_target, page_header, plural,
+};
 use crate::routes::setup;
 use crate::schedule::{self, ScheduleSource};
 use crate::state::{AppState, SyncStatus, lock_recover};
@@ -66,26 +68,31 @@ pub async fn settings_page(
         "Settings",
         NavItem::Settings,
         &csrf,
+        // One reading column: Pico sized every control and notice to the
+        // container, so a three-option select ran 1200px wide and the page
+        // read as a stack of full-width bars.
         html! {
-            (page_header("Settings", None, None))
-            section {
-                h2 { "Start page" }
-                (landing_panel(landing::resolve(landing_raw.as_deref()), None))
-            }
-            section {
-                h2 { "Sync" }
-                (schedule_panel(&view, state.cfg.timezone))
-                (sync_status_fragment(&status, state.cfg.timezone))
-            }
-            // `wp-repos` is the anchor the empty dashboards and the setup
-            // redirect send a first-run reader to.
-            section id="wp-repos" {
-                h2 { "Repositories" }
-                (picker)
-            }
-            section {
-                h2 { "GitHub token" }
-                (token_panel(&state.gh_slot(), None))
+            div class="wp-narrow" {
+                (page_header("Settings", None, None))
+                section {
+                    h2 { "Start page" }
+                    (landing_panel(landing::resolve(landing_raw.as_deref()), None))
+                }
+                section {
+                    h2 { "Sync" }
+                    (schedule_panel(&view, state.cfg.timezone))
+                    (sync_status_fragment(&status, state.cfg.timezone))
+                }
+                // `wp-repos` is the anchor the empty dashboards and the setup
+                // redirect send a first-run reader to.
+                section id="wp-repos" {
+                    h2 { "Repositories" }
+                    (picker)
+                }
+                section {
+                    h2 { "GitHub token" }
+                    (token_panel(&state.gh_slot(), None))
+                }
             }
         },
     ))
@@ -149,7 +156,10 @@ pub async fn settings_discover(
                 .await?;
             (
                 Notice::Success,
-                html! { (count) " repos loaded from GitHub · selections kept" },
+                html! {
+                    (count) " " (plural(count as i64, "repository", "repositories"))
+                    " loaded from GitHub · selections kept."
+                },
             )
         }
         Err(e) => {
@@ -163,7 +173,7 @@ pub async fn settings_discover(
             warn!(error = %e, "settings discovery failed");
             (
                 Notice::Error,
-                html! { "Could not load repos from GitHub: " (e.user_message()) },
+                html! { "Could not load repositories from GitHub: " (e.user_message()) },
             )
         }
     };

@@ -127,7 +127,7 @@ pub fn landing_panel(selected: LandingPage, msg: Option<(Notice, String)>) -> Ma
                     "Where watchpost opens when you visit it without a path."
                 }
                 div class="wp-actions" {
-                    button type="submit" { "Save" }
+                    button type="submit" { "Save start page" }
                     (spinner("landing-spinner"))
                 }
             }
@@ -252,7 +252,7 @@ fn schedule_form(view: &ScheduleView) -> Markup {
                 code { "1h 30m" } ". Units are m, h, d and w, between 5m and 14d."
             }
             div class="wp-actions" {
-                button type="submit" { "Save" }
+                button type="submit" { "Save interval" }
                 (spinner("schedule-spinner"))
                 // Only when there is something stored to clear. The button
                 // posts an empty interval rather than hitting a second route,
@@ -323,7 +323,7 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, Markup)>, tz: Tz) ->
                 }
             }
             @if repos.is_empty() {
-                (empty_state("No repos known yet — load them from GitHub.", None))
+                (empty_state("No repositories known yet — load them from GitHub.", None))
                 div class="wp-actions" {
                     (refresh_button(true))
                 }
@@ -348,7 +348,7 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, Markup)>, tz: Tz) ->
                 // button was not pressed, since htmx only marks the indicator the
                 // request names.
                 div class="wp-actions" {
-                    button type="submit" id="repos-save" { "Save" }
+                    button type="submit" id="repos-save" { "Save selection" }
                     (spinner("repos-spinner"))
                     (refresh_button(false))
                     span class="wp-muted wp-small" {
@@ -377,7 +377,7 @@ fn picker_table(label: &str, rows: &[&RepoRow], tracked: bool, tz: Tz) -> Markup
             thead {
                 tr {
                     th scope="col" { "Track" }
-                    th scope="col" { "Repo" }
+                    th scope="col" { "Repository" }
                     @if tracked {
                         th scope="col" { "Last synced" }
                     }
@@ -505,7 +505,7 @@ pub fn sync_status_fragment(status: &SyncStatus, tz: Tz) -> Markup {
                         // land outside the box and outside what `role="alert"`
                         // announces.
                         (notice(Notice::Error, html! {
-                            "Some repos failed:"
+                            "Some repositories failed:"
                             @for (name, error) in failed {
                                 br; (name) ": " (error)
                             }
@@ -516,7 +516,7 @@ pub fn sync_status_fragment(status: &SyncStatus, tz: Tz) -> Markup {
             }
             SyncStatus::Idle => {
                 div id="sync-status" tabindex="-1" {
-                    (announced(Notice::Info, html! { "No sync this session yet." }))
+                    (announced(Notice::Info, html! { "No sync since watchpost started." }))
                     (sync_button(false))
                 }
             }
@@ -940,7 +940,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains(r#"<button type="submit" id="repos-save">Save</button>"#),
+            out.contains(r#"<button type="submit" id="repos-save">Save selection</button>"#),
             "{out}"
         );
         // Refresh is a second, different request: it must not submit the form,
@@ -957,7 +957,7 @@ mod tests {
         let out = repos_picker(&[], None, Tz::UTC).into_string();
         assert!(
             out.contains(
-                r#"<div class="wp-empty"><p>No repos known yet — load them from GitHub.</p></div>"#
+                r#"<div class="wp-empty"><p>No repositories known yet — load them from GitHub.</p></div>"#
             ),
             "{out}"
         );
@@ -1162,6 +1162,7 @@ mod tests {
         assert!(out.contains("wp-notice-error"), "{out}");
         assert!(out.contains(r#"role="alert""#), "{out}");
         assert!(out.contains("octo/f0: github 502"), "{out}");
+        assert!(out.contains("Some repositories failed:"), "{out}");
         // A list element would be closed out of the paragraph by the parser,
         // taking the failures out of the alert with it.
         assert!(!out.contains("<ul"), "{out}");
@@ -1186,7 +1187,7 @@ mod tests {
 
         assert!(out.contains("wp-notice-info"), "{out}");
         assert!(out.contains("data-announce"), "{out}");
-        assert!(out.contains("No sync this session yet."), "{out}");
+        assert!(out.contains("No sync since watchpost started."), "{out}");
         assert!(!out.contains("hx-trigger"), "{out}");
     }
 
@@ -1331,6 +1332,7 @@ mod tests {
         let body = &out[out.find("<tbody>").unwrap()..];
         assert_eq!(body.matches("<td").count(), 3, "{out}");
         assert_eq!(out.matches("<th ").count(), 3, "{out}");
+        assert!(out.contains(r#"<th scope="col">Repository</th>"#), "{out}");
     }
 
     #[test]
