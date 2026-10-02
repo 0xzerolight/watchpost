@@ -168,12 +168,14 @@ fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageDat
 
 /// How many days the payload spans: the repo's whole history, measured from
 /// its first observation. Every render uses this window whatever period is
-/// selected, so the client can zoom without asking for more data.
+/// selected, so the client can zoom without asking for more data. The events
+/// section's own loader reads its impact series over this same window, so a
+/// swapped row's impact line matches the page's.
 ///
 /// [`queries::history_span`] is the measure itself, shared with the export;
-/// the [`ALL_MIN_DAYS`] floor is this caller's alone, because a one-column
-/// chart looks broken and a short data file does not.
-fn all_window(conn: &Connection, repo_id: i64) -> Result<u32, DbError> {
+/// the [`ALL_MIN_DAYS`] floor is the page's alone, because a one-column chart
+/// looks broken and a short data file does not.
+pub(crate) fn all_window(conn: &Connection, repo_id: i64) -> Result<u32, DbError> {
     Ok(queries::history_span(conn, repo_id)?.max(ALL_MIN_DAYS))
 }
 

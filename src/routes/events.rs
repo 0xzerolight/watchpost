@@ -40,6 +40,7 @@ use crate::routes::html::repo::{
     EventDraft, EventErrors, EventsView, ImpactSeries, KIND_MAX_CHARS, SHOWN_ROWS, event_form_row,
     event_impact, event_row, events_section,
 };
+use crate::routes::repo::all_window;
 use crate::state::AppState;
 use crate::types::{Event, Metric, NewEvent};
 
@@ -223,11 +224,13 @@ impl SectionData {
 }
 
 /// The section's data, impact series included. These come from the same
-/// dense readers the page's chart payload does, so a re-rendered row's impact
-/// line agrees with the one the page load drew. Without them a mutation's
-/// swap would drop every impact line until the next reload.
+/// dense readers and the same [`all_window`] the page's chart payload does,
+/// so a re-rendered row's impact line agrees with the one the page load drew.
+/// Without them a mutation's swap would drop every impact line until the next
+/// reload; over the bare history span, a young repo's star change would read
+/// differently after a swap.
 fn section_data(conn: &Connection, repo_id: i64) -> Result<SectionData, DbError> {
-    let window = queries::history_span(conn, repo_id)?;
+    let window = all_window(conn, repo_id)?;
     let stars = queries::dense_series(conn, repo_id, Metric::Stars, window)?;
     let views = queries::dense_series(conn, repo_id, Metric::ViewsCount, window)?;
     Ok(SectionData {

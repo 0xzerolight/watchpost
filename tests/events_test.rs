@@ -30,7 +30,7 @@ use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
 use watchpost::routes::router;
 use watchpost::state::AppState;
-use watchpost::types::{Event, GhRepo, TrafficDay, TrafficKind};
+use watchpost::types::{Event, GhRepo, StatSnapshot, TrafficDay, TrafficKind};
 
 const REPO_A: &str = "octo/aaa";
 const ID_A: i64 = 1;
@@ -191,6 +191,21 @@ impl Harness {
                         uniques: 1,
                     }],
                 )
+            })
+            .await
+            .unwrap();
+    }
+
+    /// One day's star count, as a sync's snapshot records it.
+    async fn seed_stars(&self, repo_id: i64, date: String, stars: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                let snapshot = StatSnapshot {
+                    stars: Some(stars),
+                    ..StatSnapshot::default()
+                };
+                queries::upsert_stats(c, repo_id, &date, &snapshot)
             })
             .await
             .unwrap();
@@ -390,6 +405,43 @@ async fn a_mutation_response_keeps_the_impact_lines() {
     let id = h.events(ID_A).await[0].id;
     let row = body_string(h.get(&format!("/repos/1/events/{id}")).await).await;
     assert!(row.contains("Views/day 15 → 40"), "{row}");
+}
+
+/// A repo younger than the chart's minimum span: the page pads its series
+/// with unobserved days before the first reading, and the swapped row must
+/// read the same window, or the star change would appear only after a swap.
+#[tokio::test]
+async fn a_swapped_row_agrees_with_the_page_on_a_young_repo() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    for ago in 1..=10 {
+        h.seed_stars(ID_A, days_ago(ago), 20 - ago).await;
+    }
+    for (ago, count) in [(10, 10), (9, 20), (6, 30), (4, 50)] {
+        h.seed_views(ID_A, days_ago(ago), count).await;
+    }
+    let date = days_ago(8);
+    let id = h
+        .create(
+            ID_A,
+            &[
+                ("date", date.as_str()),
+                ("title", "Posted"),
+                ("notes", ""),
+                ("url", ""),
+                ("kind", ""),
+            ],
+        )
+        .await;
+
+    let impact = |body: &str| {
+        let start = body.find("wp-impact").expect("an impact line");
+        let end = start + body[start..].find("</div>").unwrap();
+        body[start..end].to_owned()
+    };
+    let page = body_string(h.get("/repos/1").await).await;
+    let row = body_string(h.get(&format!("/repos/1/events/{id}")).await).await;
+    assert_eq!(impact(&row), impact(&page));
 }
 
 #[tokio::test]
