@@ -25,7 +25,7 @@ use crate::landing::{self, LandingPage};
 use crate::routes::html::settings::{
     ScheduleView, landing_panel, repos_picker, schedule_panel, sync_status_fragment, token_panel,
 };
-use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
+use crate::routes::html::{NavItem, Notice, base, future_timestamp, get_hx_target, page_header};
 use crate::routes::setup;
 use crate::schedule::{self, ScheduleSource};
 use crate::state::{AppState, SyncStatus, lock_recover};
@@ -105,18 +105,18 @@ pub async fn settings_discover(
     body: String,
 ) -> Result<Markup, AppError> {
     let checked = checked_ids(&body);
+    let tz = state.cfg.timezone;
 
     // A closed gate means the request would fail anyway, so don't spend it.
+    // The deadline goes through the same zone-aware countdown as the schedule,
+    // not a raw UTC instant with milliseconds.
     if let Some(until) = state.gate.blocked_until() {
         let repos = state.db.call(|c| queries::known_repos(c)).await?;
-        let text = format!("Rate limited until {until}; not contacting GitHub");
-        return Ok(picker_as_submitted(
-            repos,
-            &checked,
-            Notice::Info,
-            text,
-            state.cfg.timezone,
-        ));
+        let text = html! {
+            "GitHub rate limit reached, so watchpost is not contacting GitHub. It resets "
+            (future_timestamp(Some(until), tz)) "."
+        };
+        return Ok(picker_as_submitted(repos, &checked, Notice::Info, text, tz));
     }
 
     // Nothing to discover with yet. The picker still renders, so the notice
@@ -127,8 +127,8 @@ pub async fn settings_discover(
             repos,
             &checked,
             Notice::Info,
-            "No GitHub token yet — add one below.".to_owned(),
-            state.cfg.timezone,
+            html! { "No GitHub token yet — add one below." },
+            tz,
         ));
     };
 
@@ -146,7 +146,7 @@ pub async fn settings_discover(
                 .await?;
             (
                 Notice::Success,
-                format!("{count} repos loaded from GitHub · selections kept"),
+                html! { (count) " repos loaded from GitHub · selections kept" },
             )
         }
         Err(e) => {
@@ -160,18 +160,12 @@ pub async fn settings_discover(
             warn!(error = %e, "settings discovery failed");
             (
                 Notice::Error,
-                format!("Could not load repos from GitHub: {}", e.user_message()),
+                html! { "Could not load repos from GitHub: " (e.user_message()) },
             )
         }
     };
     let repos = state.db.call(|c| queries::known_repos(c)).await?;
-    Ok(picker_as_submitted(
-        repos,
-        &checked,
-        kind,
-        text,
-        state.cfg.timezone,
-    ))
+    Ok(picker_as_submitted(repos, &checked, kind, text, tz))
 }
 
 /// Render the picker with `tracked` taken from the submitted form rather than
@@ -182,7 +176,7 @@ fn picker_as_submitted(
     mut repos: Vec<RepoRow>,
     checked: &HashSet<i64>,
     kind: Notice,
-    text: String,
+    text: Markup,
     tz: Tz,
 ) -> Markup {
     for repo in &mut repos {
@@ -227,7 +221,7 @@ pub async fn settings_save(
         .await?;
     Ok(repos_picker(
         &repos,
-        Some((Notice::Success, "Saved".to_owned())),
+        Some((Notice::Success, html! { "Saved" })),
         state.cfg.timezone,
     ))
 }

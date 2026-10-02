@@ -22,7 +22,7 @@ use crate::db::queries;
 use crate::errors::{AppError, GhError};
 use crate::gh_client::{GhClient, GhStar};
 use crate::ratelimit::repo_backoff;
-use crate::state::{AppState, SyncStatus, lock_recover};
+use crate::state::{AppState, CycleAbort, SyncStatus, lock_recover};
 use crate::types::{AssetSnapshot, PopularDay, RepoRow, StatSnapshot, TrafficKind};
 
 /// Trailing window recomputed for referrer/path deltas each cycle.
@@ -36,8 +36,14 @@ const STAR_PAGE_CAP: u32 = 400;
 pub struct CycleReport {
     pub repos_ok: u32,
     pub repos_failed: u32,
-    /// Set when the cycle stopped early — always a rate limit.
-    pub aborted: Option<String>,
+    /// Tracked repos passed over because they were in backoff.
+    pub repos_skipped: u32,
+    /// How many repos were tracked when the cycle read its list.
+    pub repos_tracked: u32,
+    /// Set when the cycle stopped early: a rate limit, or a repo list it could
+    /// not read. A kind rather than a message, so the sync panel can render the
+    /// deadline in the display zone and never sees a database error's text.
+    pub aborted: Option<CycleAbort>,
 }
 
 /// Run a cycle unless one is already in flight, in which case this returns
@@ -80,7 +86,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
 
     if let Some(until) = state.gate.blocked_until() {
         warn!(%until, "cycle skipped: globally rate limited");
-        report.aborted = Some(format!("rate limited until {until}"));
+        report.aborted = Some(CycleAbort::RateLimited { until });
         finish(&state, &report, failed);
         return report;
     }
@@ -90,16 +96,19 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
     let tracked = match state.db.call(|c| queries::tracked_repos(c)).await {
         Ok(repos) => repos,
         Err(e) => {
+            // The detail stays here, in the log; the panel gets the category.
             warn!(error = %e, "cycle aborted: repo list unavailable");
-            report.aborted = Some(format!("db: {e}"));
+            report.aborted = Some(CycleAbort::Failed);
             finish(&state, &report, failed);
             return report;
         }
     };
+    report.repos_tracked = u32::try_from(tracked.len()).unwrap_or(u32::MAX);
 
     for repo in tracked {
         if in_backoff(&repo) {
             info!(repo = %repo.name, "skipped: in backoff");
+            report.repos_skipped += 1;
             continue;
         }
         // Read per repo, not once per cycle: a long cycle can cross midnight,
@@ -135,7 +144,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
                 {
                     state.gate.block_until(until);
                     warn!(repo = %repo.name, %until, error = %e, "rate limited: aborting cycle");
-                    report.aborted = Some(format!("rate limited until {until}"));
+                    report.aborted = Some(CycleAbort::RateLimited { until });
                     break;
                 }
                 // `last_error` is rendered in a tooltip and in the sync
@@ -168,7 +177,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
             Some(until) => {
                 state.gate.block_until(until);
                 warn!(%until, error = %e, "rate limited during star backfill");
-                report.aborted = Some(format!("rate limited until {until}"));
+                report.aborted = Some(CycleAbort::RateLimited { until });
             }
             None => warn!(error = %e, "star backfill failed"),
         }
@@ -177,6 +186,7 @@ pub async fn run_cycle(state: Arc<AppState>) -> CycleReport {
     info!(
         ok = report.repos_ok,
         failed = report.repos_failed,
+        skipped = report.repos_skipped,
         aborted = report.aborted.is_some(),
         "cycle finished"
     );
@@ -596,6 +606,9 @@ fn finish(state: &AppState, report: &CycleReport, failed: Vec<(String, String)>)
             finished: Utc::now(),
             ok: report.repos_ok,
             failed,
+            skipped: report.repos_skipped,
+            tracked: report.repos_tracked,
+            aborted: report.aborted,
         },
     );
 }

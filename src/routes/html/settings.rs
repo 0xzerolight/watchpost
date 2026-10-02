@@ -8,13 +8,13 @@ use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use super::ui::{
-    Notice, empty_state, error_glyph, field, future_timestamp, notice, spinner, table_wrap,
-    timestamp,
+    Notice, announced, empty_state, error_glyph, field, future_timestamp, notice, plural, spinner,
+    table_wrap, timestamp,
 };
 use crate::config::TokenSource;
 use crate::landing::{LANDING_PAGES, LandingPage};
 use crate::schedule::{Resolved, Schedule, ScheduleSource};
-use crate::state::{GhSlot, SyncStatus};
+use crate::state::{CycleAbort, GhSlot, SyncStatus};
 use crate::types::RepoRow;
 
 /// The GitHub token section.
@@ -281,7 +281,7 @@ fn schedule_form(view: &ScheduleView) -> Markup {
 /// the picker and would otherwise throw away boxes the user has ticked but not
 /// saved. `repo.tracked` is therefore what the caller wants *rendered*, which
 /// on a refresh is the submitted form rather than the db.
-pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>, tz: Tz) -> Markup {
+pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, Markup)>, tz: Tz) -> Markup {
     html! {
         // The save is the form's own request: htmx triggers a form on `submit`,
         // which is what Enter in a field raises. The same attributes on the
@@ -295,7 +295,7 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>, tz: Tz) ->
             method="post"
             action="/settings/repos" {
             @if let Some((kind, text)) = msg {
-                (notice(kind, html! { (text) }))
+                (notice(kind, text))
             }
             // Each action disables the button that started it and lights its
             // own spinner. Both replace the picker they live in, so a second
@@ -368,24 +368,34 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>, tz: Tz) ->
 /// would be fine but one rendered per state can also disable itself while a
 /// cycle runs. Only the `Running` variant carries `hx-trigger`, so polling
 /// stops by construction when the cycle finishes — nothing has to cancel it.
+///
+/// The div takes parked focus (`tabindex="-1"`) in every state. Sync now
+/// disables itself while a cycle runs, so a keyboard press used to drop focus
+/// to `<body>`. The shared focus fallback lands it here instead, and htmx keeps
+/// it across each poll because the id survives the swap.
 pub fn sync_status_fragment(status: &SyncStatus, tz: Tz) -> Markup {
     html! {
         @match status {
             SyncStatus::Running { .. } => {
-                div id="sync-status" hx-get="/sync/status" hx-trigger="every 2s"
+                div id="sync-status" tabindex="-1" hx-get="/sync/status" hx-trigger="every 2s"
                     hx-swap="outerHTML" {
                     div class="wp-row" {
-                        progress class="wp-progress" {}
-                        span { "Syncing…" }
+                        progress class="wp-progress" aria-label="Sync in progress" {}
+                        // Marked for the shell's live region (FND-07b); the
+                        // polls repeat it, and the hook speaks it once.
+                        span data-announce { "Syncing…" }
                     }
                     (sync_button(true))
                 }
             }
-            SyncStatus::Done { finished, ok, failed } => {
-                div id="sync-status" {
-                    (notice(Notice::Success, html! {
-                        "Synced " (ok) " repos · " (timestamp(Some(&finished.to_rfc3339()), tz))
-                    }))
+            SyncStatus::Done { finished, ok, failed, skipped, tracked, aborted } => {
+                div id="sync-status" tabindex="-1" {
+                    (done_headline(*finished, *ok, failed.len(), *skipped, *tracked, *aborted, tz))
+                    @if *skipped > 0 {
+                        p class="wp-muted wp-small" {
+                            (skipped) " skipped after recent errors; retried after their backoff."
+                        }
+                    }
                     @if !failed.is_empty() {
                         // One line per failure, inside the alert rather than
                         // beside it: `notice` renders a paragraph, and a `<ul>`
@@ -403,12 +413,70 @@ pub fn sync_status_fragment(status: &SyncStatus, tz: Tz) -> Markup {
                 }
             }
             SyncStatus::Idle => {
-                div id="sync-status" {
-                    (notice(Notice::Info, html! { "No sync this session yet." }))
+                div id="sync-status" tabindex="-1" {
+                    (announced(Notice::Info, html! { "No sync this session yet." }))
                     (sync_button(false))
                 }
             }
         }
+    }
+}
+
+/// The finished cycle's one-line outcome.
+///
+/// A green "Synced 0 repos" used to cover four different cycles: one with
+/// nothing tracked, one where every tracked repo was in backoff, one the rate
+/// limit stopped, and one that could not read its repo list. Each now says
+/// which it was, and only a cycle that synced something without being stopped
+/// is a success. A rate limit that lands during the star backfill, after every
+/// repo synced, reads "sync stopped after 6 of 6", which is what happened.
+///
+/// The line is [`announced`], not a [`notice`]: it arrives in a node swapped
+/// every two seconds while a cycle runs, and a role on a freshly inserted node
+/// is heard by some screenreaders and not others. The shell's one live region
+/// speaks it instead, once per change.
+fn done_headline(
+    finished: DateTime<Utc>,
+    ok: u32,
+    failed: usize,
+    skipped: u32,
+    tracked: u32,
+    aborted: Option<CycleAbort>,
+    tz: Tz,
+) -> Markup {
+    let when = timestamp(Some(&finished.to_rfc3339()), tz);
+    let attempted = ok as usize + failed;
+    match aborted {
+        Some(CycleAbort::RateLimited { until }) => announced(
+            Notice::Info,
+            html! {
+                "GitHub rate limit reached — "
+                @if attempted == 0 {
+                    "nothing synced"
+                } @else {
+                    "sync stopped after " (attempted) " of " (tracked)
+                }
+                ". Resumes " (future_timestamp(Some(until), tz)) "."
+            },
+        ),
+        Some(CycleAbort::Failed) => announced(
+            Notice::Error,
+            html! {
+                "Sync stopped: the repository list could not be read. The details are in the log."
+            },
+        ),
+        None if attempted == 0 && skipped == 0 => announced(
+            Notice::Info,
+            html! { "Nothing to sync yet — pick repositories below." },
+        ),
+        None if ok == 0 => announced(Notice::Info, html! { "Nothing synced · " (when) }),
+        None => announced(
+            Notice::Success,
+            html! {
+                "Synced " (ok) " " (plural(i64::from(ok), "repository", "repositories"))
+                " · " (when)
+            },
+        ),
     }
 }
 
@@ -786,6 +854,36 @@ mod tests {
         );
     }
 
+    fn done_status(
+        ok: u32,
+        failed: usize,
+        skipped: u32,
+        tracked: u32,
+        aborted: Option<CycleAbort>,
+    ) -> SyncStatus {
+        SyncStatus::Done {
+            finished: Utc::now(),
+            ok,
+            failed: (0..failed)
+                .map(|i| (format!("octo/f{i}"), "github 502".to_owned()))
+                .collect(),
+            skipped,
+            tracked,
+            aborted,
+        }
+    }
+
+    fn done(
+        ok: u32,
+        failed: usize,
+        skipped: u32,
+        tracked: u32,
+        aborted: Option<CycleAbort>,
+    ) -> String {
+        sync_status_fragment(&done_status(ok, failed, skipped, tracked, aborted), Tz::UTC)
+            .into_string()
+    }
+
     #[test]
     fn running_polls_and_disables_the_button() {
         let out = sync_status_fragment(
@@ -799,28 +897,44 @@ mod tests {
         assert!(out.contains(r#"hx-trigger="every 2s""#), "{out}");
         assert!(out.contains(r#"hx-get="/sync/status""#), "{out}");
         assert!(out.contains(r#"id="sync-status""#), "{out}");
-        assert!(out.contains(r#"<progress class="wp-progress">"#), "{out}");
-        assert!(out.contains("Syncing…"), "{out}");
+        // A bare progress bar has no accessible name.
+        assert!(
+            out.contains(r#"<progress class="wp-progress" aria-label="Sync in progress">"#),
+            "{out}"
+        );
+        assert!(out.contains("<span data-announce>Syncing…</span>"), "{out}");
         assert!(out.contains(r#"id="sync-now" "#), "{out}");
         // The bare attribute, not `hx-disabled-elt`: the button a running cycle
         // renders is already dead on arrival.
         assert!(out.contains(r#"hx-disabled-elt="this" disabled>"#), "{out}");
     }
 
+    /// Sync now disables itself while a cycle runs, so a keyboard press lost
+    /// focus to `<body>`. The panel takes it instead, in every state, and the
+    /// id survives each poll so htmx keeps it there.
+    #[test]
+    fn every_state_of_the_panel_can_hold_parked_focus() {
+        for status in [
+            SyncStatus::Idle,
+            SyncStatus::Running {
+                started: Utc::now(),
+            },
+            done_status(1, 0, 0, 1, None),
+        ] {
+            let out = sync_status_fragment(&status, Tz::UTC).into_string();
+            assert!(
+                out.starts_with(r#"<div id="sync-status" tabindex="-1""#),
+                "{out}"
+            );
+        }
+    }
+
     #[test]
     fn done_reports_the_count_as_a_success_notice() {
-        let out = sync_status_fragment(
-            &SyncStatus::Done {
-                finished: Utc::now(),
-                ok: 3,
-                failed: vec![],
-            },
-            Tz::UTC,
-        )
-        .into_string();
+        let out = done(3, 0, 0, 3, None);
 
         assert!(out.contains("wp-notice-success"), "{out}");
-        assert!(out.contains("Synced 3 repos · "), "{out}");
+        assert!(out.contains("Synced 3 repositories · "), "{out}");
         assert!(out.contains("<time datetime="), "{out}");
         // A finished cycle must not keep polling, and its button is pressable
         // again — only htmx's in-flight disabling remains.
@@ -829,31 +943,103 @@ mod tests {
     }
 
     #[test]
+    fn one_repository_is_singular() {
+        let out = done(1, 0, 0, 1, None);
+        assert!(out.contains("Synced 1 repository · "), "{out}");
+    }
+
+    /// Nothing tracked used to read as a green "Synced 0 repos".
+    #[test]
+    fn a_cycle_with_nothing_tracked_is_not_a_success() {
+        let out = done(0, 0, 0, 0, None);
+        assert!(out.contains("wp-notice-info"), "{out}");
+        assert!(
+            out.contains("Nothing to sync yet — pick repositories below."),
+            "{out}"
+        );
+        assert!(!out.contains("Synced"), "{out}");
+    }
+
+    /// Every tracked repo in backoff used to read as a green "Synced 0 repos".
+    #[test]
+    fn skipped_repos_are_named_beside_the_outcome() {
+        let none = done(0, 0, 2, 2, None);
+        assert!(none.contains("wp-notice-info"), "{none}");
+        assert!(none.contains("Nothing synced · "), "{none}");
+        assert!(
+            none.contains("2 skipped after recent errors; retried after their backoff."),
+            "{none}"
+        );
+        assert!(!none.contains("wp-notice-success"), "{none}");
+
+        let some = done(4, 0, 2, 6, None);
+        assert!(some.contains("Synced 4 repositories · "), "{some}");
+        assert!(some.contains("2 skipped after recent errors"), "{some}");
+    }
+
+    #[test]
+    fn a_rate_limit_says_how_far_the_cycle_got_and_when_it_resumes() {
+        let until = Utc::now() + chrono::Duration::minutes(38) + chrono::Duration::seconds(30);
+        let out = done(2, 0, 0, 6, Some(CycleAbort::RateLimited { until }));
+        assert!(out.contains("wp-notice-info"), "{out}");
+        assert!(
+            out.contains("GitHub rate limit reached — sync stopped after 2 of 6. Resumes <time"),
+            "{out}"
+        );
+        assert!(out.contains("in 38m</time>."), "{out}");
+        assert!(!out.contains("Synced"), "{out}");
+
+        let early = done(0, 0, 0, 0, Some(CycleAbort::RateLimited { until }));
+        assert!(
+            early.contains("GitHub rate limit reached — nothing synced. Resumes <time"),
+            "{early}"
+        );
+    }
+
+    /// `Failed` carries no detail, so the panel can only print the category.
+    #[test]
+    fn a_cycle_that_could_not_read_its_list_shows_a_fixed_category() {
+        let out = done(0, 0, 0, 0, Some(CycleAbort::Failed));
+        assert!(out.contains("wp-notice-error"), "{out}");
+        assert!(
+            out.contains(
+                "Sync stopped: the repository list could not be read. The details are in the log."
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn done_with_failures_names_them_inside_the_alert() {
-        let out = sync_status_fragment(
-            &SyncStatus::Done {
-                finished: Utc::now(),
-                ok: 1,
-                failed: vec![("octo/x".into(), "github 502".into())],
-            },
-            Tz::UTC,
-        )
-        .into_string();
+        let out = done(1, 1, 0, 2, None);
 
         assert!(out.contains("wp-notice-error"), "{out}");
         assert!(out.contains(r#"role="alert""#), "{out}");
-        assert!(out.contains("octo/x: github 502"), "{out}");
+        assert!(out.contains("octo/f0: github 502"), "{out}");
         // A list element would be closed out of the paragraph by the parser,
         // taking the failures out of the alert with it.
         assert!(!out.contains("<ul"), "{out}");
     }
 
+    /// The panel's own sentence has no live role: the shell's `#wp-live` is
+    /// the one announcer, and a role here would read the outcome twice on the
+    /// screenreaders that do announce a freshly inserted status.
     #[test]
-    fn idle_says_so_politely() {
+    fn the_outcome_is_marked_for_the_live_region_and_carries_no_role() {
+        let out = done(3, 0, 0, 3, None);
+        assert!(
+            out.contains(r#"<p class="wp-notice wp-notice-success" data-announce>Synced 3"#),
+            "{out}"
+        );
+        assert!(!out.contains(r#"role="status""#), "{out}");
+    }
+
+    #[test]
+    fn idle_says_no_sync_has_run() {
         let out = sync_status_fragment(&SyncStatus::Idle, Tz::UTC).into_string();
 
         assert!(out.contains("wp-notice-info"), "{out}");
-        assert!(out.contains(r#"role="status""#), "{out}");
+        assert!(out.contains("data-announce"), "{out}");
         assert!(out.contains("No sync this session yet."), "{out}");
         assert!(!out.contains("hx-trigger"), "{out}");
     }

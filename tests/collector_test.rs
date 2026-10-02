@@ -18,7 +18,7 @@ use watchpost::collector::{CycleReport, backfill_stars_with_budget, run_cycle, t
 use watchpost::config::{Config, TokenSource};
 use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
-use watchpost::state::{AppState, SyncStatus};
+use watchpost::state::{AppState, CycleAbort, SyncStatus};
 use watchpost::types::GhRepo;
 
 const REPO_A: &str = "octo/aaa";
@@ -871,6 +871,128 @@ async fn gate_blocked_skips_cycle() {
     assert_eq!(report.repos_ok, 0);
     assert_eq!(report.repos_failed, 0);
     server.verify().await;
+}
+
+/// The sync panel reads the cycle's outcome from `SyncStatus`, so a rate limit
+/// has to arrive there as a kind with its deadline, not as a sentence, and with
+/// how far the cycle got before it stopped.
+#[tokio::test]
+async fn a_rate_limited_cycle_hands_the_panel_its_deadline_and_progress() {
+    let server = MockServer::start().await;
+    mount_discovery(
+        &server,
+        vec![repo_json(ID_A, REPO_A), repo_json(ID_B, REPO_B)],
+    )
+    .await;
+    mount_full_repo(&server, ID_A, REPO_A).await;
+    // A primary limit on B's first request: quota exhausted, reset at a fixed
+    // instant, so the deadline the panel gets is known exactly.
+    let reset = Utc::now().timestamp() + 3600;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{REPO_B}")))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .insert_header("x-ratelimit-reset", reset.to_string().as_str()),
+        )
+        .mount(&server)
+        .await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    seed_tracked(&state, ID_B, REPO_B).await;
+
+    let report = run_cycle(state.clone()).await;
+
+    let until = chrono::DateTime::from_timestamp(reset, 0).unwrap();
+    assert_eq!(report.aborted, Some(CycleAbort::RateLimited { until }));
+    let status = watchpost::state::lock_recover(&state.sync).clone();
+    match status {
+        SyncStatus::Done {
+            ok,
+            failed,
+            skipped,
+            tracked,
+            aborted,
+            ..
+        } => {
+            assert_eq!((ok, failed.len(), skipped, tracked), (1, 0, 0, 2));
+            assert_eq!(aborted, Some(CycleAbort::RateLimited { until }));
+        }
+        other => panic!("expected Done, got {other:?}"),
+    }
+}
+
+/// A repo in backoff is passed over quietly. Counting it is what lets the panel
+/// say so, instead of reporting a cycle that synced nothing as a success.
+#[tokio::test]
+async fn a_repo_in_backoff_is_counted_as_skipped_not_synced() {
+    let server = MockServer::start().await;
+    mount_discovery(
+        &server,
+        vec![repo_json(ID_A, REPO_A), repo_json(ID_B, REPO_B)],
+    )
+    .await;
+    mount_full_repo(&server, ID_B, REPO_B).await;
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+    seed_tracked(&state, ID_B, REPO_B).await;
+    let until = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    state
+        .db
+        .call(move |c| queries::record_sync_err(c, ID_A, "Could not reach GitHub.", Some(&until)))
+        .await
+        .unwrap();
+
+    let report = run_cycle(state.clone()).await;
+
+    assert_eq!(
+        (report.repos_ok, report.repos_skipped, report.repos_tracked),
+        (1, 1, 2)
+    );
+    let status = watchpost::state::lock_recover(&state.sync).clone();
+    match status {
+        SyncStatus::Done {
+            ok,
+            failed,
+            skipped,
+            tracked,
+            aborted,
+            ..
+        } => {
+            assert_eq!((ok, failed.len(), skipped, tracked), (1, 0, 1, 2));
+            assert_eq!(aborted, None);
+        }
+        other => panic!("expected Done, got {other:?}"),
+    }
+}
+
+/// A repo list the cycle cannot read stops it with a category. The database
+/// error's own words go to the log, never into the status a page renders.
+#[tokio::test]
+async fn an_unreadable_repo_list_stops_the_cycle_without_its_detail() {
+    let server = MockServer::start().await;
+    let state = state_for(&server);
+    state
+        .db
+        .call(|c| c.execute_batch("DROP TABLE repos").map_err(Into::into))
+        .await
+        .unwrap();
+
+    let report = run_cycle(state.clone()).await;
+
+    assert_eq!(report.aborted, Some(CycleAbort::Failed));
+    let status = watchpost::state::lock_recover(&state.sync).clone();
+    assert!(
+        matches!(
+            status,
+            SyncStatus::Done {
+                aborted: Some(CycleAbort::Failed),
+                ..
+            }
+        ),
+        "{status:?}"
+    );
 }
 
 #[tokio::test]
