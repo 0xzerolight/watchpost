@@ -23,9 +23,12 @@ use crate::db::queries;
 use crate::errors::AppError;
 use crate::landing::{self, LandingPage};
 use crate::routes::html::settings::{
-    ScheduleView, landing_panel, repos_picker, schedule_panel, sync_status_fragment, token_panel,
+    ScheduleView, landing_panel, repos_picker, save_notice, schedule_panel, sync_status_fragment,
+    token_panel,
 };
-use crate::routes::html::{NavItem, Notice, base, get_hx_target, page_header};
+use crate::routes::html::{
+    NavItem, Notice, base, future_timestamp, get_hx_target, page_header, plural,
+};
 use crate::routes::setup;
 use crate::schedule::{self, ScheduleSource};
 use crate::state::{AppState, SyncStatus, lock_recover};
@@ -65,24 +68,31 @@ pub async fn settings_page(
         "Settings",
         NavItem::Settings,
         &csrf,
+        // One reading column: Pico sized every control and notice to the
+        // container, so a three-option select ran 1200px wide and the page
+        // read as a stack of full-width bars.
         html! {
-            (page_header("Settings", None, None))
-            section {
-                h2 { "Start page" }
-                (landing_panel(landing::resolve(landing_raw.as_deref()), None))
-            }
-            section {
-                h2 { "Sync" }
-                (schedule_panel(&view, state.cfg.timezone))
-                (sync_status_fragment(&status, state.cfg.timezone))
-            }
-            section {
-                h2 { "Repositories" }
-                (picker)
-            }
-            section {
-                h2 { "GitHub token" }
-                (token_panel(&state.gh_slot(), None))
+            div class="wp-narrow" {
+                (page_header("Settings", None, None))
+                section {
+                    h2 { "Start page" }
+                    (landing_panel(landing::resolve(landing_raw.as_deref()), None))
+                }
+                section {
+                    h2 { "Sync" }
+                    (schedule_panel(&view, state.cfg.timezone))
+                    (sync_status_fragment(&status, state.cfg.timezone))
+                }
+                // `wp-repos` is the anchor the empty dashboards and the setup
+                // redirect send a first-run reader to.
+                section id="wp-repos" {
+                    h2 { "Repositories" }
+                    (picker)
+                }
+                section {
+                    h2 { "GitHub token" }
+                    (token_panel(&state.gh_slot(), None))
+                }
             }
         },
     ))
@@ -105,18 +115,18 @@ pub async fn settings_discover(
     body: String,
 ) -> Result<Markup, AppError> {
     let checked = checked_ids(&body);
+    let tz = state.cfg.timezone;
 
     // A closed gate means the request would fail anyway, so don't spend it.
+    // The deadline goes through the same zone-aware countdown as the schedule,
+    // not a raw UTC instant with milliseconds.
     if let Some(until) = state.gate.blocked_until() {
         let repos = state.db.call(|c| queries::known_repos(c)).await?;
-        let text = format!("Rate limited until {until}; not contacting GitHub");
-        return Ok(picker_as_submitted(
-            repos,
-            &checked,
-            Notice::Info,
-            text,
-            state.cfg.timezone,
-        ));
+        let text = html! {
+            "GitHub rate limit reached, so watchpost is not contacting GitHub. It resets "
+            (future_timestamp(Some(until), tz)) "."
+        };
+        return Ok(picker_as_submitted(repos, &checked, Notice::Info, text, tz));
     }
 
     // Nothing to discover with yet. The picker still renders, so the notice
@@ -127,8 +137,8 @@ pub async fn settings_discover(
             repos,
             &checked,
             Notice::Info,
-            "No GitHub token yet — add one below.".to_owned(),
-            state.cfg.timezone,
+            html! { "No GitHub token yet — add one below." },
+            tz,
         ));
     };
 
@@ -146,7 +156,10 @@ pub async fn settings_discover(
                 .await?;
             (
                 Notice::Success,
-                format!("{count} repos loaded from GitHub · selections kept"),
+                html! {
+                    (count) " " (plural(count as i64, "repository", "repositories"))
+                    " loaded from GitHub · selections kept."
+                },
             )
         }
         Err(e) => {
@@ -160,18 +173,12 @@ pub async fn settings_discover(
             warn!(error = %e, "settings discovery failed");
             (
                 Notice::Error,
-                format!("Could not load repos from GitHub: {}", e.user_message()),
+                html! { "Could not load repositories from GitHub: " (e.user_message()) },
             )
         }
     };
     let repos = state.db.call(|c| queries::known_repos(c)).await?;
-    Ok(picker_as_submitted(
-        repos,
-        &checked,
-        kind,
-        text,
-        state.cfg.timezone,
-    ))
+    Ok(picker_as_submitted(repos, &checked, kind, text, tz))
 }
 
 /// Render the picker with `tracked` taken from the submitted form rather than
@@ -182,7 +189,7 @@ fn picker_as_submitted(
     mut repos: Vec<RepoRow>,
     checked: &HashSet<i64>,
     kind: Notice,
-    text: String,
+    text: Markup,
     tz: Tz,
 ) -> Markup {
     for repo in &mut repos {
@@ -204,32 +211,39 @@ fn checked_ids(body: &str) -> HashSet<i64> {
 /// POST /settings/repos — apply the checkbox state.
 ///
 /// Unchecked boxes send nothing at all, so "absent" means untrack — hence the
-/// diff against the db rather than against the form.
+/// diff against the db rather than against the form. The notice's counts come
+/// out of the same closure that applies the change, so it describes the write
+/// that happened rather than a second read; the next tick is scheduler state,
+/// not a row, so reading it adds no database call.
 pub async fn settings_save(
     State(state): State<Arc<AppState>>,
     body: String,
 ) -> Result<Markup, AppError> {
     let checked = checked_ids(&body);
 
-    let repos = state
+    let (repos, changed, added) = state
         .db
         .call(move |c| {
             let mut known = queries::known_repos(c)?;
+            let (mut changed, mut added) = (0usize, 0usize);
             for repo in &mut known {
                 let tracked = checked.contains(&repo.id);
                 if tracked != repo.tracked {
                     queries::set_tracked(c, repo.id, tracked)?;
                     repo.tracked = tracked;
+                    changed += 1;
+                    if tracked {
+                        added += 1;
+                    }
                 }
             }
-            Ok(known)
+            Ok((known, changed, added))
         })
         .await?;
-    Ok(repos_picker(
-        &repos,
-        Some((Notice::Success, "Saved".to_owned())),
-        state.cfg.timezone,
-    ))
+    let tracking = repos.iter().filter(|repo| repo.tracked).count();
+    let tz = state.cfg.timezone;
+    let text = save_notice(changed, added, tracking, state.next_sync().await, tz);
+    Ok(repos_picker(&repos, Some((Notice::Success, text)), tz))
 }
 
 /// POST /settings/token — save or rotate the token.

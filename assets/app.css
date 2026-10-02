@@ -1911,6 +1911,103 @@ main h2 {
   --pico-color: var(--pico-contrast-inverse);
 }
 
+/*
+ * Settings and setup pages.
+ *
+ * Every rule that only these two pages use lives in this block, so the pages'
+ * look has one place to change.
+ */
+
+/*
+ * The repo picker. The checkbox and Last synced columns shrink to their
+ * content (`width: 1%` with `nowrap`), and the name column takes the rest and
+ * wraps anywhere, so a long name breaks inside its cell instead of pushing
+ * Last synced past a phone's edge. `anywhere` rather than `break-word`,
+ * because only `anywhere` lowers a cell's min-content width, which is what a
+ * table sizes its columns by.
+ */
+.wp-picker :is(th, td):first-child,
+.wp-picker :is(th, td):nth-child(3) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.wp-picker :is(th, td):nth-child(2) {
+  overflow-wrap: anywhere;
+}
+
+/* Pico spaces a checkbox for a label beside it; here the cell pads it. */
+.wp-picker input[type="checkbox"] {
+  margin: 0;
+}
+
+/*
+ * Pico makes a label a block with a bottom margin, which put the error glyph
+ * and the fork/archived marks on a line of their own under the name and added
+ * that margin to every row. Inline, they follow the name.
+ */
+.wp-picker label {
+  display: inline;
+  margin: 0;
+}
+
+/* At phone width Pico's 1rem cell inset alone is a quarter of the table. */
+@media (max-width: 40rem) {
+  .wp-picker :is(th, td) {
+    padding-inline: var(--wp-space-2);
+  }
+}
+
+/*
+ * A muted mark after a repo name ("fork", "archived"): what kind of repo this
+ * is, set apart from the name without competing with it.
+ */
+.wp-tag {
+  display: inline-block;
+  padding: 0 var(--wp-space-1);
+  border: 1px solid var(--wp-border);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  color: var(--pico-muted-color);
+  font-size: var(--wp-text-sm);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* The untracked repos' disclosure: a quiet sub-heading that opens. */
+.wp-picker-more {
+  margin-block: var(--wp-space-4);
+}
+
+.wp-picker-more > summary {
+  color: var(--pico-muted-color);
+}
+
+/*
+ * One reading column for the settings and setup pages. Pico sizes every form
+ * control to its container, so at 1440px a three-option select ran 1200px
+ * wide, and the notices, the picker and the fields read as a stack of
+ * full-width bars. 48rem keeps a label, its control and its Save button within
+ * one glance; a phone is narrower than that, so nothing changes there.
+ */
+.wp-narrow {
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+/*
+ * The shared section rhythm is set on `main > section`. Inside the column the
+ * sections sit one level down, so the column repeats it.
+ */
+.wp-narrow > section {
+  margin-block-end: var(--wp-section-gap);
+}
+
+/* A start page or an interval needs about twenty characters, not a column. */
+.wp-narrow select,
+.wp-narrow input:not([type="checkbox"], [type="radio"]) {
+  max-width: 22rem;
+}
+
 /* Layout utilities — enough for a row of controls, not a grid system. */
 .wp-row {
   display: flex;

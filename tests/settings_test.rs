@@ -310,6 +310,13 @@ async fn settings_page_lists_known_repos() {
         body.contains(r#"name="tracked" value="2""#) && !body.contains(r#"value="2" checked"#),
         "body was {body}"
     );
+    // The picker's section is the anchor the empty states and the setup
+    // redirect point at.
+    assert!(
+        body.contains(r#"<section id="wp-repos"><h2>Repositories</h2><form id="repos-picker""#),
+        "body was {body}"
+    );
+
     // Viewing settings must never reach GitHub.
     assert_eq!(h.server.received_requests().await.unwrap().len(), 0);
 }
@@ -366,11 +373,32 @@ async fn discover_upserts_from_github() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with(r#"<form id="repos-picker""#), "{body}");
-    assert!(body.contains("2 repos loaded from GitHub"), "{body}");
+    assert!(
+        body.contains("2 repositories loaded from GitHub · selections kept."),
+        "{body}"
+    );
     assert!(body.contains(REPO_A) && body.contains(REPO_B), "{body}");
     assert_eq!(h.known_names().await, vec![REPO_A, REPO_B]);
     // Discovery must not silently start tracking anything.
     assert!(h.tracked_ids().await.is_empty());
+}
+
+#[tokio::test]
+async fn one_discovered_repository_is_singular() {
+    let h = harness().await;
+    mount_json(
+        &h.server,
+        "/user/repos".into(),
+        json!([repo_json(ID_A, REPO_A)]),
+    )
+    .await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(h.post_form("/settings/discover", "", &token).await).await;
+    assert!(
+        body.contains("1 repository loaded from GitHub · selections kept."),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -390,7 +418,10 @@ async fn discover_error_shows_notice_not_500() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(body.contains("Could not load repos from GitHub"), "{body}");
+    assert!(
+        body.contains("Could not load repositories from GitHub: "),
+        "{body}"
+    );
     // The known list still renders, so the picker is not wiped by a failure.
     assert!(body.contains(REPO_A), "body was {body}");
 }
@@ -447,8 +478,18 @@ async fn discover_with_a_closed_gate_does_not_call_github() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(body.contains("Rate limited until"), "body was {body}");
-    assert!(body.contains("not contacting GitHub"), "body was {body}");
+    assert!(
+        body.contains("GitHub rate limit reached, so watchpost is not contacting GitHub."),
+        "body was {body}"
+    );
+    // The deadline is a `<time>` counted down in the display zone, not a raw
+    // UTC instant with milliseconds.
+    assert!(
+        body.contains("It resets <time datetime=\""),
+        "body was {body}"
+    );
+    assert!(body.contains("in 59m"), "body was {body}");
+    assert!(!body.contains("Rate limited until"), "body was {body}");
     // The picker still renders what is known, and nothing was requested.
     assert!(body.contains(REPO_A), "body was {body}");
     assert_eq!(h.hits("/user/repos").await, 0);
@@ -533,6 +574,82 @@ async fn save_with_no_boxes_checked_untracks_everything() {
     assert!(h.tracked_ids().await.is_empty());
 }
 
+/// A bare "Saved" said nothing about what was saved, or that a newly tracked
+/// repo stays empty until a cycle collects it.
+#[tokio::test]
+async fn saving_says_what_is_tracked_and_when_new_ones_fill_in() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, false).await;
+    h.seed(ID_B, REPO_B, false).await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/repos", &format!("tracked={ID_A}"), &token)
+            .await,
+    )
+    .await;
+    assert!(body.contains("Saved — tracking 1 repository."), "{body}");
+    // The confirmation lands in the picker's own swap, so it goes to the
+    // shell's live region through `data-announce` rather than a role of its
+    // own (FND-07b).
+    assert!(
+        body.contains(r#"<p class="wp-notice wp-notice-success" data-announce>Saved"#),
+        "{body}"
+    );
+    assert!(!body.contains(r#"role="status""#), "{body}");
+    // The harness runs no scheduler, so the next sync reads as not scheduled.
+    assert!(
+        body.contains(
+            "New ones fill in on the next sync (not scheduled), or press Sync now above."
+        ),
+        "{body}"
+    );
+
+    let again = body_string(
+        h.post_form("/settings/repos", &format!("tracked={ID_A}"), &token)
+            .await,
+    )
+    .await;
+    assert!(again.contains("Saved — no changes."), "{again}");
+    assert!(!again.contains("New ones"), "{again}");
+}
+
+#[tokio::test]
+async fn an_unticked_repo_moves_into_the_not_tracked_group_on_save() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+    h.seed(ID_B, REPO_B, true).await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/repos", &format!("tracked={ID_B}"), &token)
+            .await,
+    )
+    .await;
+
+    let at = |needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing from {body}"))
+    };
+    let b = at(r#"<label for="track-2">"#);
+    let group = at("<summary>Not tracked (1)</summary>");
+    let a = at(r#"<label for="track-1">"#);
+    assert!(b < group && group < a, "{body}");
+    assert!(body.contains("Saved — tracking 1 repository."), "{body}");
+    assert!(!body.contains("New ones"), "{body}");
+}
+
+/// The picker's markup names these classes and the stylesheet is what makes
+/// the table fit a phone; renaming one side alone fails nothing else.
+#[tokio::test]
+async fn the_picker_styles_ship_in_the_stylesheet() {
+    let h = harness().await;
+    let css = body_string(h.get("/assets/app.css").await).await;
+    for needle in [".wp-picker :is(th, td)", ".wp-picker-more", ".wp-tag {"] {
+        assert!(css.contains(needle), "{needle} missing from app.css");
+    }
+}
+
 #[tokio::test]
 async fn csrf_enforced_on_settings_posts() {
     let h = harness().await;
@@ -614,6 +731,9 @@ async fn sync_claim_is_released_when_no_cycle_runs() {
         finished: chrono::Utc::now(),
         ok: 1,
         failed: vec![],
+        skipped: 0,
+        tracked: 1,
+        aborted: None,
     };
     let token = h.csrf_token().await;
 
@@ -665,7 +785,7 @@ async fn sync_status_is_idle_before_any_cycle() {
     let h = harness().await;
     let body = body_string(h.get("/sync/status").await).await;
 
-    assert!(body.contains("No sync this session yet."), "{body}");
+    assert!(body.contains("No sync since watchpost started."), "{body}");
     assert!(body.contains("wp-notice-info"), "{body}");
     assert!(!body.contains("hx-trigger"), "body was {body}");
 }
@@ -677,13 +797,16 @@ async fn done_fragment_has_no_polling_trigger() {
         finished: chrono::Utc::now(),
         ok: 3,
         failed: vec![(REPO_B.to_owned(), "github 502".to_owned())],
+        skipped: 0,
+        tracked: 4,
+        aborted: None,
     };
 
     let resp = h.get("/sync/status").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
 
-    assert!(body.contains("Synced 3 repos"), "body was {body}");
+    assert!(body.contains("Synced 3 repositories · "), "body was {body}");
     // The exact instant survives the move to `<time>`: it is the title, not
     // the visible text.
     assert!(body.contains(r#"<time datetime=""#), "body was {body}");
@@ -696,6 +819,47 @@ async fn done_fragment_has_no_polling_trigger() {
     assert!(!body.contains("hx-trigger"), "body was {body}");
     // The control to start another cycle survives the swap.
     assert!(body.contains(r#"hx-post="/sync""#), "body was {body}");
+}
+
+/// A cycle with nothing tracked used to finish as a green "Synced 0 repos":
+/// a success on the one screen where the reader still has to pick something.
+#[tokio::test]
+async fn a_cycle_with_nothing_tracked_asks_for_a_pick_rather_than_reporting_success() {
+    let h = harness().await;
+    let token = h.csrf_token().await;
+
+    h.post_form("/sync", "", &token).await;
+    let (ok, failed) = h.wait_for_done().await;
+    assert_eq!((ok, failed.len()), (0, 0));
+
+    let body = body_string(h.get("/sync/status").await).await;
+    assert!(
+        body.contains("Nothing to sync yet — pick repositories below."),
+        "{body}"
+    );
+    assert!(body.contains("wp-notice-info"), "{body}");
+    assert!(!body.contains("wp-notice-success"), "{body}");
+}
+
+/// `#sync-status` is replaced on every poll, and a live region only announces
+/// changes to a node that was already there. So the panel marks its sentence
+/// for the shell's one region (`#wp-live`, outside every swap target) and
+/// never carries a region of its own.
+#[tokio::test]
+async fn the_sync_sentence_is_spoken_by_the_shell_region_not_the_panel() {
+    let h = harness().await;
+
+    let page = body_string(h.get("/settings").await).await;
+    assert_eq!(page.matches(r#"id="wp-live""#).count(), 1, "{page}");
+    assert!(
+        page.find(r#"<div id="sync-status""#).unwrap() < page.find(r#"id="wp-live""#).unwrap(),
+        "the region must sit outside the panel, after main: {page}"
+    );
+
+    let fragment = body_string(h.get("/sync/status").await).await;
+    assert!(!fragment.contains("wp-live"), "{fragment}");
+    assert_eq!(fragment.matches("data-announce").count(), 1, "{fragment}");
+    assert!(!fragment.contains(r#"role="status""#), "{fragment}");
 }
 
 // ---------------------------------------------------------------------------
@@ -977,6 +1141,30 @@ async fn the_settings_page_renders_the_schedule_panel() {
     assert!(body.contains(r#"id="schedule-panel""#), "{body}");
     assert!(body.contains(r#"name="interval""#), "{body}");
     assert!(body.contains("Next sync"), "{body}");
+}
+
+/// Three buttons all named "Save" read as "Save, Save, Save" in a
+/// screenreader's button list. Each names what it saves, and the page is one
+/// reading column rather than a stack of full-width bars.
+#[tokio::test]
+async fn every_save_button_names_what_it_saves() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/settings").await).await;
+
+    for name in ["Save start page", "Save interval", "Save selection"] {
+        assert_eq!(
+            body.matches(&format!(">{name}</button>")).count(),
+            1,
+            "{name}: {body}"
+        );
+    }
+    assert!(!body.contains(">Save</button>"), "{body}");
+    assert!(
+        body.contains(r#"<div class="wp-narrow"><header class="wp-page-header">"#),
+        "{body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
