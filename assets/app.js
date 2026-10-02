@@ -1206,6 +1206,16 @@
    *     line so two washes never muddy each other.
    *   - `order` puts the bars behind the uniques line: Chart.js draws the
    *     higher order first.
+   *   - `cssVar` is one accent, `--wp-marker-0`, for every primary series
+   *     whatever it measures: the pressed tile already names the metric. A hue
+   *     per metric made the page change colour on every tile click, borrowed
+   *     the slots the event-kind hash colours markers with (reddit dots and
+   *     the Downloads line were the same red), and spent red and green, which
+   *     mean down and up in the deltas. Markers keep the eight kind slots, in
+   *     their own lane above the plot.
+   *   - `secondary` marks the companion line (uniques beside its count). It
+   *     is muted ink and thinner, so the legend tells the two apart by weight
+   *     and tone rather than by a second hue.
    */
   var CHART_SPECS = [
     {
@@ -1231,7 +1241,7 @@
           source: "views_count",
           label: "Views",
           mode: "sum",
-          cssVar: "--wp-marker-1",
+          cssVar: "--wp-marker-0",
           style: "bar",
           order: 2,
         },
@@ -1241,7 +1251,8 @@
           // than a day, so its label comes from the view.
           labelKey: "uniquesLabel",
           mode: "max",
-          cssVar: "--wp-marker-2",
+          cssVar: "--wp-chart-tick",
+          secondary: true,
           order: 1,
         },
       ],
@@ -1255,7 +1266,7 @@
           source: "clones_count",
           label: "Clones",
           mode: "sum",
-          cssVar: "--wp-marker-5",
+          cssVar: "--wp-marker-0",
           style: "bar",
           order: 2,
         },
@@ -1263,7 +1274,8 @@
           source: "clones_uniques",
           labelKey: "uniquesLabel",
           mode: "max",
-          cssVar: "--wp-marker-6",
+          cssVar: "--wp-chart-tick",
+          secondary: true,
           order: 1,
         },
       ],
@@ -1277,7 +1289,7 @@
           source: "downloads_total",
           label: "Downloads",
           mode: "last",
-          cssVar: "--wp-marker-7",
+          cssVar: "--wp-marker-0",
           area: true,
         },
       ],
@@ -1291,7 +1303,7 @@
           source: "pulls_total",
           label: "Container pulls",
           mode: "last",
-          cssVar: "--wp-marker-4",
+          cssVar: "--wp-marker-0",
           area: true,
         },
       ],
@@ -1369,7 +1381,12 @@
       // measurement.
       spanGaps: false,
     };
-    return Object.assign(dataset, LINE_STYLE);
+    Object.assign(dataset, LINE_STYLE);
+    if (descriptor.secondary) {
+      // After LINE_STYLE, which sets the 2px every primary line wears.
+      dataset.borderWidth = 1.5;
+    }
+    return dataset;
   }
 
   /*

@@ -119,3 +119,22 @@ async fn partly_observed_buckets_say_so_and_fade() {
         ],
     );
 }
+
+/// One accent: every primary series reads `--wp-marker-0` and every companion
+/// line the muted tick ink, thinner. Another marker slot in `CHART_SPECS`
+/// would dress a series in an event kind's colour again (the Downloads line
+/// and the reddit dots were the same red).
+#[tokio::test]
+async fn every_series_wears_the_one_accent() {
+    let js = asset("/assets/app.js").await;
+    assert_eq!(
+        js.matches(r#"cssVar: "--wp-marker-"#).count(),
+        js.matches(r#"cssVar: "--wp-marker-0""#).count(),
+        "a chart series reads a marker slot other than the accent"
+    );
+    assert_has(
+        &js,
+        "app.js",
+        &[r#"cssVar: "--wp-chart-tick""#, "descriptor.secondary"],
+    );
+}
