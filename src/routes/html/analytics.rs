@@ -11,6 +11,7 @@
 use maud::{Markup, html};
 use serde::Serialize;
 
+use crate::routes::html::index::nothing_tracked;
 use crate::routes::html::{
     ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script,
     page_header, period_select, plural, signed, slash_breaks, table_wrap,
@@ -155,10 +156,7 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
             observed.then(|| period_select(view.days)),
         ))
         @if view.leaders.is_empty() {
-            (empty_state(
-                "No repos tracked yet — stats start collecting on the next sync.",
-                Some(("/settings", "Pick repos to watch")),
-            ))
+            (nothing_tracked())
         } @else {
             (portfolio_section(view))
             (leaders_section(view.leaders, view.days))
@@ -620,9 +618,16 @@ mod tests {
     fn nothing_tracked_points_at_the_repo_picker() {
         let payload = payload(vec![]);
         let out = analytics_body(&view(&Totals::default(), &payload, &[])).into_string();
-        assert!(out.contains("No repos tracked yet"), "out was {out}");
         assert!(
-            out.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+            out.contains(
+                "No repositories tracked yet — watchpost only collects the ones you pick."
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(
+                r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+            ),
             "out was {out}"
         );
         assert!(!out.contains("wp-totals"), "out was {out}");

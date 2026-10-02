@@ -14,7 +14,7 @@ use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::landing;
-use crate::routes::html::index::{Card, SPARK_DAYS, index_body};
+use crate::routes::html::index::{Card, SPARK_DAYS, awaiting_first_sync, index_body};
 use crate::routes::html::{NavItem, base};
 use crate::state::AppState;
 use crate::types::Metric;
@@ -52,6 +52,11 @@ pub async fn root_redirect(State(state): State<Arc<AppState>>) -> Response {
 /// [`crate::db::Db::call`]: the per-repo star series is one query each, and
 /// hopping to the blocking pool once per repo would cost more than the queries
 /// do. There is no htmx fragment variant — the page has no swap targets.
+///
+/// The next scheduled tick is in-memory scheduler state, not the database, so
+/// it is read after that call rather than inside it, and only when a card is
+/// still waiting for its first sync: asking takes the scheduler's lock, which
+/// a page of synced cards has no reason to wait on.
 pub async fn index_page(
     State(state): State<Arc<AppState>>,
     csrf: CsrfToken,
@@ -72,10 +77,16 @@ pub async fn index_page(
         })
         .await?;
 
+    let next_sync = if cards.iter().any(|(repo, _)| awaiting_first_sync(repo)) {
+        state.next_sync().await
+    } else {
+        None
+    };
+
     Ok(base(
         "Repositories",
         NavItem::Home,
         &csrf,
-        index_body(&cards, state.cfg.timezone),
+        index_body(&cards, next_sync, state.cfg.timezone),
     ))
 }

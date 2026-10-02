@@ -6,11 +6,12 @@
 //! sparkline binds to: a `canvas.spark` and, as its sibling, a `spark-data`
 //! JSON island holding that repo's dense 30-day star values.
 
+use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use crate::routes::html::{
-    empty_state, error_glyph, json_script_class, page_header, plural, timestamp,
+    empty_state, error_glyph, future_timestamp, json_script_class, page_header, plural, timestamp,
 };
 use crate::types::RepoOverview;
 
@@ -26,29 +27,60 @@ pub type Card = (RepoOverview, Vec<Option<i64>>);
 /// Page header, then one card per tracked repo. What *moved* lives on
 /// /analytics: the feed runs to twenty full-width rows, and above the cards it
 /// pushed the repos this page is named after off the first screen.
-pub fn index_body(cards: &[Card], tz: Tz) -> Markup {
+/// `next_sync` is only read by cards still waiting for their first sync.
+pub fn index_body(cards: &[Card], next_sync: Option<DateTime<Utc>>, tz: Tz) -> Markup {
     html! {
         (page_header("Repositories", None, None))
         @if cards.is_empty() {
-            (empty_state(
-                "No repos tracked yet — stats start collecting on the next sync.",
-                Some(("/settings", "Pick repos to watch")),
-            ))
+            (nothing_tracked())
         } @else {
             div class="wp-cards" {
                 @for (repo, spark) in cards {
-                    (repo_card(repo, spark, tz))
+                    (repo_card(repo, spark, next_sync, tz))
                 }
             }
         }
     }
 }
 
+/// The first-run state both overview pages share: nothing is tracked, and the
+/// one action that changes that.
+///
+/// The old copy promised "stats start collecting on the next sync", which is
+/// false until a repository is ticked: a new user read it as "wait", and
+/// waited an hour for nothing. The link lands on the picker itself
+/// (`#wp-repos`), which sits below the fold on a phone.
+pub fn nothing_tracked() -> Markup {
+    empty_state(
+        "No repositories tracked yet — watchpost only collects the ones you pick.",
+        Some(("/settings#wp-repos", "Pick repositories to track")),
+    )
+}
+
+/// Whether a card has nothing to show yet: never synced, and no stats row.
+///
+/// Both, not `last_synced_at` alone: a repo whose first syncs failed part-way
+/// can hold rows without ever having synced cleanly, and those rows are worth
+/// drawing.
+pub fn awaiting_first_sync(repo: &RepoOverview) -> bool {
+    repo.last_synced_at.is_none() && repo.date.is_none()
+}
+
 /// One repo card. `spark` is the dense star series from
 /// [`crate::db::queries::dense_series`] — already carried forward, so the
 /// client can plot it directly and treat any remaining `null` as a genuine
 /// "not yet observed" gap.
-pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>], tz: Tz) -> Markup {
+///
+/// A repo nothing has been collected for yet gets one line instead of a blank
+/// sparkline over three dashes: when the first numbers arrive, as a countdown
+/// to the next scheduled cycle. With no scheduler running there is nothing to
+/// count down to, and the line just says it is waiting.
+pub fn repo_card(
+    repo: &RepoOverview,
+    spark: &[Option<i64>],
+    next_sync: Option<DateTime<Utc>>,
+    tz: Tz,
+) -> Markup {
     html! {
         article class="wp-card" {
             header class="wp-row" {
@@ -59,18 +91,34 @@ pub fn repo_card(repo: &RepoOverview, spark: &[Option<i64>], tz: Tz) -> Markup {
                     (error_glyph(error))
                 }
             }
-            div class="wp-spark" {
-                canvas class="spark" {}
-                (json_script_class("spark-data", &spark))
-            }
-            ul class="wp-stats" {
-                (stat("Stars", repo.stars))
-                (stat("Forks", repo.forks))
-                (stat("Open issues", repo.issues))
-            }
-            footer class="wp-muted wp-small" {
-                (repo.event_count) " " (plural(repo.event_count, "event", "events"))
-                " · synced " (timestamp(repo.last_synced_at.as_deref(), tz))
+            @if awaiting_first_sync(repo) {
+                p class="wp-card-waiting wp-muted" {
+                    "Waiting for first sync"
+                    @if next_sync.is_some() {
+                        " · " (future_timestamp(next_sync, tz))
+                    }
+                }
+                // Events can be logged before the first sync; a zero count is
+                // not news, and "synced never" would repeat the line above.
+                @if repo.event_count > 0 {
+                    footer class="wp-muted wp-small" {
+                        (repo.event_count) " " (plural(repo.event_count, "event", "events"))
+                    }
+                }
+            } @else {
+                div class="wp-spark" {
+                    canvas class="spark" {}
+                    (json_script_class("spark-data", &spark))
+                }
+                ul class="wp-stats" {
+                    (stat("Stars", repo.stars))
+                    (stat("Forks", repo.forks))
+                    (stat("Open issues", repo.issues))
+                }
+                footer class="wp-muted wp-small" {
+                    (repo.event_count) " " (plural(repo.event_count, "event", "events"))
+                    " · synced " (timestamp(repo.last_synced_at.as_deref(), tz))
+                }
             }
         }
     }
@@ -92,15 +140,24 @@ fn stat(label: &str, value: Option<i64>) -> Markup {
 mod tests {
     use super::*;
 
+    /// A card that has synced, so it draws its sparkline and stats rather
+    /// than the waiting line.
+    fn synced(repo: RepoOverview) -> RepoOverview {
+        RepoOverview {
+            last_synced_at: Some("2026-08-17T09:05:00Z".into()),
+            ..repo
+        }
+    }
+
     #[test]
     fn card_embeds_the_spark_hooks_side_by_side() {
-        let repo = RepoOverview {
+        let repo = synced(RepoOverview {
             repo_id: 7,
             name: "octo/x".into(),
             stars: Some(3),
             ..RepoOverview::default()
-        };
-        let out = repo_card(&repo, &[Some(1), None, Some(2)], Tz::UTC).into_string();
+        });
+        let out = repo_card(&repo, &[Some(1), None, Some(2)], None, Tz::UTC).into_string();
 
         // The canvas and its payload must be siblings, canvas first — that is
         // the relationship the client walks.
@@ -122,7 +179,7 @@ mod tests {
             name: "octo/x".into(),
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[], Tz::UTC).into_string();
+        let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
         assert!(
             out.contains(r#"<h2 class="wp-card-title wp-grow"><a href="/repos/7">octo/x</a></h2>"#),
             "out was {out}"
@@ -138,7 +195,7 @@ mod tests {
             last_error: Some("github 502".into()),
             ..RepoOverview::default()
         };
-        let out = repo_card(&repo, &[], Tz::UTC).into_string();
+        let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
         assert!(
             out.contains(&error_glyph("github 502").into_string()),
             "out was {out}"
@@ -147,11 +204,8 @@ mod tests {
 
     #[test]
     fn card_footer_marks_up_the_sync_time() {
-        let repo = RepoOverview {
-            last_synced_at: Some("2026-08-17T09:05:00Z".into()),
-            ..RepoOverview::default()
-        };
-        let out = repo_card(&repo, &[], Tz::UTC).into_string();
+        let repo = synced(RepoOverview::default());
+        let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
         // Coarse text to read, exact instant still in the markup.
         assert!(
             out.contains(r#"<time datetime="2026-08-17T09:05:00Z""#),
@@ -161,7 +215,7 @@ mod tests {
 
     #[test]
     fn dashboard_leads_with_the_shared_page_header() {
-        let out = index_body(&[], Tz::UTC).into_string();
+        let out = index_body(&[], None, Tz::UTC).into_string();
         assert!(
             out.starts_with(
                 r#"<header class="wp-page-header"><hgroup><h1>Repositories</h1></hgroup></header>"#
@@ -177,50 +231,122 @@ mod tests {
 
     #[test]
     fn card_shows_a_dash_for_unobserved_counters() {
-        let repo = RepoOverview {
+        let repo = synced(RepoOverview {
             repo_id: 1,
             name: "octo/x".into(),
             stars: None,
             ..RepoOverview::default()
-        };
-        let out = repo_card(&repo, &[], Tz::UTC).into_string();
+        });
+        let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
         assert!(out.contains("<strong>—</strong>"), "out was {out}");
         assert!(!out.contains("<strong>0</strong>"), "out was {out}");
     }
 
     #[test]
     fn event_count_is_pluralised() {
-        let one = RepoOverview {
+        let one = synced(RepoOverview {
             event_count: 1,
             ..RepoOverview::default()
-        };
+        });
         assert!(
-            repo_card(&one, &[], Tz::UTC)
+            repo_card(&one, &[], None, Tz::UTC)
                 .into_string()
                 .contains("1 event ·")
         );
-        let many = RepoOverview {
+        let many = synced(RepoOverview {
             event_count: 2,
             ..RepoOverview::default()
-        };
+        });
         assert!(
-            repo_card(&many, &[], Tz::UTC)
+            repo_card(&many, &[], None, Tz::UTC)
                 .into_string()
                 .contains("2 events ·")
         );
     }
 
     #[test]
-    fn empty_state_points_at_settings_and_draws_nothing() {
-        let out = index_body(&[], Tz::UTC).into_string();
+    fn empty_state_points_at_the_picker_and_draws_nothing() {
+        let out = index_body(&[], None, Tz::UTC).into_string();
         assert!(
-            out.contains("<p>No repos tracked yet — stats start collecting on the next sync.</p>"),
+            out.contains(
+                "<p>No repositories tracked yet — watchpost only collects the ones you pick.</p>"
+            ),
             "out was {out}"
         );
         assert!(
-            out.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+            out.contains(
+                r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+            ),
             "out was {out}"
         );
         assert!(!out.contains("canvas"), "out was {out}");
+    }
+
+    #[test]
+    fn a_never_synced_card_says_when_data_arrives_and_shows_no_zeros() {
+        let repo = RepoOverview {
+            repo_id: 7,
+            name: "octo/x".into(),
+            ..RepoOverview::default()
+        };
+        let next =
+            chrono::Utc::now() + chrono::Duration::minutes(42) + chrono::Duration::seconds(30);
+        let out = repo_card(&repo, &[None, None], Some(next), Tz::UTC).into_string();
+        assert!(
+            out.contains(
+                r#"<p class="wp-card-waiting wp-muted">Waiting for first sync · <time datetime=""#
+            ),
+            "out was {out}"
+        );
+        assert!(out.contains(">in 42m</time></p>"), "out was {out}");
+        // Nothing drawn and nothing counted: no blank line, no dashes, no
+        // "0 events", no "synced never" repeating the line above.
+        for absent in [
+            "<canvas",
+            "spark-data",
+            "<strong>",
+            "events",
+            "synced never",
+        ] {
+            assert!(!out.contains(absent), "{absent} in {out}");
+        }
+    }
+
+    #[test]
+    fn a_never_synced_card_without_a_schedule_only_waits() {
+        // No scheduler running (a failed boot-time start): no countdown, and
+        // "not scheduled" is not dressed up as one.
+        let out = repo_card(&RepoOverview::default(), &[], None, Tz::UTC).into_string();
+        assert!(
+            out.contains(r#"<p class="wp-card-waiting wp-muted">Waiting for first sync</p>"#),
+            "out was {out}"
+        );
+        assert!(!out.contains("not scheduled"), "out was {out}");
+    }
+
+    #[test]
+    fn a_never_synced_card_still_counts_its_events() {
+        let repo = RepoOverview {
+            event_count: 2,
+            ..RepoOverview::default()
+        };
+        let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
+        assert!(
+            out.contains(r#"<footer class="wp-muted wp-small">2 events</footer>"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn a_card_with_rows_is_not_waiting_even_before_a_clean_sync() {
+        // A repo whose first syncs failed part-way can hold rows; they are
+        // worth drawing.
+        let failed_with_rows = RepoOverview {
+            date: Some("2026-08-17".into()),
+            ..RepoOverview::default()
+        };
+        assert!(!awaiting_first_sync(&failed_with_rows));
+        assert!(awaiting_first_sync(&RepoOverview::default()));
+        assert!(!awaiting_first_sync(&synced(RepoOverview::default())));
     }
 }

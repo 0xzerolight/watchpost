@@ -276,7 +276,7 @@ async fn untracked_or_hidden_absent() {
     assert!(spark_payloads(&body).is_empty(), "body was {body}");
     // With nothing left to show, the page falls back to the empty state.
     assert!(
-        body.contains("No repos tracked yet — stats start collecting on the next sync."),
+        body.contains("No repositories tracked yet — watchpost only collects the ones you pick."),
         "body was {body}"
     );
 }
@@ -290,16 +290,46 @@ async fn empty_state_links_settings() {
     let body = body_string(resp).await;
 
     assert!(
-        body.contains("No repos tracked yet — stats start collecting on the next sync."),
+        body.contains("No repositories tracked yet — watchpost only collects the ones you pick."),
         "body was {body}"
     );
     assert!(
-        body.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+        body.contains(
+            r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+        ),
         "body was {body}"
     );
     // Nothing chart-shaped is rendered when there is nothing to chart.
     assert!(!body.contains("spark-data"), "body was {body}");
     assert!(!body.contains("<canvas"), "body was {body}");
+}
+
+/// A repo ticked a moment ago has nothing to draw. Its card says it is waiting
+/// rather than showing a blank sparkline over dashes and "0 events".
+#[tokio::test]
+async fn a_repo_that_has_never_synced_waits_instead_of_showing_zeros() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/repos").await).await;
+
+    assert!(body.contains("Waiting for first sync"), "{body}");
+    assert!(!body.contains("spark-data"), "{body}");
+    assert!(!body.contains("<strong>—</strong>"), "{body}");
+    assert!(!body.contains("<strong>0</strong>"), "{body}");
+    assert!(!body.contains("0 events"), "{body}");
+    assert!(!body.contains("synced never"), "{body}");
+    // This harness runs no scheduler, so there is no countdown to show.
+    assert!(!body.contains("not scheduled"), "{body}");
+
+    // The line's class is a hook into app.css; renaming either side alone
+    // silently drops the rule.
+    assert!(
+        body.contains(r#"class="wp-card-waiting wp-muted""#),
+        "{body}"
+    );
+    let css = body_string(h.get("/assets/app.css").await).await;
+    assert!(css.contains(".wp-card-waiting {"), "no waiting-card rule");
 }
 
 #[tokio::test]

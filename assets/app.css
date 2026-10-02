@@ -575,6 +575,14 @@
 }
 
 /*
+ * A card for a repo nothing has been collected for yet: one muted line saying
+ * when the first numbers arrive, in place of a blank sparkline and dashes.
+ */
+.wp-card-waiting {
+  margin: 0;
+}
+
+/*
  * Direction is carried by the sign character first and the colour second, so
  * the row still reads on a monochrome screen and for a reader who cannot
  * separate the two hues. The colour is on text, so it has to reach 4.5:1, not

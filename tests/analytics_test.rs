@@ -409,9 +409,14 @@ async fn nothing_tracked_points_at_the_repo_picker() {
 
     let body = h.body("/analytics").await;
 
-    assert!(body.contains("No repos tracked yet"), "{body}");
     assert!(
-        body.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+        body.contains("No repositories tracked yet — watchpost only collects the ones you pick."),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+        ),
         "{body}"
     );
     assert!(!body.contains("<canvas"), "{body}");
