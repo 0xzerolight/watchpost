@@ -867,14 +867,22 @@ tr.wp-edit-row [name="kind"] {
  * stacked over Delete, each doubled a row's height. The Event column takes
  * the rest and is the one that wraps, anywhere, so a long title or a pasted
  * URL cannot widen the table.
+ *
+ * Only from 40rem up. On a phone the three unbreakable columns alone fill the
+ * width, and `anywhere` let the title column give way to about 45px, so titles
+ * broke every few letters and rows grew several times taller. Below 40rem
+ * the table keeps the browser's own sizing, readable titles in a sideways
+ * scroll, until the phone grid further down replaces it.
  */
-table.wp-events :is(thead, tbody) :is(th, td):is(:nth-child(1), :nth-child(2), :nth-child(4)) {
-  width: 1%;
-  white-space: nowrap;
-}
+@media (min-width: 40rem) {
+  table.wp-events :is(thead, tbody) :is(th, td):is(:nth-child(1), :nth-child(2), :nth-child(4)) {
+    width: 1%;
+    white-space: nowrap;
+  }
 
-table.wp-events td:nth-child(3) {
-  overflow-wrap: anywhere;
+  table.wp-events td:nth-child(3) {
+    overflow-wrap: anywhere;
+  }
 }
 
 /*
