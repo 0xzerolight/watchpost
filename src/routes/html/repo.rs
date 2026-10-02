@@ -265,8 +265,12 @@ pub struct EventImpact {
 ///
 /// The rate is views per *observed* day. A gap is unknown traffic, not zero
 /// traffic, so it shrinks the denominator rather than dragging the rate down.
-/// Today's bucket is still filling and is left out, so the after-window runs
-/// from the event's day to yesterday, at most [`IMPACT_DAYS`] days.
+/// The analytics table's views change refuses any gap instead
+/// ([`crate::series::per_period_vs_previous`]), because it compares two equal
+/// spans. Here the after-window is still filling and is shorter than the
+/// before-window by design, so only a rate compares them fairly. Today's
+/// bucket is still filling and is left out, so the after-window runs from the
+/// event's day to yesterday, at most [`IMPACT_DAYS`] days.
 /// Uniques are not used: a day's uniques cannot be added to the next day's.
 /// Stars are a carried-forward level, so their change is a difference of two
 /// readings, never a sum.

@@ -84,9 +84,14 @@ pub fn last_observed(values: &[Option<i64>]) -> Option<i64> {
 /// when every day of both windows was observed and the earlier sum is above
 /// zero: a gap is unknown traffic, and summing round it would also read as a
 /// fall, while a zero base has no percentage at all. Averaging per observed
-/// day was the rejected alternative — it compares two different sets of days
-/// and hides that either window was incomplete. "All" has no earlier window and
-/// is always `None`, as [`crate::routes::html::delta_badge`] leaves it blank.
+/// day was rejected here: both windows are meant to be equal spans, and a
+/// per-day rate compares two different sets of days while hiding that either
+/// window was incomplete. An event's impact line
+/// ([`crate::routes::html::repo::event_impact`]) does average per observed day,
+/// because its after-window is still filling and is shorter than its
+/// before-window by design, so equal spans are not on offer there. "All" has
+/// no earlier window and is always `None`, as
+/// [`crate::routes::html::delta_badge`] leaves it blank.
 pub fn per_period_vs_previous(values: &[Option<i64>]) -> [Option<i64>; PERIOD_COUNT] {
     let complete = &values[..values.len().saturating_sub(1)];
     PERIODS.map(|(days, _)| {

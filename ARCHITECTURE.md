@@ -98,6 +98,16 @@ curve up without counting as growth, and a badge always equals its Growth column
 Cumulative series (stars, download counts) carry the last known value forward across the gap,
 because a total does not stop existing when nobody is watching.
 
+**The two before-and-after comparisons treat gaps differently, on purpose.** The analytics table's
+views change compares a period with the equal span just before it, so it is shown only when every
+day of both windows was observed: a gap in either would make one sum cover fewer days than the
+other. An event's impact line on a repo page compares views per *observed* day, because its
+after-window is still filling and is shorter than its before-window by design, so a rate is the
+only fair comparison and a gap shrinks the denominator instead. Both leave out today, which GitHub
+is still counting. The Views figure beside the change does not: it is the last N days including
+today, while its change compares the N complete days ending yesterday with the N days before them,
+so the two are not read off the same days.
+
 **Stars are backfilled once.** On first sync of a repo, watchpost walks the stargazers API to
 reconstruct the star history from before it was installed. GitHub stops paginating that endpoint at
 40,000 stars, so for larger repos only the first 40,000 stargazers — the oldest ones — can be

@@ -120,11 +120,15 @@ pub struct LeaderRow {
     pub stars: Option<i64>,
     /// Star growth over each entry of [`PERIODS`], in that order.
     pub star_growth: [Option<i64>; PERIOD_COUNT],
-    /// Views summed over each entry of [`PERIODS`], in that order.
+    /// Views summed over each entry of [`PERIODS`], in that order. The window
+    /// is the last N days including today's partial bucket, the same days the
+    /// chart's zoom shows, so it is not the window `views_change` measures.
     pub views: [Option<i64>; PERIOD_COUNT],
     /// How the period's views moved against the period before it, in whole
-    /// percent, per entry of [`PERIODS`]: see
-    /// [`crate::series::per_period_vs_previous`] for when it is `None`.
+    /// percent, per entry of [`PERIODS`]. Unlike `views` it leaves today out
+    /// and compares the N complete days ending yesterday: see
+    /// [`crate::series::per_period_vs_previous`] for why, and for when it is
+    /// `None`.
     pub views_change: [Option<i64>; PERIOD_COUNT],
     /// Release downloads to date. Period-independent: a cumulative total is a
     /// level, like the star count beside it, not a rate.
