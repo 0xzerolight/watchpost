@@ -997,6 +997,101 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * The events section's toolbar: the kind chips on the left and the add
+ * button on the same line. The chip row is a `role="group"`, which Pico
+ * stretches to the full width; here it takes the space left over.
+ */
+.wp-events-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wp-space-2) var(--wp-space-4);
+  margin-block-end: var(--wp-space-4);
+}
+
+.wp-events-bar > [role="group"] {
+  flex: 1 1 16rem;
+  width: auto;
+  margin-bottom: 0;
+}
+
+/*
+ * "+ Add event": a compact secondary button rather than Pico's accordion row,
+ * whose label sat at the far left with its chevron 1200px away. Opened, it
+ * takes the whole line below the chips.
+ */
+.wp-add-event {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.wp-add-event[open] {
+  flex-basis: 100%;
+}
+
+/* `inline-block`, not `inline-flex`: as a flex item the "+ " span drops its
+ * trailing space and the label reads "+Add event". */
+.wp-add-event > summary:not([role]) {
+  display: inline-block;
+  padding: var(--wp-space-1) var(--wp-space-3);
+  border: 1px solid var(--wp-border);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  color: inherit;
+  font-size: var(--wp-text-sm);
+  line-height: 1.5;
+}
+
+.wp-add-event > summary:not([role]):hover {
+  border-color: var(--pico-primary);
+}
+
+.wp-add-event > summary::after {
+  display: none;
+}
+
+.wp-add-event[open] > summary {
+  margin-bottom: var(--wp-space-3);
+}
+
+/*
+ * The add form: Date, Title and Kind on one line, then Link, Notes and the
+ * submit button full width; one column on a phone. Controls are compact by
+ * the same Pico variable overrides the edit row uses. Inputs drop Pico's
+ * fixed height, which assumes 1rem text, so at `--wp-text-sm` they come out
+ * the height of the toolbar buttons.
+ */
+.wp-event-form {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-2);
+  --pico-spacing: var(--wp-space-2);
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr) 10rem;
+  gap: var(--wp-space-1) var(--wp-space-3);
+  align-items: start;
+}
+
+.wp-event-wide {
+  grid-column: 1 / -1;
+}
+
+.wp-event-form label {
+  margin-bottom: var(--wp-space-1);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-event-form :is(input, textarea) {
+  height: auto;
+  font-size: var(--wp-text-sm);
+}
+
+@media (max-width: 40rem) {
+  .wp-event-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab

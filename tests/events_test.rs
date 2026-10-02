@@ -417,7 +417,10 @@ async fn create_bad_url_422_no_row() {
         body.starts_with(r#"<section id="events-section""#),
         "{body}"
     );
-    assert!(body.contains("<details open>"), "form must reopen: {body}");
+    assert!(
+        body.contains(r#"<details class="wp-add-event" open>"#),
+        "form must reopen: {body}"
+    );
     assert!(body.contains(r#"role="alert""#), "no error message: {body}");
     assert!(h.events(ID_A).await.is_empty(), "row was written anyway");
 }
@@ -476,6 +479,84 @@ async fn create_overlong_kind_422() {
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(h.events(ID_A).await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_kind_cap_is_forty_inclusive_and_says_so() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let resp = h
+        .send("POST", "/repos/1/events", &with("kind", &"k".repeat(41)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains("Keep the kind to 40 characters or fewer."),
+        "{body}"
+    );
+
+    let resp = h
+        .send("POST", "/repos/1/events", &with("kind", &"k".repeat(40)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_empty_date_asks_for_a_date() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let resp = h.send("POST", "/repos/1/events", &with("date", "")).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_string(resp).await;
+    assert!(body.contains("Pick a date."), "{body}");
+    assert!(!body.contains("YYYY-MM-DD"), "{body}");
+}
+
+/// Each mutation says it landed, once and politely, and the next one
+/// replaces the line rather than adding to it.
+#[tokio::test]
+async fn each_mutation_confirms_itself_once() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let body = body_string(h.send("POST", "/repos/1/events", &valid_fields()).await).await;
+    assert_eq!(
+        body.matches(r#"<p class="wp-notice wp-notice-success" data-announce>Event added.</p>"#)
+            .count(),
+        1,
+        "{body}"
+    );
+
+    let id = h.events(ID_A).await[0].id;
+    let body = body_string(
+        h.send(
+            "PUT",
+            &format!("/repos/1/events/{id}"),
+            &with("title", "Renamed"),
+        )
+        .await,
+    )
+    .await;
+    assert!(body.contains(r#"data-announce>Event saved.</p>"#), "{body}");
+    assert!(!body.contains("Event added."), "{body}");
+
+    let body = body_string(
+        h.send("DELETE", &format!("/repos/1/events/{id}"), &[])
+            .await,
+    )
+    .await;
+    assert!(
+        body.contains(r#"data-announce>Event deleted.</p>"#),
+        "{body}"
+    );
+
+    // The page itself and a rejected create carry none.
+    let page = body_string(h.get("/repos/1").await).await;
+    assert!(!page.contains("wp-notice-success"), "{page}");
+    let rejected = body_string(h.send("POST", "/repos/1/events", &with("title", "")).await).await;
+    assert!(!rejected.contains("wp-notice-success"), "{rejected}");
 }
 
 #[tokio::test]
@@ -1121,9 +1202,12 @@ async fn add_form_is_collapsed_and_defaults_to_today() {
     h.seed_repo(ID_A, REPO_A).await;
 
     let body = body_string(h.get("/repos/1").await).await;
-    assert!(body.contains("<summary>Add event</summary>"), "{body}");
+    assert!(body.contains(">Add event</summary>"), "{body}");
     // Collapsed until something went wrong.
-    assert!(!body.contains("<details open>"), "body was {body}");
+    assert!(
+        !body.contains(r#"<details class="wp-add-event" open>"#),
+        "body was {body}"
+    );
     assert!(
         body.contains(&format!(r#"value="{}""#, today())),
         "date must default to today: {body}"

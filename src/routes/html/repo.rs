@@ -18,9 +18,9 @@ use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_row, empty_state, field,
-    field_compact, json_script, kind_class, page_header, period_select, plural, render_markdown,
-    spinner, table_wrap,
+    ALL_DAYS, Notice, PERIOD_COUNT, PERIODS, announced, date_stamp, delta_badge, empty_row,
+    empty_state, field, field_compact, json_script, kind_class, page_header, period_select, plural,
+    render_markdown, spinner, table_wrap,
 };
 use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
@@ -495,6 +495,7 @@ pub fn repo_body(view: &RepoView) -> Markup {
             events: view.events,
             kinds: view.kinds,
             draft: None,
+            flash: None,
             tz: view.tz,
         }))
     }
@@ -921,6 +922,12 @@ fn sort_th(
 // The event timeline
 // ---------------------------------------------------------------------------
 
+/// Longest accepted `kind`. Kinds are chips and datalist entries — short labels
+/// like "release" or "hn" — and the cap is what keeps a pasted paragraph from
+/// becoming one. Here rather than beside the validator because both forms'
+/// `maxlength` render it; `routes::events` checks against the same constant.
+pub const KIND_MAX_CHARS: usize = 40;
+
 /// A submission the handler refused, on its way back to the browser: the values
 /// as typed, plus a message under each field that failed.
 ///
@@ -975,6 +982,9 @@ pub struct EventsView<'a> {
     /// Distinct kinds on this repo, for the filter chips and the datalist.
     pub kinds: &'a [String],
     pub draft: Option<&'a EventDraft>,
+    /// One success line for the mutation this render answers ("Event
+    /// added."). `None` on the page itself and on a rejected create.
+    pub flash: Option<&'a str>,
     /// Display zone for the new-event date default.
     pub tz: Tz,
 }
@@ -988,6 +998,16 @@ pub struct EventsView<'a> {
 /// new or removed kind adds or drops a filter chip and a datalist entry, and
 /// the `#events-data` island the chart markers read has to agree with all of
 /// them. One swap keeps them in step; several coordinated ones would not.
+///
+/// The flash is the confirmation. Before it, a successful add collapsed the
+/// form and nothing else changed, and on a long list an event dated in the
+/// past sorted out of sight, so a reader could not tell it had saved. It is a
+/// line inside the section, so the next mutation replaces it and it never
+/// needs dismissing. It carries `data-announce` rather than a role
+/// ([`announced`]): this whole section is replaced on every mutation, and a
+/// status inserted with the swap is not reliably heard, so the shell's
+/// persistent `#wp-live` region speaks it. The toast was the rejected
+/// alternative: it is an assertive alert, which is for failures.
 pub fn events_section(view: &EventsView) -> Markup {
     let markers: Vec<EventMarker> = view.events.iter().map(EventMarker::from).collect();
     html! {
@@ -997,8 +1017,16 @@ pub fn events_section(view: &EventsView) -> Markup {
         // button, or the Add button inside a disclosure that closed on success.
         section id="events-section" tabindex="-1" {
             h2 { "Events" }
-            (kind_chips(view.kinds))
-            (event_add_form(view.repo_id, view.draft, view.tz))
+            @if let Some(message) = view.flash {
+                (announced(Notice::Success, html! { (message) }))
+            }
+            // The chips and the add button share one line. The add form is
+            // the section's one action, and as a page-width accordion row it
+            // read as a stray label.
+            div class="wp-events-bar" {
+                (kind_chips(view.kinds))
+                (event_add_form(view.repo_id, view.draft, view.tz))
+            }
             // Outside the collapsed <details> on purpose: the edit rows point
             // their kind inputs at this same list.
             datalist id="kind-list" { @for kind in view.kinds { option value=(kind); } }
@@ -1072,6 +1100,19 @@ fn local_day(now: chrono::DateTime<chrono::Utc>, tz: Tz) -> String {
 /// form: a second press before the swap arrives creates a second event, and
 /// this is the one control on the page where that means a duplicate row rather
 /// than a repeated read.
+///
+/// `novalidate`, with `required` and `type=url` kept for what they mean. The
+/// browser's bubbles stopped an empty title on this form, while the edit row,
+/// which is not a form, sent the same mistake to the server and got the styled
+/// inline message back. One path now reports every mistake: the server's.
+/// `method` and `action` are for a submission without JavaScript, which would
+/// otherwise be a GET that drops the entry into the address bar. As a POST it
+/// reaches the CSRF check and is refused with the styled page.
+///
+/// Each field sits in its own wrapper so the form can be a grid: Date, Title
+/// and Kind on one line, Link and Notes full width. `field` emits label,
+/// control and message as siblings, and the control and its `small` must stay
+/// adjacent for Pico's error colouring.
 fn event_add_form(repo_id: i64, draft: Option<&EventDraft>, tz: Tz) -> Markup {
     let blank = EventDraft::default();
     let values = draft.unwrap_or(&blank);
@@ -1080,44 +1121,57 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>, tz: Tz) -> Markup {
         Some(draft) => draft.date.clone(),
         None => local_day(chrono::Utc::now(), tz),
     };
+    let action = format!("/repos/{repo_id}/events");
     html! {
-        details open[draft.is_some()] {
-            summary { "Add event" }
-            form hx-post=(format!("/repos/{repo_id}/events"))
+        details class="wp-add-event" open[draft.is_some()] {
+            summary { span aria-hidden="true" { "+ " } "Add event" }
+            form class="wp-event-form" method="post" action=(action) novalidate
+                hx-post=(action)
                 hx-target="#events-section"
                 hx-swap="outerHTML"
                 hx-disabled-elt="find button[type=submit]"
                 hx-indicator="#event-add-spinner" {
-                (field("event-date", "Date", errors.date.as_deref(), html! {
-                    input type="date" id="event-date" name="date" value=(date) required
-                        aria-invalid=[errors.date.is_some().then_some("true")]
-                        aria-describedby=[errors.date.is_some().then_some("event-date-error")];
-                }))
-                (field("event-title", "Title", errors.title.as_deref(), html! {
-                    input type="text" id="event-title" name="title" value=(values.title) required
-                        aria-invalid=[errors.title.is_some().then_some("true")]
-                        aria-describedby=[errors.title.is_some().then_some("event-title-error")];
-                }))
-                (field("event-kind", "Kind", errors.kind.as_deref(), html! {
-                    input type="text" id="event-kind" name="kind" value=(values.kind)
-                        list="kind-list" placeholder="release, hn, blog…"
-                        aria-invalid=[errors.kind.is_some().then_some("true")]
-                        aria-describedby=[errors.kind.is_some().then_some("event-kind-error")];
-                }))
+                div class="wp-event-field" {
+                    (field("event-date", "Date", errors.date.as_deref(), html! {
+                        input type="date" id="event-date" name="date" value=(date) required
+                            aria-invalid=[errors.date.is_some().then_some("true")]
+                            aria-describedby=[errors.date.is_some().then_some("event-date-error")];
+                    }))
+                }
+                div class="wp-event-field" {
+                    (field("event-title", "Title", errors.title.as_deref(), html! {
+                        input type="text" id="event-title" name="title" value=(values.title) required
+                            aria-invalid=[errors.title.is_some().then_some("true")]
+                            aria-describedby=[errors.title.is_some().then_some("event-title-error")];
+                    }))
+                }
+                div class="wp-event-field" {
+                    (field("event-kind", "Kind", errors.kind.as_deref(), html! {
+                        input type="text" id="event-kind" name="kind" value=(values.kind)
+                            maxlength=(KIND_MAX_CHARS)
+                            list="kind-list" placeholder="release, hn, blog…"
+                            aria-invalid=[errors.kind.is_some().then_some("true")]
+                            aria-describedby=[errors.kind.is_some().then_some("event-kind-error")];
+                    }))
+                }
                 // `type=url` is a browser-side nicety only; the scheme
                 // allowlist that actually matters runs on the server.
-                (field("event-url", "Link", errors.url.as_deref(), html! {
-                    input type="url" id="event-url" name="url" value=(values.url)
-                        placeholder="https://…"
-                        aria-invalid=[errors.url.is_some().then_some("true")]
-                        aria-describedby=[errors.url.is_some().then_some("event-url-error")];
-                }))
+                div class="wp-event-field wp-event-wide" {
+                    (field("event-url", "Link", errors.url.as_deref(), html! {
+                        input type="url" id="event-url" name="url" value=(values.url)
+                            placeholder="https://…"
+                            aria-invalid=[errors.url.is_some().then_some("true")]
+                            aria-describedby=[errors.url.is_some().then_some("event-url-error")];
+                    }))
+                }
                 // Notes cannot be rejected: anything is valid markdown.
-                (field("event-notes", "Notes", None, html! {
-                    textarea id="event-notes" name="notes" rows="3"
-                        placeholder="Markdown" { (values.notes) }
-                }))
-                div class="wp-actions" {
+                div class="wp-event-field wp-event-wide" {
+                    (field("event-notes", "Notes", None, html! {
+                        textarea id="event-notes" name="notes" rows="3"
+                            placeholder="Markdown" { (values.notes) }
+                    }))
+                }
+                div class="wp-actions wp-event-wide" {
                     button type="submit" id="event-add-submit" { "Add event" }
                     (spinner("event-add-spinner"))
                 }
@@ -1294,6 +1348,7 @@ pub fn event_form_row(repo_id: i64, event_id: i64, values: &EventDraft) -> Marku
             td {
                 (field_compact(&kind, "Kind", errors.kind.as_deref(), html! {
                     input type="text" id=(kind) name="kind" list="kind-list" value=(values.kind)
+                        maxlength=(KIND_MAX_CHARS)
                         aria-invalid=[errors.kind.is_some().then_some("true")]
                         aria-describedby=[errors.kind.is_some().then(|| format!("{kind}-error"))];
                 }))
@@ -2086,6 +2141,7 @@ mod tests {
             events,
             kinds,
             draft: None,
+            flash: None,
             tz: Tz::UTC,
         }
     }
@@ -2130,6 +2186,55 @@ mod tests {
         assert_ne!(date_value(&east), date_value(&west));
     }
 
+    /// One validation path: `novalidate` leaves every mistake to the server's
+    /// inline messages, as on the edit row. `method` and `action` make a
+    /// no-JS submit a POST, which CSRF refuses with a page, rather than a GET
+    /// that drops the entry into the address bar.
+    #[test]
+    fn the_add_form_posts_without_javascript_and_leaves_validation_to_the_server() {
+        let out = event_add_form(1, None, Tz::UTC).into_string();
+        assert!(
+            out.contains(concat!(
+                r#"<form class="wp-event-form" method="post" action="/repos/1/events" novalidate "#,
+                r#"hx-post="/repos/1/events""#
+            )),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<summary><span aria-hidden="true">+ </span>Add event</summary>"#),
+            "out was {out}"
+        );
+        assert!(out.contains(r#"maxlength="40""#), "out was {out}");
+        // Both kind inputs carry the cap, so neither can be typed past it.
+        let row = event_form_row(1, 7, &EventDraft::default()).into_string();
+        assert!(row.contains(r#"maxlength="40""#), "row was {row}");
+    }
+
+    #[test]
+    fn a_flash_renders_once_as_a_polite_notice() {
+        let view = EventsView {
+            flash: Some("Event added."),
+            ..events_view(&[], &[])
+        };
+        let out = events_section(&view).into_string();
+        // No role: a status inserted with the swap is not reliably heard.
+        // `data-announce` hands the text to the shell's `#wp-live` instead.
+        assert_eq!(
+            out.matches(r#"<p class="wp-notice wp-notice-success" data-announce>Event added.</p>"#)
+                .count(),
+            1,
+            "out was {out}"
+        );
+        assert!(!out.contains(r#"role="status""#), "out was {out}");
+        // The chips and the add button share the bar.
+        assert!(
+            out.contains(r#"<div class="wp-events-bar"><div class="wp-row wp-gap-1" role="group""#),
+            "out was {out}"
+        );
+        let quiet = events_section(&events_view(&[], &[])).into_string();
+        assert!(!quiet.contains("wp-notice"), "quiet was {quiet}");
+    }
+
     #[test]
     fn events_section_emits_markers_even_when_empty() {
         let out = events_section(&events_view(&[], &[])).into_string();
@@ -2146,7 +2251,7 @@ mod tests {
         );
         // The add form is reachable on a repo with no events at all.
         assert!(
-            out.contains("<summary>Add event</summary>"),
+            out.contains(r#"<summary><span aria-hidden="true">+ </span>Add event</summary>"#),
             "out was {out}"
         );
     }
@@ -2171,7 +2276,10 @@ mod tests {
         };
         let out = events_section(&view).into_string();
 
-        assert!(out.contains("<details open>"), "out was {out}");
+        assert!(
+            out.contains(r#"<details class="wp-add-event" open>"#),
+            "out was {out}"
+        );
         assert!(out.contains(r#"value="Kept""#), "out was {out}");
         assert!(out.contains(r#"value="ftp://x""#), "out was {out}");
         assert!(out.contains("kept notes"), "out was {out}");
