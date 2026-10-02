@@ -228,6 +228,10 @@ const IMPACT_DAYS: usize = 7;
 /// one day is an anecdote.
 const IMPACT_MIN_OBSERVED: usize = 2;
 
+/// The fewest views a day before an event, as printed, that its impact line
+/// puts a percentage on. See [`impact_line`].
+const IMPACT_MIN_RATE: i64 = 3;
+
 /// The two dense series an impact line reads, with their day keys.
 ///
 /// Borrowed: the page lends its chart payload, and a mutation response lends
@@ -324,19 +328,24 @@ fn level_change(levels: &[Option<i64>], start: usize, end: usize) -> Option<i64>
 }
 
 /// The impact as one muted line under the event's title, for example
-/// "Views/day 38 → 89 (+136%) · stars ±0 → +6 (2 days so far)".
+/// "Views/day 38 → 89 (+134%) · stars ±0 → +6 (2 days so far)".
 ///
-/// The percentage is left out when the before-rate rounds to zero. A change
-/// from nothing has no ratio, and "+Infinity%", or four digits off a fraction
-/// of a view, would be noise rather than news.
+/// The percentage is worked out from the two rounded rates printed beside it,
+/// so the line always agrees with itself. Working it out from the unrounded
+/// rates was rejected: 1.5 against 2.1 views a day printed "2 → 2 (+43%)".
+/// It is left out below [`IMPACT_MIN_RATE`] views a day before the event: a
+/// change from nothing has no ratio, and off one or two views a day a single
+/// visitor swings it by half or more, which is noise rather than news.
 fn impact_line(impact: &EventImpact) -> Markup {
-    let percent = (impact.views_before >= 0.5)
-        .then(|| ((impact.views_after / impact.views_before - 1.0) * 100.0).round() as i64);
+    let before = impact.views_before.round() as i64;
+    let after = impact.views_after.round() as i64;
+    let percent = (before >= IMPACT_MIN_RATE)
+        .then(|| ((after - before) as f64 * 100.0 / before as f64).round() as i64);
     let stars = impact.stars_before.zip(impact.stars_after);
     html! {
         div class="wp-impact wp-muted wp-small" {
-            "Views/day " (impact.views_before.round() as i64)
-            " → " (impact.views_after.round() as i64)
+            "Views/day " (before)
+            " → " (after)
             @if let Some(percent) = percent {
                 " (" (signed(percent)) "%)"
             }
@@ -3145,6 +3154,35 @@ mod tests {
         assert!(!out.contains("NaN"), "{out}");
     }
 
+    /// The percentage is worked out from the two figures it sits beside, and
+    /// only once the before-rate is a few views a day, so the line can never
+    /// read "1 → 1 (+17%)" or put four digits on a single visitor.
+    #[test]
+    fn the_percentage_agrees_with_the_rounded_rates_beside_it() {
+        let line = |before: f64, after: f64| {
+            impact_line(&EventImpact {
+                views_before: before,
+                views_after: after,
+                stars_before: None,
+                stars_after: None,
+                after_days: 7,
+                overlaps: false,
+            })
+            .into_string()
+        };
+        for (before, after, expected) in [
+            (0.5, 30.0, "Views/day 1 → 30</div>"),
+            (0.6, 0.7, "Views/day 1 → 1</div>"),
+            (1.5, 15.0 / 7.0, "Views/day 2 → 2</div>"),
+            (1.0, 30.0, "Views/day 1 → 30</div>"),
+            (3.4, 1.0, "Views/day 3 → 1 (−67%)</div>"),
+            (2.5, 2.6, "Views/day 3 → 3 (±0%)</div>"),
+        ] {
+            let out = line(before, after);
+            assert!(out.ends_with(expected), "{before} → {after}: {out}");
+        }
+    }
+
     #[test]
     fn the_impact_line_reads_as_one_sentence() {
         let impact = EventImpact {
@@ -3159,7 +3197,7 @@ mod tests {
             impact_line(&impact).into_string(),
             concat!(
                 r#"<div class="wp-impact wp-muted wp-small">"#,
-                "Views/day 38 → 89 (+136%) · stars ±0 → +6 (2 days so far) (overlaps another event)",
+                "Views/day 38 → 89 (+134%) · stars ±0 → +6 (2 days so far) (overlaps another event)",
                 "</div>"
             )
         );
