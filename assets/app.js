@@ -96,6 +96,25 @@
     return gradient;
   }
 
+  /*
+   * Scriptable backgroundColor for bars. Slightly translucent at rest so the
+   * hover state has somewhere to go, and fainter for a bucket only partly
+   * observed (`chart.$wp.partial`, from `bucketCoverage`), so a three-day week
+   * beside seven-day ones reads as incomplete rather than as a slump. Read off
+   * borderColor at draw time for the reason `areaGradient` is: `applyTheme`
+   * rewrites borderColor, and the next resolve follows it.
+   */
+  function barFill(context) {
+    var chart = context.chart;
+    var dataset = context.dataset || chart.data.datasets[context.datasetIndex];
+    var partial = chart.$wp && chart.$wp.partial;
+    var faded =
+      !!partial &&
+      context.dataIndex !== undefined &&
+      !!partial[context.dataIndex];
+    return hexToRgba(dataset.borderColor, faded ? 0.4 : 0.82);
+  }
+
   var MONTHS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -218,8 +237,10 @@
         var colour = css(dataset.$wpVar, "#888888");
         dataset.borderColor = colour;
         if (dataset.$wpBar) {
-          // Bars resolved their rest fill to a literal rgba at build time.
-          dataset.backgroundColor = hexToRgba(colour, 0.82);
+          // A bar's rest fill is scriptable (`barFill`) and re-reads
+          // borderColor on every draw, like an area wash; overwriting it with
+          // a literal would freeze it and drop the partial-bucket fade. Only
+          // the solid hover fill was resolved at build time.
           dataset.hoverBackgroundColor = colour;
           return;
         }
@@ -377,6 +398,25 @@
   }
 
   /*
+   * How many days a bucket spans on the calendar: 7 for a week, the month's
+   * own length for a month, and null at day zoom, where a bucket is one day
+   * and cannot be partly observed.
+   */
+  function calendarSpan(key, kind) {
+    if (kind === "week") {
+      return 7;
+    }
+    if (kind === "month") {
+      var m = /^(\d{4})-(\d{2})$/.exec(key);
+      // Day 0 of the next month is the last day of this one.
+      return m
+        ? new Date(Date.UTC(Number(m[1]), Number(m[2]), 0)).getUTCDate()
+        : null;
+    }
+    return null;
+  }
+
+  /*
    * Group dense day labels into plot columns.
    *
    * Returns `[{key, title, dayIdxs}]` in ascending order — `key` is the axis
@@ -429,6 +469,21 @@
       }
     }
     return out;
+  }
+
+  /*
+   * How many of a bucket's days `values` observed. A null is a day watchpost
+   * did not see; an observed zero counts, because it is a day of data.
+   */
+  function countObserved(values, idxs) {
+    var n = 0;
+    for (var i = 0; i < idxs.length; i++) {
+      var v = values[idxs[i]];
+      if (v !== null && v !== undefined) {
+        n++;
+      }
+    }
+    return n;
   }
 
   // -------------------------------------------------------------------------
@@ -1247,6 +1302,42 @@
     return descriptor.labelKey ? view[descriptor.labelKey] : descriptor.label;
   }
 
+  /*
+   * Tooltip headings and fade flags for one chart, from how much of each
+   * bucket its counted series observed.
+   *
+   * A week or month bucket sums (or peaks) only the days it saw. A first week
+   * that began on a Sunday, or the week in progress, plots one to three days
+   * beside seven-day neighbours and reads as a slump. The values stay exactly
+   * as aggregated; this only says so, in the heading ("Week of 2026-07-27 ·
+   * 1 of 7 days observed") and through `barFill`. The chart's first sum or
+   * max series is the one counted; a 'last' series is a carried level, whole
+   * on any day it has. A bucket that observed nothing is left alone, because
+   * its rows already read "not observed" and "0 of 7 days" would say it twice.
+   * Day zoom has no spans, so nothing there changes.
+   */
+  function bucketCoverage(spec, view) {
+    var counted = null;
+    spec.datasets.forEach(function (descriptor) {
+      if (!counted && descriptor.mode !== "last") {
+        counted = descriptor;
+      }
+    });
+    var seen = counted ? view.observed[counted.source] : null;
+    var partial = view.titles.map(function (_title, i) {
+      var span = view.spans[i];
+      return !!(seen && span && seen[i] > 0 && seen[i] < span);
+    });
+    return {
+      partial: partial,
+      titles: view.titles.map(function (title, i) {
+        return partial[i]
+          ? title + " · " + seen[i] + " of " + view.spans[i] + " days observed"
+          : title;
+      }),
+    };
+  }
+
   function buildDataset(descriptor, view) {
     return descriptor.style === "bar"
       ? buildBarDataset(descriptor, view)
@@ -1293,14 +1384,16 @@
       label: datasetLabel(descriptor, view),
       data: view.values[descriptor.source],
       $wpVar: descriptor.cssVar,
-      // The flag `applyTheme` dispatches on: a bar's rest fill is a literal
-      // rgba, not a scriptable gradient, so a scheme flip must rewrite it.
+      // The flag `applyTheme` dispatches on: a bar's hover fill is a literal
+      // colour, so a scheme flip must rewrite it, while its rest fill
+      // (`barFill`) follows borderColor by itself.
       $wpBar: true,
       order: descriptor.order,
-      // Slightly translucent at rest so the hover state has somewhere to go.
-      // `borderColor` stays the solid series colour: the legend and the
-      // tooltip swatch read it, and bars draw no stroke of their own.
-      backgroundColor: hexToRgba(colour, 0.82),
+      // Translucent at rest and fainter for a partly observed bucket
+      // (`barFill`). `borderColor` stays the solid series colour: the legend,
+      // the tooltip swatch and `barFill` read it, and bars draw no stroke of
+      // their own.
+      backgroundColor: barFill,
       hoverBackgroundColor: colour,
       borderColor: colour,
       borderWidth: 0,
@@ -1416,8 +1509,8 @@
 
     /*
      * What this file keeps on a chart beyond what Chart.js knows about: the
-     * events to mark, the date → column map that places them, and the tooltip
-     * headings.
+     * events to mark, the date → column map that places them, the tooltip
+     * headings, and which buckets were only partly observed (`barFill`).
      *
      * Attached after construction — the first render happens inside the
      * constructor, before this exists, which is why the plugin treats a missing
@@ -1428,10 +1521,12 @@
      * holding, so handing a chart a second `$wp` would strand its markers on
      * the first one.
      */
+    var coverage = bucketCoverage(spec, view);
     chart.$wp = {
       events: events,
       bucketOf: view.bucketOf,
-      titles: view.titles,
+      titles: coverage.titles,
+      partial: coverage.partial,
     };
 
     live.add(chart);
@@ -1485,9 +1580,11 @@
     // Fields, never the object — see `createChart`. Colours are deliberately
     // not rewritten here: they are already whatever the current scheme
     // resolved to, and `applyTheme` owns changing them.
+    var coverage = bucketCoverage(spec, view);
     chart.$wp.events = events;
     chart.$wp.bucketOf = view.bucketOf;
-    chart.$wp.titles = view.titles;
+    chart.$wp.titles = coverage.titles;
+    chart.$wp.partial = coverage.partial;
     chart.update("none");
     return chart;
   }
@@ -1668,10 +1765,12 @@
    * Everything the charts plot at the trailing `days` of `payload`, and
    * nothing about the charts themselves.
    *
-   * Returns `{keys, titles, bucketOf, kind, uniquesLabel, values}` — axis
-   * labels, tooltip headings, the marker plugin's date → column map, the bucket
-   * width the window came out at, the name the uniques series goes by at that
-   * width, and one rolled-up array per series named in `CHART_SPECS`.
+   * Returns `{keys, titles, bucketOf, kind, spans, uniquesLabel, values,
+   * observed}` — axis labels, tooltip headings, the marker plugin's date →
+   * column map, the bucket width the window came out at, each bucket's
+   * calendar length (null at day zoom), the name the uniques series goes by
+   * at that width, one rolled-up array per series named in `CHART_SPECS`, and
+   * per series how many days of each bucket it observed.
    */
   function computeView(payload, days) {
     var labels = tail(payload.labels, days);
@@ -1689,11 +1788,15 @@
     });
 
     var values = {};
+    var observed = {};
     CHART_SPECS.forEach(function (spec) {
       spec.datasets.forEach(function (descriptor) {
         var series = tail(source[descriptor.source], days);
         values[descriptor.source] = buckets.map(function (bucket) {
           return agg(series, bucket.dayIdxs, descriptor.mode);
+        });
+        observed[descriptor.source] = buckets.map(function (bucket) {
+          return countObserved(series, bucket.dayIdxs);
         });
       });
     });
@@ -1707,11 +1810,15 @@
       }),
       bucketOf: bucketOf,
       kind: kind,
+      spans: buckets.map(function (b) {
+        return calendarSpan(b.key, kind);
+      }),
       // At day zoom the uniques point is that day's unique count; wider
       // buckets cannot sum it (see `agg`), so the label says what the number
       // really is.
       uniquesLabel: kind === "day" ? "Unique" : "Peak daily unique",
       values: values,
+      observed: observed,
     };
   }
 

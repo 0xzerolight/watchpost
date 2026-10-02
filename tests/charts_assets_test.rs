@@ -103,3 +103,19 @@ async fn one_tooltip_carries_the_figures_and_the_events() {
     let css = asset("/assets/app.css").await;
     assert_has(&css, "app.css", &["\n.wp-tip-sep {", "\n.wp-tip-event {"]);
 }
+
+/// A bucket the window only partly observed says how much of it was seen
+/// and draws faded, so a thin week does not read as a quiet one.
+#[tokio::test]
+async fn partly_observed_buckets_say_so_and_fade() {
+    let js = asset("/assets/app.js").await;
+    assert_has(
+        &js,
+        "app.js",
+        &[
+            "function barFill(",
+            "function bucketCoverage(",
+            "days observed",
+        ],
+    );
+}
