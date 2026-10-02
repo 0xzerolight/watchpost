@@ -976,6 +976,9 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
     };
     let sort = params.sort(kind);
     let more = rows.len() > SHOWN_ROWS;
+    // The bars' scale: the largest count among the rows rendered, whatever
+    // order they are in.
+    let largest = rows.iter().map(|row| row.count).max().unwrap_or(0);
     html! {
         table id=(table_id(kind)) class="wp-num-table" data-more=[more.then_some(SHOWN_ROWS)] {
             caption { h3 { (caption) } }
@@ -992,7 +995,7 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
                 }
                 @for (i, row) in rows.iter().enumerate() {
                     tr class=[(i >= SHOWN_ROWS).then_some("wp-more-row")] {
-                        (name_cell(kind, row, params.repo_name))
+                        (name_cell(kind, row, params.repo_name, share_step(row.count, largest)))
                         td { (row.count) }
                         td { (row.uniques) }
                     }
@@ -1020,14 +1023,19 @@ pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularPa
 /// the `/owner/name` this page is about; the full path stays in `title`.
 /// GitHub's own title for the page goes on a second line only when it says
 /// something the path does not. For most rows it is the path again.
-fn name_cell(kind: PopularKind, row: &PopularItem, repo_name: &str) -> Markup {
+///
+/// The cell also carries the row's share bar (see [`share_step`]). The class
+/// comes first, so the `title` and the text stay together for anyone reading
+/// the markup.
+fn name_cell(kind: PopularKind, row: &PopularItem, repo_name: &str, share: i64) -> Markup {
+    let bar = format!("wp-bar-cell wp-share-{share}");
     match kind {
-        PopularKind::Referrers => html! { td { (row.name) } },
+        PopularKind::Referrers => html! { td class=(bar) { (row.name) } },
         PopularKind::Paths => {
             let shown = relative_path(&row.name, repo_name);
             let title = row.title.as_deref().filter(|title| says_more(title, shown));
             html! {
-                td title=(row.name) {
+                td class=(bar) title=(row.name) {
                     (shown)
                     @if let Some(title) = title {
                         br;
@@ -1063,6 +1071,23 @@ fn relative_path<'a>(path: &'a str, repo_name: &str) -> &'a str {
 /// when it is the same path, with or without its leading slash.
 fn says_more(title: &str, shown: &str) -> bool {
     title.trim_start_matches('/') != shown.trim_start_matches('/')
+}
+
+/// A row's share of the largest count among the rows shown, in twentieths
+/// (5% steps): the `wp-share-N` class its bar is drawn with.
+///
+/// A class rather than a width, because the CSP allows no `style` attribute,
+/// and a bar needs no finer grain than 5%. Rounded up, so a row with any
+/// traffic at all shows a sliver rather than looking like one with none.
+/// Relative to the rows rendered rather than to anything stored, so no
+/// number on the page changes.
+fn share_step(count: i64, largest: i64) -> i64 {
+    if count <= 0 || largest <= 0 {
+        return 0;
+    }
+    let scaled = count.saturating_mul(20);
+    let step = scaled / largest + i64::from(scaled % largest != 0);
+    step.min(20)
 }
 
 /// The toggle for a table's rows past [`SHOWN_ROWS`].
@@ -3165,6 +3190,52 @@ mod tests {
                 "Views/day 38 → 89 (+136%) · stars ±0 → +6 (2 days so far) (overlaps another event)",
                 "</div>"
             )
+        );
+    }
+
+    /// A row's bar is its count against the largest shown, in 5% steps,
+    /// rounded up so any traffic at all shows a sliver.
+    #[test]
+    fn share_bars_scale_to_the_largest_rendered_row() {
+        assert_eq!(share_step(0, 141), 0);
+        assert_eq!(share_step(1, 141), 1);
+        assert_eq!(share_step(70, 141), 10);
+        assert_eq!(share_step(141, 141), 20);
+        assert_eq!(share_step(0, 0), 0);
+
+        let rows = vec![item("a", 100, 1), item("b", 50, 1), item("c", 0, 1)];
+        let out = popular_table(PopularKind::Referrers, &rows, &params()).into_string();
+        assert!(
+            out.contains(r#"<td class="wp-bar-cell wp-share-20">a</td>"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<td class="wp-bar-cell wp-share-10">b</td>"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<td class="wp-bar-cell wp-share-0">c</td>"#),
+            "out was {out}"
+        );
+
+        // A lone row is its own largest.
+        let one = popular_table(PopularKind::Paths, &[item("/x", 3, 1)], &params()).into_string();
+        assert!(
+            one.contains(r#"<td class="wp-bar-cell wp-share-20" title="/x">"#),
+            "one was {one}"
+        );
+
+        // Sorting by name changes the order, never the scale.
+        let mut by_name = rows.clone();
+        Sort {
+            key: SortKey::Name,
+            dir: SortDir::Desc,
+        }
+        .apply(&mut by_name);
+        let out = popular_table(PopularKind::Referrers, &by_name, &params()).into_string();
+        assert!(
+            out.contains(r#"<td class="wp-bar-cell wp-share-10">b</td>"#),
+            "out was {out}"
         );
     }
 }

@@ -979,6 +979,32 @@ async fn the_traffic_note_drops_its_date_when_nothing_was_observed() {
     );
 }
 
+/// The bar class is server markup, so a sort fragment carries it too and
+/// nothing needs JavaScript to draw it.
+#[tokio::test]
+async fn share_bars_ride_in_the_sort_fragment() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_referrer(ID_A, days_ago(1), "big.example", 40, 9)
+        .await;
+    h.seed_referrer(ID_A, days_ago(1), "small.example", 10, 2)
+        .await;
+
+    let refs = body_string(
+        h.get_targeting("/repos/1?rsort=referrer&rdir=asc", "refs-table")
+            .await,
+    )
+    .await;
+    assert!(
+        refs.contains(r#"<td class="wp-bar-cell wp-share-20">big.example</td>"#),
+        "{refs}"
+    );
+    assert!(
+        refs.contains(r#"<td class="wp-bar-cell wp-share-5">small.example</td>"#),
+        "{refs}"
+    );
+}
+
 /// The repo page's disclosures and switcher are half server markup, half
 /// app.js. With the client half renamed or gone the page still renders every
 /// row, nothing collapses and nothing fails, so the client half is pinned

@@ -1182,6 +1182,43 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * Share bars: a faint bar behind a traffic-source name, as long as its count
+ * is against the largest shown, so the shape of the list (two sources, then a
+ * long tail) reads without reading every number. The length is a
+ * server-rendered class in 5% steps: the CSP allows no `style` attribute,
+ * and a class survives a sort swap and needs no JavaScript. The fill is a
+ * tint of the first palette slot, which both dark blocks remap, so it follows
+ * the scheme without a token of its own there. It is decoration only; the
+ * number in the next cell stays the value.
+ */
+.wp-bar-cell {
+  --wp-bar-fill: color-mix(in srgb, var(--wp-marker-0) 12%, transparent);
+  background-image: linear-gradient(to right, var(--wp-bar-fill) var(--wp-share, 0%), transparent 0);
+}
+
+.wp-share-0 { --wp-share: 0%; }
+.wp-share-1 { --wp-share: 5%; }
+.wp-share-2 { --wp-share: 10%; }
+.wp-share-3 { --wp-share: 15%; }
+.wp-share-4 { --wp-share: 20%; }
+.wp-share-5 { --wp-share: 25%; }
+.wp-share-6 { --wp-share: 30%; }
+.wp-share-7 { --wp-share: 35%; }
+.wp-share-8 { --wp-share: 40%; }
+.wp-share-9 { --wp-share: 45%; }
+.wp-share-10 { --wp-share: 50%; }
+.wp-share-11 { --wp-share: 55%; }
+.wp-share-12 { --wp-share: 60%; }
+.wp-share-13 { --wp-share: 65%; }
+.wp-share-14 { --wp-share: 70%; }
+.wp-share-15 { --wp-share: 75%; }
+.wp-share-16 { --wp-share: 80%; }
+.wp-share-17 { --wp-share: 85%; }
+.wp-share-18 { --wp-share: 90%; }
+.wp-share-19 { --wp-share: 95%; }
+.wp-share-20 { --wp-share: 100%; }
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab
