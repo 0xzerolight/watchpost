@@ -72,3 +72,11 @@ async fn tooltip_rows_follow_the_legend() {
         &["itemSort", "return a.datasetIndex - b.datasetIndex;"],
     );
 }
+
+/// Event markers draw in an axis lane of their own above the plot, so a dot
+/// never sits on a bar, a line's end or the legend.
+#[tokio::test]
+async fn markers_have_a_lane_of_their_own() {
+    let js = asset("/assets/app.js").await;
+    assert_has(&js, "app.js", &["wpLane", "var LANE_PX = 18;"]);
+}

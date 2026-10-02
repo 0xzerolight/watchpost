@@ -515,16 +515,26 @@
   // -------------------------------------------------------------------------
 
   /*
-   * How near the pointer has to be to a marker's column, in pixels, for its tip
-   * to open. Wider than the line it targets: a marker is a stroke on a canvas
-   * with no DOM node behind it, so this slack is the entire hit area, and 5px
-   * asked for a precision a trackpad does not have.
+   * Event markers sit in a lane of their own, `LANE_PX` tall, directly above
+   * the plot and under the legend when there is one; the `wpLane` axis in
+   * `createChart` is what reserves it. Drawn inside the plot, a dot sat on the
+   * top gridline and ran into any series near its maximum. Layout padding was
+   * the rejected alternative: Chart.js puts it outside the legend, so on the
+   * two-series charts the dots would have landed on "Views ● Unique" rather
+   * than above the data.
+   *
+   * `HIT_PX` is how near the pointer has to be to a dot's column, in pixels,
+   * inside that lane. Wider than the dot: a marker is a mark on a canvas with
+   * no DOM node behind it, so this slack is the entire hit area, and 5px asked
+   * for a precision a trackpad does not have. The lane is the whole hit zone;
+   * the plot below it belongs to the data.
    *
    * Markers are a mouse enhancement, not a way to reach an event. There is
    * nothing here to focus and nothing to announce — the events table under the
    * charts lists the same events as real rows, with the real links, and that is
    * the accessible equivalent this widget defers to.
    */
+  var LANE_PX = 18;
   var HIT_PX = 8;
   var tipEl = null;
 
@@ -713,9 +723,15 @@
     return out;
   }
 
+  /*
+   * The events whose dots are under the pointer, which has to be in the lane.
+   * The old zone ran the column's full height plus 8px either side, so on an
+   * event day the bar itself was a marker target, and hovering it traded the
+   * figures for the event.
+   */
   function hitsAt(chart, x, y) {
     var area = chart.chartArea;
-    if (!area || y < area.top - HIT_PX || y > area.bottom + HIT_PX) {
+    if (!area || y < area.top - LANE_PX || y >= area.top) {
       return [];
     }
     return placedEvents(chart)
@@ -774,15 +790,16 @@
           ctx.strokeStyle = hexToRgba(colour, 0.5);
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(item.x, area.top);
+          ctx.moveTo(item.x, area.top - LANE_PX / 2);
           ctx.lineTo(item.x, area.bottom);
           ctx.stroke();
         }
         // The dot is the marker's whole resting presence and the hover
-        // target's advertisement. Full colour, ringed in the card surface so
-        // it separates from whatever it lands on.
+        // target's advertisement, centred in the lane above the plot. Full
+        // colour, ringed in the card surface so it separates from a
+        // neighbouring dot.
         ctx.beginPath();
-        ctx.arc(item.x, area.top + 3, 3, 0, Math.PI * 2);
+        ctx.arc(item.x, area.top - LANE_PX / 2, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = colour;
         ctx.fill();
         ctx.lineWidth = 2;
@@ -1289,8 +1306,6 @@
         // positions, so a tweening axis would leave every dashed line standing
         // beside the column it belongs to until the animation settled.
         animation: false,
-        // Room for the event-marker dots painted at `area.top`.
-        layout: { padding: { top: 8 } },
         // Hovering anywhere in a column reports every series in it, which is
         // what a reader comparing count against uniques wants.
         interaction: { mode: "index", intersect: false },
@@ -1323,6 +1338,21 @@
               maxTicksLimit: 5,
               font: { size: 11 },
               callback: compactTick,
+            },
+          },
+          // The event markers' lane (see `LANE_PX`): an empty axis box, which
+          // Chart.js lays out between the legend and the plot, the one place
+          // a box can go there. Nothing on it draws, and no dataset binds to
+          // it: datasets take the first x scale, `x`, which is why this one
+          // is declared after it.
+          wpLane: {
+            type: "category",
+            position: "top",
+            grid: { display: false },
+            border: { display: false },
+            ticks: { display: false },
+            afterFit: function (scale) {
+              scale.height = LANE_PX;
             },
           },
         },
