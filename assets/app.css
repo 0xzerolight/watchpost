@@ -5,10 +5,11 @@
  * The app's own classes take a `wp-` prefix and its custom properties `--wp-`,
  * which keeps them apart from Pico's.
  *
- * The marker palette is eight categorical slots. `kind_class()` in
- * src/routes/html/mod.rs hashes an event kind into one of them server-side and
+ * The marker palette is eight categorical slots. Slot 0 is the accent every
+ * repo chart draws its series in; `kind_class()` in src/routes/html/mod.rs
+ * hashes an event kind into one of the other seven server-side and
  * assets/app.js repeats that hash for client-drawn markers, so a kind keeps the
- * same colour in a badge and on a chart.
+ * same colour in a badge and on a chart, and never the series colour.
  */
 
 /*
@@ -71,12 +72,11 @@
    * the card surface.
    *
    * Every primary chart series wears one accent, `--wp-marker-0`, whatever it
-   * measures, and the secondary line (uniques) wears `--wp-chart-tick`; the
-   * eight slots are otherwise for event kinds, through the kind hash. That
-   * hash still runs over all eight, so a kind on slot 0 shares the series
-   * blue, kept apart by its own marker lane above the plot. Slot 3 (yellow)
-   * sits below 3:1 on white and magenta (4) is shy of it in light mode; as
-   * kind colours only, the chip label and the tooltip line carry the identity.
+   * measures, and the secondary line (uniques) wears `--wp-chart-tick`; slot 0
+   * belongs to data, and the kind hash spreads event kinds over slots 1 to 7.
+   * Slot 3 (yellow) sits below 3:1 on white and magenta (4) is shy of it in
+   * light mode; as kind colours only, the chip label and the tooltip line
+   * carry the identity.
    */
   --wp-l-0: #2a78d6;
   --wp-l-1: #eb6834;
@@ -728,8 +728,10 @@
   color: var(--wp-delta-down);
 }
 
-/* Kind slots: set the colour, let `.wp-chip` and friends read it. */
-.wp-kind-0 { --wp-kind-color: var(--wp-marker-0); }
+/*
+ * Kind slots: set the colour, let `.wp-chip` and friends read it. There is no
+ * `.wp-kind-0`; slot 0 is the series accent and the kind hash never returns it.
+ */
 .wp-kind-1 { --wp-kind-color: var(--wp-marker-1); }
 .wp-kind-2 { --wp-kind-color: var(--wp-marker-2); }
 .wp-kind-3 { --wp-kind-color: var(--wp-marker-3); }

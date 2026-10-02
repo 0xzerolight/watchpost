@@ -136,10 +136,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   all draw in one blue with its gradient wash; the uniques line under views and clones is muted ink
   and thinner, and the legend tells the two apart. The per-metric hues were borrowed event-kind
   slots, so a Downloads line could share its red with reddit's markers, and red and green belong to
-  delta direction. One overlap remains: the accent is still kind slot 0, so kinds that hash there
-  (youtube, twitter, launch) draw their markers in the series blue, kept apart only by sitting in
-  the marker lane. Freeing the slot needs either a ninth colour token or a seven-slot kind hash, and
-  the hash would recolour every existing kind.
+  delta direction. Event kinds now skip the accent's slot: a kind whose hash lands on slot 0
+  (youtube, twitter, launch) is moved to one of the other seven, in the server's chip and the
+  client's marker alike, so no dot or chip reads as part of the series. Only those kinds change
+  colour. Hashing every kind over seven slots would have recoloured most existing badges, and a
+  ninth colour would sit next to one of the eight already spread round the colour wheel.
 
 - **Recent changes grouped by day (Analytics).** The heading reads "Recent changes · last 14 days",
   each UTC day appears once as a small label above its rows, and each repo's deltas sit right after

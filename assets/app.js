@@ -265,14 +265,18 @@
   var utf8 = new TextEncoder();
 
   /*
-   * djb2 over the kind's bytes, modulo the eight marker slots.
+   * djb2 over the kind's bytes, onto marker slots 1 to 7.
    *
    * This MUST stay byte-for-byte equivalent to `kind_class` in
    * src/routes/html/mod.rs — the server picks a badge's colour with that one
    * and the client picks the matching marker's colour with this one, so a kind
    * that hashed differently here would wear two colours on the same page.
    * Change one, change both. Pinned by a test on the Rust side:
-   * "reddit" → slot 7 → `--wp-marker-7`.
+   * "reddit" → slot 7 → `--wp-marker-7`, "youtube" → slot 6.
+   *
+   * Slot 0 is the series accent (`CHART_SPECS`), so a kind that hashes to it
+   * takes `hash % 7 + 1` instead; `kind_class` says why that and not a
+   * seven-slot hash for every kind.
    *
    * Two details carry the equivalence:
    *   - iterate UTF-8 *bytes* (Rust's `.bytes()`), not UTF-16 code units, so a
@@ -288,7 +292,8 @@
     for (var i = 0; i < bytes.length; i++) {
       hash = (Math.imul(hash, 33) ^ bytes[i]) >>> 0;
     }
-    return hash % 8;
+    var slot = hash % 8;
+    return slot === 0 ? (hash % 7) + 1 : slot;
   }
 
   function kindColor(kind) {
@@ -1219,12 +1224,9 @@
    *     per metric made the page change colour on every tile click, borrowed
    *     seven of the eight slots the event-kind hash colours markers with
    *     (reddit dots and the Downloads line were the same red), and spent red
-   *     and green, which mean down and up in the deltas. One borrowed slot is
-   *     left: `kindSlot` still hashes over all eight, so a kind that lands on
-   *     slot 0 (youtube, twitter, launch) wears the series blue. Its dots
-   *     stay apart by place rather than hue, in their own lane above the
-   *     plot. Freeing slot 0 needs a ninth token or a seven-slot hash, and
-   *     the hash would have to change in `kind_class` too.
+   *     and green, which mean down and up in the deltas. Slot 0 is the
+   *     series' alone: `kindSlot` and `kind_class` hash kinds onto slots 1 to
+   *     7, so no marker or chip wears the series blue.
    *   - `secondary` marks the companion line (uniques beside its count). It
    *     is muted ink and thinner, so the legend tells the two apart by weight
    *     and tone rather than by a second hue.

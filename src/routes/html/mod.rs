@@ -328,11 +328,19 @@ fn is_safe_url(url: &str) -> bool {
     }
 }
 
-/// Map an event kind to one of eight stable colour-slot classes.
+/// Map an event kind to one of seven stable colour-slot classes, 1 to 7.
 ///
 /// The djb2 hash below MUST stay byte-for-byte equivalent to the one in
 /// `assets/app.js`, so a kind's server-rendered badge colour matches the colour
 /// its marker gets client-side. Change one, change both.
+///
+/// Slot 0 is the accent every repo chart draws its series in, so a kind never
+/// lands there: a marker in the series colour reads as data. A kind that
+/// hashes to 0 takes `hash % 7 + 1` instead, which spreads those kinds evenly
+/// over the other seven and leaves every kind already on 1 to 7 its colour.
+/// Hashing every kind with `% 7 + 1` was rejected because it recolours most
+/// existing badges; a ninth accent hue was rejected because the eight slots
+/// already span the colour wheel, so any new hue sits next to one of them.
 pub fn kind_class(kind: &Option<String>) -> String {
     let Some(kind) = kind else {
         return "wp-kind-none".to_owned();
@@ -341,7 +349,11 @@ pub fn kind_class(kind: &Option<String>) -> String {
     for byte in kind.as_bytes() {
         hash = hash.wrapping_mul(33) ^ u32::from(*byte);
     }
-    format!("wp-kind-{}", hash % 8)
+    let slot = match hash % 8 {
+        0 => hash % 7 + 1,
+        slot => slot,
+    };
+    format!("wp-kind-{slot}")
 }
 
 /// The htmx `hx-target` header, when the request carries one.
@@ -500,8 +512,10 @@ mod tests {
 
     #[test]
     fn kind_class_is_stable_and_deterministic() {
-        // Pinned: this exact value is what assets/app.js must also produce.
+        // Pinned: these exact values are what assets/app.js must also produce.
+        // "youtube" hashes to slot 0, the series accent, and is moved off it.
         assert_eq!(kind_class(&Some("reddit".to_owned())), "wp-kind-7");
+        assert_eq!(kind_class(&Some("youtube".to_owned())), "wp-kind-6");
         assert_eq!(
             kind_class(&Some("reddit".to_owned())),
             kind_class(&Some("reddit".to_owned()))
@@ -511,10 +525,21 @@ mod tests {
 
     #[test]
     fn kind_class_always_lands_in_range() {
-        for kind in ["", "a", "hn", "release", "blog", "very long kind name ☃"] {
+        // youtube, twitter and launch hash to 0, the series accent's slot.
+        for kind in [
+            "",
+            "a",
+            "hn",
+            "release",
+            "blog",
+            "youtube",
+            "twitter",
+            "launch",
+            "very long kind name ☃",
+        ] {
             let class = kind_class(&Some(kind.to_owned()));
             let slot: u32 = class.strip_prefix("wp-kind-").unwrap().parse().unwrap();
-            assert!(slot < 8, "{kind:?} → {class}");
+            assert!((1..8).contains(&slot), "{kind:?} → {class}");
         }
     }
 

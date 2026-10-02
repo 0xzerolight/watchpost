@@ -131,9 +131,9 @@ async fn partly_observed_buckets_say_so_and_fade() {
 /// One accent: every primary series reads `--wp-marker-0` and every companion
 /// line the muted tick ink, thinner. The series used to spread over seven
 /// marker slots, so the Downloads line and the reddit dots were the same red.
-/// Pinning them to slot 0 shrinks that clash to the kinds that hash to slot 0
-/// (youtube, twitter, launch). It does not remove it. Another marker slot in
-/// `CHART_SPECS` would spread the clash to more kinds again.
+/// Slot 0 is the series' alone: `kindSlot` moves a kind that hashes to it onto
+/// slots 1 to 7, so no marker wears the series colour. Another marker slot in
+/// `CHART_SPECS`, or a kind hash that can return 0, brings the clash back.
 #[tokio::test]
 async fn every_series_wears_the_one_accent() {
     let js = asset("/assets/app.js").await;
@@ -150,6 +150,7 @@ async fn every_series_wears_the_one_accent() {
             "secondary: true,",
             "descriptor.secondary",
             "dataset.borderWidth = 1.5",
+            "return slot === 0 ? (hash % 7) + 1 : slot;",
         ],
     );
 }
