@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
@@ -35,16 +35,14 @@ use serde::Deserialize;
 
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
+use crate::routes::PathId;
 use crate::routes::html::repo::{
-    EventDraft, EventErrors, EventsView, event_form_row, event_row, events_section,
+    EventDraft, EventErrors, EventsView, ImpactSeries, KIND_MAX_CHARS, SHOWN_ROWS, event_form_row,
+    event_impact, event_row, events_section,
 };
+use crate::routes::repo::all_window;
 use crate::state::AppState;
-use crate::types::{Event, NewEvent};
-
-/// Longest accepted `kind`. Kinds are chips and datalist entries — short labels
-/// like "release" or "hn" — and the cap is what keeps a pasted paragraph from
-/// becoming one.
-const KIND_MAX_CHARS: usize = 40;
+use crate::types::{Event, Metric, NewEvent};
 
 /// The add and edit forms, which post the same field set.
 ///
@@ -68,7 +66,7 @@ pub struct EventForm {
 /// POST /repos/{id}/events
 pub async fn event_create(
     State(state): State<Arc<AppState>>,
-    Path(repo_id): Path<i64>,
+    PathId(repo_id): PathId<i64>,
     Form(form): Form<EventForm>,
 ) -> Result<Response, AppError> {
     let outcome = state
@@ -89,7 +87,8 @@ pub async fn event_create(
         .await?;
 
     let (draft, data) = outcome.ok_or(AppError::NotFound)?;
-    Ok(respond(repo_id, &data, draft, state.cfg.timezone))
+    let flash = draft.is_none().then_some("Event added.");
+    Ok(respond(repo_id, &data, draft, flash, state.cfg.timezone))
 }
 
 /// PUT /repos/{id}/events/{eid}
@@ -98,7 +97,7 @@ pub async fn event_create(
 /// every method but GET — the same extractor serves both this and the create.
 pub async fn event_update(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
     Form(form): Form<EventForm>,
 ) -> Result<Response, AppError> {
     let outcome = state
@@ -118,7 +117,13 @@ pub async fn event_update(
         .await?;
 
     match outcome.ok_or(AppError::NotFound)? {
-        Ok(data) => Ok(respond(repo_id, &data, None, state.cfg.timezone)),
+        Ok(data) => Ok(respond(
+            repo_id,
+            &data,
+            None,
+            Some("Event saved."),
+            state.cfg.timezone,
+        )),
         Err(draft) => Ok(reject_update(repo_id, event_id, &draft)),
     }
 }
@@ -126,7 +131,7 @@ pub async fn event_update(
 /// DELETE /repos/{id}/events/{eid}
 pub async fn event_delete(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Response, AppError> {
     let data = state
         .db
@@ -140,22 +145,54 @@ pub async fn event_delete(
         .await?
         .ok_or(AppError::NotFound)?;
 
-    Ok(respond(repo_id, &data, None, state.cfg.timezone))
+    Ok(respond(
+        repo_id,
+        &data,
+        None,
+        Some("Event deleted."),
+        state.cfg.timezone,
+    ))
 }
 
 /// GET /repos/{id}/events/{eid} — the display row, which is what the edit
 /// form's Cancel button swaps back in.
+///
+/// Rendered from the same section data a mutation answers with, because a row
+/// is not quite independent of the rest: whether it is one of the older rows
+/// the page collapses depends on where it sorts. A row that came back without
+/// knowing would reappear in a collapsed list.
 pub async fn event_row_get(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Markup, AppError> {
-    Ok(event_row(repo_id, &fetch(&state, repo_id, event_id).await?))
+    let data = state
+        .db
+        .call(move |conn| {
+            if queries::event_by_id(conn, repo_id, event_id)?.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(section_data(conn, repo_id)?))
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let index = data
+        .events
+        .iter()
+        .position(|event| event.id == event_id)
+        .ok_or(AppError::NotFound)?;
+    let event = &data.events[index];
+    Ok(event_row(
+        repo_id,
+        event,
+        index >= SHOWN_ROWS,
+        event_impact(data.impact(), event, &data.events).as_ref(),
+    ))
 }
 
 /// GET /repos/{id}/events/{eid}/edit — the same row as inputs.
 pub async fn event_edit_form(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Markup, AppError> {
     let event = fetch(&state, repo_id, event_id).await?;
     Ok(event_form_row(repo_id, event_id, &EventDraft::from(&event)))
@@ -169,12 +206,39 @@ pub async fn event_edit_form(
 struct SectionData {
     events: Vec<Event>,
     kinds: Vec<String>,
+    /// Day keys and the two dense series the impact lines read, over the
+    /// repo's whole history.
+    labels: Vec<String>,
+    views: Vec<Option<i64>>,
+    stars: Vec<Option<i64>>,
 }
 
+impl SectionData {
+    fn impact(&self) -> ImpactSeries<'_> {
+        ImpactSeries {
+            labels: &self.labels,
+            views: &self.views,
+            stars: &self.stars,
+        }
+    }
+}
+
+/// The section's data, impact series included. These come from the same
+/// dense readers and the same [`all_window`] the page's chart payload does,
+/// so a re-rendered row's impact line agrees with the one the page load drew.
+/// Without them a mutation's swap would drop every impact line until the next
+/// reload; over the bare history span, a young repo's star change would read
+/// differently after a swap.
 fn section_data(conn: &Connection, repo_id: i64) -> Result<SectionData, DbError> {
+    let window = all_window(conn, repo_id)?;
+    let stars = queries::dense_series(conn, repo_id, Metric::Stars, window)?;
+    let views = queries::dense_series(conn, repo_id, Metric::ViewsCount, window)?;
     Ok(SectionData {
         events: queries::events_for_repo(conn, repo_id, None)?,
         kinds: queries::event_kinds(conn, repo_id)?,
+        labels: stars.iter().map(|(date, _)| date.clone()).collect(),
+        stars: stars.into_iter().map(|(_, value)| value).collect(),
+        views: views.into_iter().map(|(_, value)| value).collect(),
     })
 }
 
@@ -194,7 +258,7 @@ async fn fetch(state: &AppState, repo_id: i64, event_id: i64) -> Result<Event, A
 }
 
 /// A mutation's response: the section, with the add form reopened when a
-/// create was rejected.
+/// create was rejected, and `flash` as its one confirmation line otherwise.
 ///
 /// 422 rather than 200 on a rejected submission. htmx's *default* config
 /// discards a 4xx body, so this contract only works because
@@ -202,12 +266,20 @@ async fn fetch(state: &AppState, repo_id: i64, event_id: i64) -> Result<Event, A
 /// 422s. With that in place the reopened form with its messages lands where
 /// the section was, while the status still says the request did not take
 /// effect.
-fn respond(repo_id: i64, data: &SectionData, draft: Option<Box<EventDraft>>, tz: Tz) -> Response {
+fn respond(
+    repo_id: i64,
+    data: &SectionData,
+    draft: Option<Box<EventDraft>>,
+    flash: Option<&str>,
+    tz: Tz,
+) -> Response {
     let markup = events_section(&EventsView {
         repo_id,
         events: &data.events,
         kinds: &data.kinds,
         draft: draft.as_deref(),
+        flash,
+        impact: Some(data.impact()),
         tz,
     });
     match draft {
@@ -263,7 +335,12 @@ fn validate(repo_id: i64, form: EventForm) -> Result<NewEvent, Box<EventDraft>> 
     // are ordered by a lexicographic compare on this column, so an unpadded
     // date would sort into the wrong place for good.
     let parsed_date = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
-    if parsed_date.is_none() {
+    if date.is_empty() {
+        // The only way to send an empty date is to clear the picker, which
+        // shows the reader's own date format, not this one: name the missing
+        // value rather than a format they never saw.
+        errors.date = Some("Pick a date.".to_owned());
+    } else if parsed_date.is_none() {
         errors.date = Some("Use a date in YYYY-MM-DD form.".to_owned());
     }
 
@@ -291,7 +368,9 @@ fn validate(repo_id: i64, form: EventForm) -> Result<NewEvent, Box<EventDraft>> 
     let checked_kind = if kind.is_empty() {
         None
     } else if kind.chars().count() > KIND_MAX_CHARS {
-        errors.kind = Some(format!("Keep the kind under {KIND_MAX_CHARS} characters."));
+        errors.kind = Some(format!(
+            "Keep the kind to {KIND_MAX_CHARS} characters or fewer."
+        ));
         None
     } else {
         Some(kind.to_owned())
@@ -403,5 +482,33 @@ mod tests {
                 .expect_err("{hostile:?} was accepted");
             assert!(draft.errors.url.is_some(), "{hostile:?} named no url error");
         }
+    }
+
+    /// The only way to send an empty date is to clear the picker, which shows
+    /// the reader's own date format rather than ours, so the message names
+    /// what is missing. A non-empty value that does not parse keeps the hint.
+    #[test]
+    fn an_empty_date_asks_for_one_and_a_bad_one_names_the_format() {
+        let empty = validate(1, form("  ", "x", "", "")).expect_err("empty date");
+        assert_eq!(empty.errors.date.as_deref(), Some("Pick a date."));
+        let bad = validate(1, form("10/08/2026", "x", "", "")).expect_err("bad date");
+        assert_eq!(
+            bad.errors.date.as_deref(),
+            Some("Use a date in YYYY-MM-DD form.")
+        );
+    }
+
+    /// "Under 40" was wrong: exactly forty is accepted.
+    #[test]
+    fn the_kind_message_matches_the_cap_it_enforces() {
+        let draft = validate(
+            1,
+            form("2026-08-01", "x", "", &"k".repeat(KIND_MAX_CHARS + 1)),
+        )
+        .expect_err("over the cap");
+        assert_eq!(
+            draft.errors.kind.as_deref(),
+            Some("Keep the kind to 40 characters or fewer.")
+        );
     }
 }

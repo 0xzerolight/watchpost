@@ -549,6 +549,45 @@ async fn a_chosen_period_shows_its_growth_badge() {
     );
 }
 
+/// The captions are server truth like the figures: the selected period's
+/// shows with JS off, and at All each tile names the day its series starts.
+#[tokio::test]
+async fn kpi_tiles_say_what_each_figure_covers() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_stars(ID_A, days_ago(40), 100).await;
+    h.seed_stars(ID_A, days_ago(1), 140).await;
+    h.seed_views(ID_A, days_ago(2), 5, 3).await;
+
+    let body = body_string(h.get("/repos/1?days=30").await).await;
+    assert!(
+        body.contains(r#"<span data-period-value="30" class="wp-delta wp-delta-up">+40</span>"#),
+        "{body}"
+    );
+    assert_eq!(
+        body.matches(r#"<span data-period-value="30" class="wp-kpi-caption">in 30 days</span>"#)
+            .count(),
+        2,
+        "{body}"
+    );
+
+    let all = body_string(h.get("/repos/1?days=-1").await).await;
+    assert!(
+        all.contains(&format!(
+            r#"<span data-period-value="-1" class="wp-kpi-caption">since <time datetime="{}">"#,
+            days_ago(40)
+        )),
+        "{all}"
+    );
+    assert!(
+        all.contains(&format!(
+            r#"<span data-period-value="-1" class="wp-kpi-caption">since <time datetime="{}">"#,
+            days_ago(2)
+        )),
+        "{all}"
+    );
+}
+
 #[tokio::test]
 async fn pulls_only_repo_charts_from_first_pull_observation() {
     let h = harness();
@@ -874,6 +913,258 @@ async fn path_sort_is_independent_of_the_referrer_sort() {
     assert!(at(&body, "reddit") < at(&body, "google"), "body was {body}");
 }
 
+/// The tables ignore the period, and say so: the note under the heading
+/// names the span they cover and is the same at every period. Past ten rows
+/// the rest render with the disclosure hook, both on the page and in a sort
+/// fragment.
+#[tokio::test]
+async fn traffic_sources_say_they_are_all_time_and_mark_rows_past_ten() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_views(ID_A, days_ago(20), 5, 3).await;
+    for i in 0..12 {
+        h.seed_referrer(ID_A, days_ago(1), &format!("site{i:02}.example"), 50 - i, 1)
+            .await;
+    }
+
+    for query in ["", "?days=7"] {
+        let body = body_string(h.get(&format!("/repos/1{query}")).await).await;
+        assert!(body.contains("<h2>Traffic sources</h2>"), "{query}: {body}");
+        assert!(
+            body.contains(&format!(
+                r#"All time since <time datetime="{}">"#,
+                days_ago(20)
+            )),
+            "{query}: {body}"
+        );
+        assert!(
+            body.contains("not affected by the period above. Uniques is a peak, never a total."),
+            "{query}: {body}"
+        );
+        assert!(
+            body.contains(r#"<div class="wp-split">"#),
+            "{query}: {body}"
+        );
+        assert_eq!(
+            body.matches(r#"<tr class="wp-more-row">"#).count(),
+            2,
+            "{query}: {body}"
+        );
+        assert!(
+            body.contains(r#"data-more-show="Show all 12""#),
+            "{query}: {body}"
+        );
+    }
+
+    let refs = body_string(h.get_targeting("/repos/1", "refs-table").await).await;
+    assert!(
+        refs.starts_with(r#"<table id="refs-table" class="wp-num-table" data-more="10">"#),
+        "{refs}"
+    );
+    assert!(!refs.contains("wp-split"), "{refs}");
+}
+
+/// A repo with no observed views has no first day to name, so the note
+/// leaves the date out rather than inventing one.
+#[tokio::test]
+async fn the_traffic_note_drops_its_date_when_nothing_was_observed() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_referrer(ID_A, days_ago(1), "google", 5, 4).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(
+        body.contains("All time, not affected by the period above."),
+        "{body}"
+    );
+}
+
+/// The bar class is server markup, so a sort fragment carries it too and
+/// nothing needs JavaScript to draw it.
+#[tokio::test]
+async fn share_bars_ride_in_the_sort_fragment() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_referrer(ID_A, days_ago(1), "big.example", 40, 9)
+        .await;
+    h.seed_referrer(ID_A, days_ago(1), "small.example", 10, 2)
+        .await;
+
+    let refs = body_string(
+        h.get_targeting("/repos/1?rsort=referrer&rdir=asc", "refs-table")
+            .await,
+    )
+    .await;
+    assert!(
+        refs.contains(r#"<td class="wp-bar-cell wp-share-20">big.example</td>"#),
+        "{refs}"
+    );
+    assert!(
+        refs.contains(r#"<td class="wp-bar-cell wp-share-5">small.example</td>"#),
+        "{refs}"
+    );
+}
+
+/// The repo page's disclosures and switcher are half server markup, half
+/// app.js. With the client half renamed or gone the page still renders every
+/// row, nothing collapses and nothing fails, so the client half is pinned
+/// here, fetched as a browser gets it. REPO-05 and REPO-07 extend the list.
+#[tokio::test]
+async fn the_repo_page_client_hooks_ship_in_the_assets() {
+    let h = harness();
+    let js = body_string(h.get("/assets/app.js").await).await;
+    for name in [
+        // Row disclosure (REPO-02): the class toggle, the boot and settle
+        // pass, and the two selectors the delegated click reads.
+        "function setMore(",
+        "function initMore(",
+        "[data-more-toggle]",
+        "table[data-more]",
+        // Events disclosure (REPO-05): a chip press opens the whole list
+        // first, so a filtered view is never partial, and a jump to an older
+        // row opens the table holding it.
+        "function showAllEvents(",
+        "showAllEvents();",
+        "function revealRow(",
+        // Repo switcher (REPO-07): an outside click and Escape close the
+        // open dropdown, which Pico's overlay does not always catch. The
+        // Escape needle is the focus-return line, which only the switcher's
+        // keydown listener contains; `evt.key !== "Escape"` alone already
+        // matches the toast's handler and would pin nothing.
+        "function closeMenus(",
+        "details.dropdown[open]",
+        "var hadFocus = menu.contains(document.activeElement);",
+    ] {
+        assert!(js.contains(name), "app.js is missing {name}");
+    }
+    let css = body_string(h.get("/assets/app.css").await).await;
+    assert!(
+        css.contains(".wp-collapsed .wp-more-row {\n  display: none;\n}"),
+        "app.css no longer hides the rows past the cut"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
+
+/// Where you are and where to go next: the section in the nav, a crumb up,
+/// every tracked repo one click away, the neighbours by name, and the repo
+/// itself on GitHub.
+#[tokio::test]
+async fn the_header_places_the_repo_and_links_onward() {
+    let h = harness();
+    h.seed_repo(1, "octo/aaa").await;
+    h.seed_repo(2, "octo/bbb").await;
+    h.seed_repo(3, "octo/ccc").await;
+
+    let first = body_string(h.get("/repos/1").await).await;
+    assert!(
+        first.contains(r#"<a href="/repos" aria-current="true">Repositories</a>"#),
+        "{first}"
+    );
+    assert!(
+        first.contains(concat!(
+            r#"<nav class="wp-crumb" aria-label="Breadcrumb">"#,
+            r#"<a href="/repos" data-period-link>Repositories</a>"#
+        )),
+        "{first}"
+    );
+    assert!(
+        first.contains(
+            r#"<details class="dropdown wp-switch"><summary>Switch repository</summary>"#
+        ),
+        "{first}"
+    );
+    assert!(
+        first.contains(
+            r#"<a href="/repos/1" data-period-link aria-current="page">octo/<wbr>aaa</a>"#
+        ),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"<a href="/repos/3" data-period-link>octo/<wbr>ccc</a>"#),
+        "{first}"
+    );
+    assert!(!first.contains(r#"rel="prev""#), "{first}");
+    assert!(
+        first.contains(concat!(
+            r#"<a href="/repos/2" data-period-link rel="next">Next"#,
+            r#"<span class="wp-visually-hidden">: octo/bbb</span>"#
+        )),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"<a href="http://127.0.0.1:1/octo/aaa" rel="noopener noreferrer">GitHub"#),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"Export <a href="/repos/1/export.csv" download>CSV</a>"#),
+        "{first}"
+    );
+
+    let last = body_string(h.get("/repos/3").await).await;
+    assert!(
+        last.contains(r#"<a href="/repos/2" data-period-link rel="prev">"#),
+        "{last}"
+    );
+    assert!(!last.contains(r#"rel="next""#), "{last}");
+}
+
+#[tokio::test]
+async fn a_lone_repo_has_no_switcher() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(!body.contains("wp-repo-nav"), "{body}");
+    // The crumb does not depend on having neighbours.
+    assert!(body.contains(r#"class="wp-crumb""#), "{body}");
+}
+
+#[tokio::test]
+async fn a_hostile_repo_name_is_escaped_in_the_switcher() {
+    let h = harness();
+    h.seed_repo(1, "octo/aaa").await;
+    h.seed_repo(2, "octo/<b>x</b>").await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(!body.contains("<b>x</b>"), "{body}");
+    assert!(
+        body.contains("octo/<wbr>&lt;b&gt;x&lt;/<wbr>b&gt;"),
+        "{body}"
+    );
+}
+
+/// A failed last sync shows where the reader is already looking: beside
+/// the name.
+#[tokio::test]
+async fn a_failed_sync_marks_the_title() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.state
+        .db
+        .call(|c| {
+            c.execute(
+                "UPDATE repos SET last_error = 'GitHub answered 502' WHERE id = 1",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(
+        body.contains(r#"<h1>octo/<wbr>aaa <span class="wp-title-glyph"><span class="wp-danger""#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"aria-label="Last sync failed: GitHub answered 502""#),
+        "{body}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Events + errors
 // ---------------------------------------------------------------------------
@@ -929,6 +1220,27 @@ async fn unknown_repo_is_not_found() {
         body.contains(r#"<a href="/repos">Back to repos</a>"#),
         "no way back: {body}"
     );
+}
+
+/// `/repos/abc` names nothing, exactly as `/repos/999` does, so it gets the
+/// same styled page instead of axum's text/plain 400 with a type name in it.
+#[tokio::test]
+async fn a_malformed_repo_id_is_the_styled_not_found_page() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    for uri in ["/repos/abc", "/repos/1.5", "/repos/%20"] {
+        let resp = h.get(uri).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+        let body = body_string(resp).await;
+        assert!(body.starts_with("<!DOCTYPE html>"), "{uri}: {body}");
+        assert!(
+            body.contains("That page or item does not exist."),
+            "{uri}: {body}"
+        );
+        assert!(!body.contains("i64"), "{uri}: {body}");
+        assert!(!body.contains("Cannot parse"), "{uri}: {body}");
+    }
 }
 
 #[tokio::test]

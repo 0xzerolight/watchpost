@@ -467,6 +467,10 @@
   }
 
   function toggleKind(kind) {
+    // A filter over a list that hides its older rows would hide matches with
+    // them, so every chip press shows the whole list first: a filtered view is
+    // never silently partial.
+    showAllEvents();
     if (kind === null || kind === undefined) {
       hiddenKinds.clear();
     } else if (hiddenKinds.has(kind)) {
@@ -2204,6 +2208,184 @@
     evt.preventDefault();
     save.click();
   });
+
+  // -------------------------------------------------------------------------
+  // Repo page: row disclosure and switcher
+  // -------------------------------------------------------------------------
+
+  /*
+   * Long tables open on their first rows. The server renders every row, marks
+   * the ones past the cut `wp-more-row`, and gives the table `data-more` plus a
+   * toggle that ships `hidden`. Collapsing is a class on the table, set here,
+   * so with JavaScript off nothing collapses and nothing offers to. It is a
+   * class rather than `hidden` on the rows because the events table's
+   * `row.hidden` belongs to `applyFilter`.
+   *
+   * Which tables the reader opened is kept by id. A sort swaps the whole
+   * table, and the fresh one would otherwise close again under the pointer. A
+   * Set rather than a flag on the element, because the element is what the
+   * swap throws away.
+   *
+   * The events table is the exception, on purpose. A mutation re-renders the
+   * section and the list closes again, unless the row just saved is one of the
+   * older ones (closing would hide what the reader just changed) or a kind
+   * filter is on (a filtered view must never be silently partial).
+   */
+  var EVENTS_TABLE = "wp-events-table";
+  var openTables = new Set();
+
+  /*
+   * The row a Save is about to re-render, by id. Recorded at request start,
+   * because the section swap that answers it replaces the button that knew.
+   */
+  var savedRowId = null;
+
+  function setMore(table, open) {
+    table.classList.toggle("wp-collapsed", !open);
+    if (open) {
+      openTables.add(table.id);
+    } else {
+      openTables.delete(table.id);
+    }
+    var toggle = table.querySelector("[data-more-toggle]");
+    if (toggle) {
+      toggle.hidden = false;
+      toggle.setAttribute("aria-expanded", String(open));
+      // Attribute text the server wrote; `textContent` keeps it text.
+      toggle.textContent = toggle.getAttribute(
+        open ? "data-more-hide" : "data-more-show",
+      );
+    }
+  }
+
+  /* Collapse every disclosure table in `root`, or `root` itself, unless the reader opened it. */
+  function initMore(root) {
+    var tables =
+      root.matches && root.matches("table[data-more]")
+        ? [root]
+        : root.querySelectorAll("table[data-more]");
+    for (var i = 0; i < tables.length; i++) {
+      setMore(tables[i], openTables.has(tables[i].id));
+    }
+  }
+
+  /* Open the events list, if it has older rows to show. */
+  function showAllEvents() {
+    var table = document.getElementById(EVENTS_TABLE);
+    if (table && table.hasAttribute("data-more")) {
+      setMore(table, true);
+    }
+  }
+
+  /*
+   * Open the table holding `row` when the row is one it collapsed. For code
+   * that jumps to a row from outside the table: a chart marker's click has to
+   * reveal an older event before it can scroll to it.
+   */
+  function revealRow(row) {
+    var table = row && row.closest ? row.closest("table[data-more]") : null;
+    if (
+      table &&
+      row.classList.contains("wp-more-row") &&
+      table.classList.contains("wp-collapsed")
+    ) {
+      setMore(table, true);
+    }
+  }
+
+  /*
+   * The repo switcher is a Pico `details.dropdown`. Pico closes it on an
+   * outside click with a full-screen overlay under the menu, but anything
+   * stacked above that overlay still takes the click itself. Closing every
+   * open menu the click was not inside covers those.
+   */
+  function closeMenus(except) {
+    var menus = document.querySelectorAll("details.dropdown[open]");
+    for (var i = 0; i < menus.length; i++) {
+      if (menus[i] !== except) {
+        menus[i].open = false;
+      }
+    }
+  }
+
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    closeMenus(target.closest("details.dropdown"));
+    var toggle = target.closest("[data-more-toggle]");
+    var table = toggle ? toggle.closest("table[data-more]") : null;
+    if (table) {
+      setMore(table, table.classList.contains("wp-collapsed"));
+    }
+  });
+
+  /*
+   * Escape closes an open switcher; Pico does nothing with it. Focus goes back
+   * to the summary when it was inside the menu, so the keyboard is not left on
+   * a link that just disappeared.
+   */
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Escape") {
+      return;
+    }
+    var menu = document.querySelector("details.dropdown[open]");
+    if (!menu) {
+      return;
+    }
+    var hadFocus = menu.contains(document.activeElement);
+    menu.open = false;
+    var summary = menu.querySelector("summary");
+    if (hadFocus && summary) {
+      summary.focus();
+    }
+  });
+
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    var elt = evt.detail ? evt.detail.elt : null;
+    var row =
+      elt && elt.hasAttribute && elt.hasAttribute("data-save") && elt.closest
+        ? elt.closest("tr")
+        : null;
+    savedRowId = row ? row.id : null;
+  });
+
+  /*
+   * After settle, not after swap: for the swap htmx dresses the new element in
+   * the old one's `class` and puts the server's back at settle, so a class set
+   * any earlier would be wiped. The settled element is the event's target.
+   * This listener is registered before the focus-continuity one, so a list
+   * that has to open is open before focus is put back into it.
+   */
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    var target = evt.target;
+    if (!target) {
+      return;
+    }
+    if (target.id === "refs-table" || target.id === "paths-table") {
+      initMore(target);
+    } else if (target.id === "events-section") {
+      var saved = savedRowId ? document.getElementById(savedRowId) : null;
+      savedRowId = null;
+      openTables.delete(EVENTS_TABLE);
+      if (
+        (saved && saved.classList.contains("wp-more-row")) ||
+        hiddenKinds.size > 0
+      ) {
+        openTables.add(EVENTS_TABLE);
+      }
+      initMore(target);
+    }
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      initMore(document);
+    });
+  } else {
+    initMore(document);
+  }
 
   // -------------------------------------------------------------------------
   // Focus continuity
