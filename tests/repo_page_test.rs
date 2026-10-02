@@ -1008,32 +1008,34 @@ async fn share_bars_ride_in_the_sort_fragment() {
 /// The repo page's disclosures and switcher are half server markup, half
 /// app.js. With the client half renamed or gone the page still renders every
 /// row, nothing collapses and nothing fails, so the client half is pinned
-/// here, fetched as a browser gets it. REPO-05 and REPO-07 extend the list.
+/// here, fetched as a browser gets it.
 #[tokio::test]
 async fn the_repo_page_client_hooks_ship_in_the_assets() {
     let h = harness();
     let js = body_string(h.get("/assets/app.js").await).await;
     for name in [
-        // Row disclosure (REPO-02): the class toggle, the boot and settle
-        // pass, and the two selectors the delegated click reads.
+        // Row disclosure (a long traffic table collapses past its tenth
+        // row): the class toggle, the boot and settle pass, and the two
+        // selectors the delegated click reads.
         "function setMore(",
         "function initMore(",
         "[data-more-toggle]",
         "table[data-more]",
-        // Events disclosure (REPO-05): a chip press opens the whole list
-        // first, so a filtered view is never partial, and a jump to an older
-        // row opens the table holding it.
+        // Events disclosure (the events list collapses its older rows): a
+        // chip press opens the whole list first, so a filtered view is never
+        // partial, and a jump to an older row opens the table holding it.
         "function showAllEvents(",
         "showAllEvents();",
         "function revealRow(",
         // The chart's event click calls it (the semicolon matches the call
         // in `focusRow`, not the declaration).
         "revealRow(row);",
-        // Repo switcher (REPO-07): an outside click and Escape close the
-        // open dropdown, which Pico's overlay does not always catch. The
-        // Escape needle is the focus-return line, which only the switcher's
-        // keydown listener contains; `evt.key !== "Escape"` alone already
-        // matches the toast's handler and would pin nothing.
+        // Repo switcher (the header's "Switch repository" dropdown): an
+        // outside click and Escape close the open dropdown, which Pico's
+        // overlay does not always catch. The Escape needle is the
+        // focus-return line, which only the switcher's keydown listener
+        // contains; `evt.key !== "Escape"` alone already matches the toast's
+        // handler and would pin nothing.
         "function closeMenus(",
         "details.dropdown[open]",
         "var hadFocus = menu.contains(document.activeElement);",

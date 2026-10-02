@@ -590,8 +590,8 @@ async fn saving_says_what_is_tracked_and_when_new_ones_fill_in() {
     .await;
     assert!(body.contains("Saved — tracking 1 repository."), "{body}");
     // The confirmation lands in the picker's own swap, so it goes to the
-    // shell's live region through `data-announce` rather than a role of its
-    // own (FND-07b).
+    // shell's live region (`#wp-live`) through `data-announce` rather than a
+    // role of its own.
     assert!(
         body.contains(r#"<p class="wp-notice wp-notice-success" data-announce>Saved"#),
         "{body}"

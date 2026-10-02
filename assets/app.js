@@ -646,8 +646,9 @@
     if (!row) {
       return;
     }
-    // An older event sits in the collapsed part of the list (REPO-05); open
-    // it first, or the scroll lands on a row that is not drawn.
+    // An older event sits in the part of the events list that collapses its
+    // older rows; open it first, or the scroll lands on a row that is not
+    // drawn.
     revealRow(row);
     // Asked at click time rather than cached: the preference can change
     // mid-session, and a reader who has asked for less motion gets the jump —

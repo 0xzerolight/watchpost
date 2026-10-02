@@ -483,7 +483,7 @@ pub fn sync_status_fragment(status: &SyncStatus, tz: Tz) -> Markup {
                     hx-swap="outerHTML" {
                     div class="wp-row" {
                         progress class="wp-progress" aria-label="Sync in progress" {}
-                        // Marked for the shell's live region (FND-07b); the
+                        // Marked for the shell's live region (`#wp-live`); the
                         // polls repeat it, and the hook speaks it once.
                         span data-announce { "Syncing…" }
                     }
