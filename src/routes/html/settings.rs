@@ -281,7 +281,23 @@ fn schedule_form(view: &ScheduleView) -> Markup {
 /// the picker and would otherwise throw away boxes the user has ticked but not
 /// saved. `repo.tracked` is therefore what the caller wants *rendered*, which
 /// on a refresh is the submitted form rather than the db.
+///
+/// Tracked rows come first, and the rest sit in a closed `<details>` under
+/// them. A closed disclosure still submits the boxes inside it, so this stays
+/// one form with one Save. The split reads `repo.tracked` as rendered, so on a
+/// Refresh a box ticked a moment ago moves up with it; ordering in the query
+/// was the rejected alternative, because it would group by the saved state.
+/// Within each group the order is `known_repos`' by-name order, which a stable
+/// partition keeps. With nothing tracked (a first run) the disclosure starts
+/// open: hiding the whole list behind a click on the screen that exists to
+/// pick from it would be a trap.
+///
+/// The actions sit under the tables, where a reader who has just ticked the
+/// last row is. With no repos known there is nothing to save, so Refresh is
+/// the only action and the primary one.
 pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, Markup)>, tz: Tz) -> Markup {
+    let (tracked, untracked): (Vec<&RepoRow>, Vec<&RepoRow>) =
+        repos.iter().partition(|repo| repo.tracked);
     html! {
         // The save is the form's own request: htmx triggers a form on `submit`,
         // which is what Enter in a field raises. The same attributes on the
@@ -294,70 +310,156 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, Markup)>, tz: Tz) ->
             hx-indicator="#repos-spinner"
             method="post"
             action="/settings/repos" {
+            // A confirmation arrives inside this form's own outerHTML swap,
+            // where a `role="status"` node inserted with its text is not
+            // reliably announced; `announced` hands it to the shell's
+            // `#wp-live` instead. An error keeps `notice`'s `role="alert"`,
+            // which is assertive and is read on insertion.
             @if let Some((kind, text)) = msg {
-                (notice(kind, text))
-            }
-            // Each action disables the button that started it and lights its
-            // own spinner. Both replace the picker they live in, so a second
-            // press mid-flight races a swap that is about to take the button
-            // away; and one shared spinner would light up beside whichever
-            // button was not pressed, since htmx only marks the indicator the
-            // request names.
-            div class="wp-actions" {
-                button type="submit" id="repos-save" { "Save" }
-                (spinner("repos-spinner"))
-                // Refresh is a second, different request, so it stays a plain
-                // button rather than a submitter — and its own attributes win
-                // over the ones it would otherwise inherit from the form.
-                button type="button" id="repos-refresh" class="secondary"
-                    hx-post="/settings/discover"
-                    hx-include="closest form"
-                    hx-target="#repos-picker"
-                    hx-swap="outerHTML"
-                    hx-disabled-elt="this"
-                    hx-indicator="#discover-spinner" { "Refresh from GitHub" }
-                (spinner("discover-spinner"))
+                @if matches!(kind, Notice::Error) {
+                    (notice(kind, text))
+                } @else {
+                    (announced(kind, text))
+                }
             }
             @if repos.is_empty() {
                 (empty_state("No repos known yet — load them from GitHub.", None))
+                div class="wp-actions" {
+                    (refresh_button(true))
+                }
             } @else {
-                (table_wrap(html! {
-                    table {
-                        thead {
-                            tr {
-                                th scope="col" { "Track" }
-                                th scope="col" { "Repo" }
-                                th scope="col" { "Last synced" }
-                                th scope="col" { "" }
-                            }
+                @if tracked.is_empty() {
+                    p class="wp-muted" {
+                        "Nothing is tracked yet — tick the repositories to track, then save."
+                    }
+                } @else {
+                    (picker_table("Tracked repositories", &tracked, true, tz))
+                }
+                @if !untracked.is_empty() {
+                    details class="wp-picker-more" open[tracked.is_empty()] {
+                        summary { "Not tracked (" (untracked.len()) ")" }
+                        (picker_table("Repositories not tracked", &untracked, false, tz))
+                    }
+                }
+                // Each action disables the button that started it and lights its
+                // own spinner. Both replace the picker they live in, so a second
+                // press mid-flight races a swap that is about to take the button
+                // away; and one shared spinner would light up beside whichever
+                // button was not pressed, since htmx only marks the indicator the
+                // request names.
+                div class="wp-actions" {
+                    button type="submit" id="repos-save" { "Save" }
+                    (spinner("repos-spinner"))
+                    (refresh_button(false))
+                    span class="wp-muted wp-small" {
+                        (tracked.len()) " of " (repos.len()) " tracked"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One of the picker's two tables. `tracked` decides the Last synced column
+/// and the error glyph: an untracked repo is not being synced, so neither its
+/// last sync nor its last failure is news.
+///
+/// The name cell is the box's label rather than text beside it, so the visible
+/// name is the accessible one and the click target is the whole name. It is
+/// the plain name, not [`super::ui::slash_breaks`]: a label's text is what a
+/// screenreader reads and what the label test pins, and the `.wp-picker` CSS
+/// lets the cell wrap anywhere instead. The glyph and the fork/archived marks
+/// follow the name in the same cell. In a column of their own they were
+/// off-screen on a phone and a page-width from their repo on a desktop.
+fn picker_table(label: &str, rows: &[&RepoRow], tracked: bool, tz: Tz) -> Markup {
+    table_wrap(html! {
+        table class="wp-picker" aria-label=(label) {
+            thead {
+                tr {
+                    th scope="col" { "Track" }
+                    th scope="col" { "Repo" }
+                    @if tracked {
+                        th scope="col" { "Last synced" }
+                    }
+                }
+            }
+            tbody {
+                @for repo in rows {
+                    tr {
+                        td {
+                            input type="checkbox" id=(format!("track-{}", repo.id))
+                                name="tracked" value=(repo.id)
+                                checked[repo.tracked];
                         }
-                        tbody {
-                            @for repo in repos {
-                                tr {
-                                    td {
-                                        input type="checkbox" id=(format!("track-{}", repo.id))
-                                            name="tracked" value=(repo.id)
-                                            checked[repo.tracked];
-                                    }
-                                    // The name cell is the box's label rather
-                                    // than text beside it: the visible name
-                                    // becomes the accessible one, and the click
-                                    // target grows from the box to the whole
-                                    // repo name.
-                                    td { label for=(format!("track-{}", repo.id)) { (repo.name) } }
-                                    td class="wp-muted wp-small" {
-                                        (timestamp(repo.last_synced_at.as_deref(), tz))
-                                    }
-                                    td {
-                                        @if let Some(error) = &repo.last_error {
-                                            (error_glyph(error))
-                                        }
-                                    }
+                        td {
+                            label for=(format!("track-{}", repo.id)) { (repo.name) }
+                            @if repo.fork {
+                                " " span class="wp-tag" { "fork" }
+                            }
+                            @if repo.archived {
+                                " " span class="wp-tag" { "archived" }
+                            }
+                            @if tracked {
+                                @if let Some(error) = &repo.last_error {
+                                    " " (error_glyph(error))
                                 }
                             }
                         }
+                        @if tracked {
+                            td class="wp-muted wp-small" {
+                                (timestamp(repo.last_synced_at.as_deref(), tz))
+                            }
+                        }
                     }
-                }))
+                }
+            }
+        }
+    })
+}
+
+/// "Refresh from GitHub". A second, different request from Save, so it stays
+/// a plain button rather than a submitter, and its own attributes win over the
+/// ones it would otherwise inherit from the form. `primary` drops the
+/// secondary style for the empty picker, where it is the only action.
+fn refresh_button(primary: bool) -> Markup {
+    html! {
+        button type="button" id="repos-refresh" class=[(!primary).then_some("secondary")]
+            hx-post="/settings/discover"
+            hx-include="closest form"
+            hx-target="#repos-picker"
+            hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            hx-indicator="#discover-spinner" { "Refresh from GitHub" }
+        (spinner("discover-spinner"))
+    }
+}
+
+/// What a picker save says it did.
+///
+/// A bare "Saved" said nothing about what was saved, and nothing about the gap
+/// that follows: a newly tracked repo stays empty on every page until a cycle
+/// collects it, which by default is up to an hour away. So the notice counts
+/// what is tracked now and, when something was added, says when it fills in
+/// and that Sync now, above the picker, is the shortcut. `next` is the
+/// scheduler's next tick; without a scheduler it reads "not scheduled".
+pub fn save_notice(
+    changed: usize,
+    added: usize,
+    tracking: usize,
+    next: Option<DateTime<Utc>>,
+    tz: Tz,
+) -> Markup {
+    html! {
+        @if changed == 0 {
+            "Saved — no changes."
+        } @else if tracking == 0 {
+            "Saved — nothing is tracked now."
+        } @else {
+            "Saved — tracking " (tracking) " "
+            (plural(tracking as i64, "repository", "repositories")) "."
+            @if added > 0 {
+                " New ones fill in on the next sync (" (future_timestamp(next, tz))
+                "), or press Sync now above."
             }
         }
     }
@@ -525,6 +627,13 @@ mod tests {
             error_streak: 0,
             backoff_until: None,
         }
+    }
+
+    fn pick(id: i64, name: &str, tracked: bool) -> RepoRow {
+        let mut row = repo(name, None, None);
+        row.id = id;
+        row.tracked = tracked;
+        row
     }
 
     use crate::schedule::{Resolved, Schedule, ScheduleSource};
@@ -754,7 +863,11 @@ mod tests {
             out.contains(r#"<label for="track-7">octo/x</label>"#),
             "{out}"
         );
-        assert!(!out.contains("aria-label=\"Track"), "{out}");
+        // Read off the checkbox's own tag: the table's `aria-label` names the
+        // table, not the box.
+        let input = &out[out.find("<input").unwrap()..];
+        let input = &input[..input.find('>').unwrap()];
+        assert!(!input.contains("aria-label"), "{input}");
     }
 
     #[test]
@@ -774,7 +887,7 @@ mod tests {
 
     #[test]
     fn picker_actions_carry_ids_and_one_spinner() {
-        let out = repos_picker(&[], None, Tz::UTC).into_string();
+        let out = repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC).into_string();
 
         assert!(out.contains(r#"<div class="wp-actions">"#), "{out}");
         assert!(out.contains(r#"id="repos-save""#), "{out}");
@@ -792,7 +905,7 @@ mod tests {
 
     #[test]
     fn picker_actions_disable_themselves_while_they_run() {
-        let out = repos_picker(&[], None, Tz::UTC).into_string();
+        let out = repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC).into_string();
 
         // Both actions re-render the picker they live in; a second press mid
         // flight races the swap that is about to replace them. The save request
@@ -858,7 +971,7 @@ mod tests {
     fn picker_table_scrolls_inside_its_own_wrapper() {
         let out = repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC).into_string();
         assert!(
-            out.contains(r#"<div class="overflow-auto wp-table-wrap"><table>"#),
+            out.contains(r#"<div class="overflow-auto wp-table-wrap"><table class="wp-picker" aria-label="Tracked repositories">"#),
             "{out}"
         );
     }
@@ -1146,5 +1259,155 @@ mod tests {
             }
         }
         assert_eq!(seen, 5, "every form was checked");
+    }
+
+    /// Sorted by name alone, the tracked set could not be read off a 26-row
+    /// list. It comes first now, and the rest wait one click away.
+    #[test]
+    fn tracked_repos_come_first_and_the_rest_wait_in_a_closed_disclosure() {
+        let out = repos_picker(
+            &[
+                pick(1, "octo/a", false),
+                pick(2, "octo/b", true),
+                pick(3, "octo/c", true),
+            ],
+            None,
+            Tz::UTC,
+        )
+        .into_string();
+
+        let b = out.find(r#"<label for="track-2">"#).unwrap();
+        let c = out.find(r#"<label for="track-3">"#).unwrap();
+        let group = out.find("<summary>Not tracked (1)</summary>").unwrap();
+        let a = out.find(r#"<label for="track-1">"#).unwrap();
+        assert!(b < c && c < group && group < a, "{out}");
+        assert!(
+            out.contains(r#"<details class="wp-picker-more"><summary>"#),
+            "the untracked group starts closed: {out}"
+        );
+        assert!(
+            out.contains(r#"aria-label="Tracked repositories""#),
+            "{out}"
+        );
+        assert!(out.contains("2 of 3 tracked"), "{out}");
+    }
+
+    /// An untracked repo is not being synced, so its last sync is not news:
+    /// the column printed "never" a dozen times down the untracked rows.
+    #[test]
+    fn an_untracked_row_has_no_last_synced_cell() {
+        let mut stale = pick(1, "octo/a", false);
+        stale.last_synced_at = Some("2026-08-17T09:05:00Z".to_owned());
+        let out = repos_picker(&[stale, pick(2, "octo/b", false)], None, Tz::UTC).into_string();
+
+        assert!(!out.contains("<time"), "{out}");
+        assert!(!out.contains("never"), "{out}");
+        assert!(!out.contains("Last synced"), "{out}");
+    }
+
+    /// On a first run nothing is tracked. Hiding the whole list behind a click
+    /// on the one screen that exists to pick from it would be a trap.
+    #[test]
+    fn with_nothing_tracked_the_list_starts_open() {
+        let out = repos_picker(&[pick(1, "octo/a", false)], None, Tz::UTC).into_string();
+        assert!(
+            out.contains(r#"<details class="wp-picker-more" open>"#),
+            "{out}"
+        );
+        assert!(out.contains("Nothing is tracked yet"), "{out}");
+        assert!(out.contains("0 of 1 tracked"), "{out}");
+    }
+
+    /// The glyph used to sit in a fourth column, off-screen on a phone and a
+    /// page-width from its repo on a desktop.
+    #[test]
+    fn the_sync_error_sits_beside_the_name() {
+        let out =
+            repos_picker(&[repo("octo/x", None, Some("github 502"))], None, Tz::UTC).into_string();
+        assert!(
+            out.contains(r#"octo/x</label> <span class="wp-danger""#),
+            "{out}"
+        );
+        let body = &out[out.find("<tbody>").unwrap()..];
+        assert_eq!(body.matches("<td").count(), 3, "{out}");
+        assert_eq!(out.matches("<th ").count(), 3, "{out}");
+    }
+
+    #[test]
+    fn forks_and_archived_repos_are_marked() {
+        let mut fork = pick(1, "octo/a", true);
+        fork.fork = true;
+        let mut archived = pick(2, "octo/b", true);
+        archived.archived = true;
+        let out = repos_picker(&[fork, archived], None, Tz::UTC).into_string();
+
+        assert!(
+            out.contains(r#"octo/a</label> <span class="wp-tag">fork</span>"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"octo/b</label> <span class="wp-tag">archived</span>"#),
+            "{out}"
+        );
+    }
+
+    /// With nothing known there is nothing to save; the one useful action is
+    /// the primary one.
+    #[test]
+    fn with_no_repos_refresh_is_the_only_and_primary_action() {
+        let out = repos_picker(&[], None, Tz::UTC).into_string();
+        assert!(!out.contains("repos-save"), "{out}");
+        assert!(
+            out.contains(
+                r#"<button type="button" id="repos-refresh" hx-post="/settings/discover""#
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("secondary"), "{out}");
+    }
+
+    /// The reader who has just ticked the last row is at the bottom of the
+    /// list, so that is where Save is.
+    #[test]
+    fn the_actions_follow_the_tables() {
+        let out = repos_picker(
+            &[pick(1, "octo/a", false), pick(2, "octo/b", true)],
+            None,
+            Tz::UTC,
+        )
+        .into_string();
+        let last_table = out.rfind("</table>").unwrap();
+        assert!(
+            last_table < out.find(r#"id="repos-save""#).unwrap(),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<button type="button" id="repos-refresh" class="secondary""#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn save_notice_says_what_changed_and_when_new_repos_fill_in() {
+        let none = save_notice(0, 0, 6, soon(), Tz::UTC).into_string();
+        assert_eq!(none, "Saved — no changes.");
+
+        let added = save_notice(1, 1, 1, soon(), Tz::UTC).into_string();
+        assert!(
+            added.starts_with(
+                "Saved — tracking 1 repository. New ones fill in on the next sync (<time"
+            ),
+            "{added}"
+        );
+        assert!(
+            added.ends_with("in 42m</time>), or press Sync now above."),
+            "{added}"
+        );
+
+        let removed = save_notice(1, 0, 5, soon(), Tz::UTC).into_string();
+        assert_eq!(removed, "Saved — tracking 5 repositories.");
+
+        let emptied = save_notice(2, 0, 0, soon(), Tz::UTC).into_string();
+        assert_eq!(emptied, "Saved — nothing is tracked now.");
     }
 }

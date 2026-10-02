@@ -310,6 +310,13 @@ async fn settings_page_lists_known_repos() {
         body.contains(r#"name="tracked" value="2""#) && !body.contains(r#"value="2" checked"#),
         "body was {body}"
     );
+    // The picker's section is the anchor the empty states and the setup
+    // redirect point at.
+    assert!(
+        body.contains(r#"<section id="wp-repos"><h2>Repositories</h2><form id="repos-picker""#),
+        "body was {body}"
+    );
+
     // Viewing settings must never reach GitHub.
     assert_eq!(h.server.received_requests().await.unwrap().len(), 0);
 }
@@ -541,6 +548,82 @@ async fn save_with_no_boxes_checked_untracks_everything() {
     let resp = h.post_form("/settings/repos", "", &token).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(h.tracked_ids().await.is_empty());
+}
+
+/// A bare "Saved" said nothing about what was saved, or that a newly tracked
+/// repo stays empty until a cycle collects it.
+#[tokio::test]
+async fn saving_says_what_is_tracked_and_when_new_ones_fill_in() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, false).await;
+    h.seed(ID_B, REPO_B, false).await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/repos", &format!("tracked={ID_A}"), &token)
+            .await,
+    )
+    .await;
+    assert!(body.contains("Saved — tracking 1 repository."), "{body}");
+    // The confirmation lands in the picker's own swap, so it goes to the
+    // shell's live region through `data-announce` rather than a role of its
+    // own (FND-07b).
+    assert!(
+        body.contains(r#"<p class="wp-notice wp-notice-success" data-announce>Saved"#),
+        "{body}"
+    );
+    assert!(!body.contains(r#"role="status""#), "{body}");
+    // The harness runs no scheduler, so the next sync reads as not scheduled.
+    assert!(
+        body.contains(
+            "New ones fill in on the next sync (not scheduled), or press Sync now above."
+        ),
+        "{body}"
+    );
+
+    let again = body_string(
+        h.post_form("/settings/repos", &format!("tracked={ID_A}"), &token)
+            .await,
+    )
+    .await;
+    assert!(again.contains("Saved — no changes."), "{again}");
+    assert!(!again.contains("New ones"), "{again}");
+}
+
+#[tokio::test]
+async fn an_unticked_repo_moves_into_the_not_tracked_group_on_save() {
+    let h = harness().await;
+    h.seed(ID_A, REPO_A, true).await;
+    h.seed(ID_B, REPO_B, true).await;
+    let token = h.csrf_token().await;
+
+    let body = body_string(
+        h.post_form("/settings/repos", &format!("tracked={ID_B}"), &token)
+            .await,
+    )
+    .await;
+
+    let at = |needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing from {body}"))
+    };
+    let b = at(r#"<label for="track-2">"#);
+    let group = at("<summary>Not tracked (1)</summary>");
+    let a = at(r#"<label for="track-1">"#);
+    assert!(b < group && group < a, "{body}");
+    assert!(body.contains("Saved — tracking 1 repository."), "{body}");
+    assert!(!body.contains("New ones"), "{body}");
+}
+
+/// The picker's markup names these classes and the stylesheet is what makes
+/// the table fit a phone; renaming one side alone fails nothing else.
+#[tokio::test]
+async fn the_picker_styles_ship_in_the_stylesheet() {
+    let h = harness().await;
+    let css = body_string(h.get("/assets/app.css").await).await;
+    for needle in [".wp-picker :is(th, td)", ".wp-picker-more", ".wp-tag {"] {
+        assert!(css.contains(needle), "{needle} missing from app.css");
+    }
 }
 
 #[tokio::test]

@@ -23,7 +23,8 @@ use crate::db::queries;
 use crate::errors::AppError;
 use crate::landing::{self, LandingPage};
 use crate::routes::html::settings::{
-    ScheduleView, landing_panel, repos_picker, schedule_panel, sync_status_fragment, token_panel,
+    ScheduleView, landing_panel, repos_picker, save_notice, schedule_panel, sync_status_fragment,
+    token_panel,
 };
 use crate::routes::html::{NavItem, Notice, base, future_timestamp, get_hx_target, page_header};
 use crate::routes::setup;
@@ -76,7 +77,9 @@ pub async fn settings_page(
                 (schedule_panel(&view, state.cfg.timezone))
                 (sync_status_fragment(&status, state.cfg.timezone))
             }
-            section {
+            // `wp-repos` is the anchor the empty dashboards and the setup
+            // redirect send a first-run reader to.
+            section id="wp-repos" {
                 h2 { "Repositories" }
                 (picker)
             }
@@ -198,32 +201,39 @@ fn checked_ids(body: &str) -> HashSet<i64> {
 /// POST /settings/repos — apply the checkbox state.
 ///
 /// Unchecked boxes send nothing at all, so "absent" means untrack — hence the
-/// diff against the db rather than against the form.
+/// diff against the db rather than against the form. The notice's counts come
+/// out of the same closure that applies the change, so it describes the write
+/// that happened rather than a second read; the next tick is scheduler state,
+/// not a row, so reading it adds no database call.
 pub async fn settings_save(
     State(state): State<Arc<AppState>>,
     body: String,
 ) -> Result<Markup, AppError> {
     let checked = checked_ids(&body);
 
-    let repos = state
+    let (repos, changed, added) = state
         .db
         .call(move |c| {
             let mut known = queries::known_repos(c)?;
+            let (mut changed, mut added) = (0usize, 0usize);
             for repo in &mut known {
                 let tracked = checked.contains(&repo.id);
                 if tracked != repo.tracked {
                     queries::set_tracked(c, repo.id, tracked)?;
                     repo.tracked = tracked;
+                    changed += 1;
+                    if tracked {
+                        added += 1;
+                    }
                 }
             }
-            Ok(known)
+            Ok((known, changed, added))
         })
         .await?;
-    Ok(repos_picker(
-        &repos,
-        Some((Notice::Success, html! { "Saved" })),
-        state.cfg.timezone,
-    ))
+    let tracking = repos.iter().filter(|repo| repo.tracked).count();
+    let tz = state.cfg.timezone;
+    let text = save_notice(changed, added, tracking, state.next_sync().await, tz);
+    Ok(repos_picker(&repos, Some((Notice::Success, text)), tz))
 }
 
 /// POST /settings/token — save or rotate the token.
