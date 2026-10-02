@@ -274,6 +274,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sync sentence use it. When the control that started a swap is gone afterwards, focus lands on the
   nearest focusable container, such as the sync panel, rather than on `<body>`.
 
+### Security
+
+- **rustls 0.23.45, past RUSTSEC-2026-0285.** The TLS stack under every GitHub API call accepted
+  TLS 1.3 handshake messages across encryption-level boundaries; 0.23.45 rejects them. watchpost
+  only speaks TLS to the configured API base and the GHCR package page, so the exposure was to a
+  hostile or intercepting server on that path, but the advisory fails the audit job and the fix is
+  a lockfile bump with no code change. `chacha20` moves from the yanked 0.10.1 to 0.10.2 in the
+  same update. Both versions resolve under the 1.88 MSRV.
+
 ## [1.3.0] - 2026-09-08
 
 ### Added
