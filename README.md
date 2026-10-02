@@ -187,7 +187,7 @@ More detail, and the caveats worth knowing before you draw conclusions from the 
 
 | Issue | Fix |
 |-------|-----|
-| **No repositories listed** | Open **Settings**, press **Refresh from GitHub**, tick the repos you want and **Save**. Nothing is tracked by default. |
+| **No repositories listed** | Open **Settings**, press **Refresh from GitHub**, tick the repos you want and **Save selection**. Nothing is tracked by default. |
 | **Views and clones charts are empty** | The token is missing *Administration: read*, or the repo is not one you own or administer. `--doctor` shows the per-repo last error. |
 | **Container exits, or "unable to open database"** | `data/` is not writable by the uid the container runs as. Set `PUID`/`PGID` in the install directory's `.env` to your own uid/gid and restart. |
 | **Syncs stop and nothing updates** | You are rate limited. `--doctor` prints the remaining budget and the reset time. Collection resumes on its own. |

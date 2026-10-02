@@ -7,6 +7,191 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Event impact lines (repo page, Events).** Each event row carries one muted line under its title
+  comparing views per day over the seven complete UTC days before the event with the days from the
+  event to yesterday, plus the star change over each window: `Views/day 38 → 89 (+134%) · stars ±0
+  → +6 (2 days so far)`. Whether a post moved anything is the question the event log exists to
+  answer, and until now the reader had to hover the chart either side of a marker and do the
+  division by eye.
+
+  It is a rate per *observed* day rather than a sum, because the after-window is still filling and
+  is shorter than the before-window by design; a gap shrinks the denominator instead of counting as
+  a zero day. Today's partial bucket is left out of both windows, uniques are not used because they
+  cannot be summed, and the line is omitted when either window has fewer than two observed days.
+  The percentage is worked out from the two rounded rates printed beside it, so the line never
+  contradicts itself — computing it from the unrounded rates printed `2 → 2 (+43%)` on real data —
+  and it is shown only when the before-rate is at least three views a day, below which a percentage
+  is noise. Another event inside either window is flagged `(overlaps another event)` rather than
+  hidden: the reader can judge an overlap, the code cannot. The series are the dense ones the page
+  already loads, and an add, edit or delete swap reads them over the page's own window, so a
+  re-rendered row agrees with the one the page load drew.
+
+- **Views change against the previous period (Analytics).** The repo table's Views cell carries a
+  signed percentage: the last N complete UTC days against the N days before them. Unlike the impact
+  line it compares two equal spans, so it needs every day of both windows observed and an earlier
+  sum above zero — a gap would make one sum cover fewer days than the other — and otherwise renders
+  nothing, never `NaN%` or `Infinity%`. All has no previous period and no figure. Every period's
+  value ships behind the hidden-span pattern, so a period change costs no request and the page is
+  right with JavaScript off. "Reading the numbers" in ARCHITECTURE.md now says why the two
+  comparisons treat gaps differently, and why the Views figure, which includes today, and its
+  change, which does not, are not read off the same days. It is the leaderboard rather than a KPI
+  tile because the leaderboard is where repos are compared.
+
+- **Repository switcher and previous/next links (repo page).** The header gains a crumb back to
+  Repositories, a Switch repository menu listing every tracked repo with the current one marked,
+  Previous and Next in name order, a GitHub link, and the ⚠ sync-failure glyph beside the name when
+  the last sync failed. Moving from one repo to the next used to mean a trip back through the
+  dashboard. The list is the dashboard's own `repo_overview` read, made inside the page's existing
+  `Db::call`, so the page still renders from one call and no query was added. On a repo page the
+  Repositories nav entry is marked as the current section (`aria-current="true"`, a section rather
+  than a page).
+
+- **Sync failures on Repositories and Analytics.** When any tracked repo's last sync failed, both
+  overview pages open with one line — "1 repository failed its last sync — see Settings" — linking
+  to the picker, and the repo's card or leaderboard row carries the ⚠ glyph with the stored error
+  category. Failures were visible only in the Settings picker, which is not where anyone looks day
+  to day. The data was already in each page's `Db::call`, and only the category reaches the page.
+
+- **Period carried in links between pages.** A non-default period now travels as `?days=N` in the
+  repo header's crumb, switcher and previous/next links, in the Analytics leaderboard and Recent
+  changes rows, and in the nav's Analytics link on a repo page; All removes it. Choosing 30 days on
+  Analytics and opening a repo used to land on its whole history. The hrefs are rewritten in the
+  browser on load and on every period change, by the same rule as the address bar, so with
+  JavaScript off they are plain links. Remembering the period across visits was left out: a stored
+  period changes what every page opens on, which makes it an implicit preference.
+
+- **Share bars behind traffic-source names (repo page).** Each referrer and path name cell is shaded
+  in proportion to its views against the largest row shown. The width is one of 21 `wp-share-N`
+  classes in 5% steps rather than an inline style, which the CSP forbids, and the bar is CSS alone,
+  so it survives a sort swap and works with JavaScript off. The number stays the accessible value;
+  the bar is decoration.
+
+- **A notice when JavaScript is off.** Every page opens its content with a `<noscript>` notice:
+  charts and editing need JavaScript, and the tables and totals are complete without it. Before, a
+  reader with scripts blocked saw empty chart space and dead buttons with no reason given. A
+  `noscript` element is not a script, so the CSP is unaffected.
+
+### Changed
+
+- **Traffic sources as two side-by-side tables (repo page).** The Views section was two full-width
+  20-row tables that took most of the page. It is now Traffic sources: Referrers and Paths side by
+  side from 64rem and stacked below it, ten rows each, with a Show all button for the rest. A muted
+  line says what the tables cover — "All time since Aug 2, not affected by the period above.
+  Uniques is a peak, never a total." Both were true before and stated nowhere, and the period
+  selector just above made the tables look filtered. The column is headed Peak uniques for the same
+  reason. Paths display relative to the repo, with the full path in the cell's title, and GitHub's
+  page title shows only when it says something the path does not. Name sorting ignores case.
+
+  Every row is still server-rendered. The collapse is a class JavaScript applies, so with
+  JavaScript off every row shows, and the expanded state survives a sort swap. The date in the line
+  is the first observed views day in the payload the page already ships, so there is no new query.
+
+- **A shorter events list (repo page).** Event rows are one line each — Date, Kind, Event, Actions —
+  with notes behind a disclosure under the title instead of a column of their own. Edit and Delete
+  are quiet outlined buttons, Delete in danger ink, each with a visually hidden name such as "Edit
+  r/ajatt, 2026-09-01" so a screen reader knows which row it acts on. Only the newest ten events
+  show, with "Show N older events" for the rest. Pressing a kind chip expands the list first, so a
+  filtered view is never partial; editing an older event keeps it in view; a click on a chart column
+  opens the list before scrolling to the row. The collapse is a class rather than `hidden`, because
+  the kind filter already owns `hidden`. `#events-data` and the chart markers keep the full list.
+
+  Below 40rem each row is a small grid — date, kind and actions, then the title, then the notes —
+  and the edit row follows the same grid, so editing on a phone never scrolls sideways.
+
+- **Compact event form with confirmations (repo page).** "+ Add event" is a compact button on the
+  chip row, and the open form puts Date, Title and Kind on one row. The form is `novalidate`, so
+  every rejection comes from the server's one validation path and renders like the edit row's,
+  rather than a browser bubble for some fields and a server message for others. An empty date says
+  "Pick a date.", and kinds are capped at 40 characters with a matching `maxlength`. Add, save and
+  delete each confirm with one line ("Event added.") that a screen reader hears once.
+
+  Delete's dialog names the event — `Delete “r/ajatt” (2026-09-01)? This cannot be undone.` — with a
+  danger-styled Delete button. Any `hx-confirm` trigger can now set the dialog's heading, button
+  label and danger style through `data-confirm-title`, `data-confirm-label` and
+  `data-confirm-danger`; a trigger without them gets the plain Confirm dialog as before. The form
+  also carries `method="post"` and an action, so a submit with JavaScript off is a POST the CSRF
+  check refuses with the styled page, never a GET that drops the entry.
+
+- **KPI tile captions (repo page).** Every tile says what its figure covers: "+18 in 30 days" on a
+  level tile, "in 30 days" on a rate tile, and "since Feb 12" at All, the first observed day being
+  where an all-time figure honestly starts. A series with no observation gets no caption, never
+  "+0". The captions ship per period in hidden spans, like the deltas, so they are right with
+  JavaScript off and a period change writes no text. Below 40rem the tiles sit two to a row, and an
+  odd last tile spans it.
+
+- **One chart tooltip for figures and events.** Hovering a column shows its values and, under a
+  hairline, the events in that bucket with their kind chips. A column with an event used to show the
+  marker's own tip instead of the numbers, so the two things a reader wants side by side were never
+  on screen together. Event markers sit in a lane of their own above the plot, clear of the top
+  gridline and the line itself, and only that lane hit-tests as a marker. A click on a column with
+  events still jumps to the event row, and the tooltip lists series in legend order.
+
+  A week or month bucket that was only partly observed says so in its title — "Week of 2026-07-27 ·
+  1 of 7 days observed" — and draws its bar faded. A sparse week summed into one bar otherwise reads
+  as a quiet week. Every plotted value and the day zoom are unchanged.
+
+- **One accent colour for every chart series.** Stars, views, clones, downloads and container pulls
+  all draw in one blue with its gradient wash; the uniques line under views and clones is muted ink
+  and thinner, and the legend tells the two apart. The per-metric hues were borrowed event-kind
+  slots, so a Downloads line could share its red with reddit's markers, and red and green belong to
+  delta direction. One overlap remains: the accent is still kind slot 0, so kinds that hash there
+  (youtube, twitter, launch) draw their markers in the series blue, kept apart only by sitting in
+  the marker lane. Freeing the slot needs either a ninth colour token or a seven-slot kind hash, and
+  the hash would recolour every existing kind.
+
+- **Recent changes grouped by day (Analytics).** The heading reads "Recent changes · last 14 days",
+  each UTC day appears once as a small label above its rows, and each repo's deltas sit right after
+  its name instead of pushed to the far edge. The list keeps 20 rows, and when there were more a
+  closing line says older changes are on each repository's page, rather than the list stopping
+  without saying so. The labels are the stored UTC dates and are never relabelled "Today", which
+  would be wrong for a reader east or west of UTC for part of every day.
+
+- **Leaderboard columns labelled by period (Analytics).** The Growth and Views headers say which
+  period they follow ("Growth · 30 days", "· all time" at All), and Downloads and Container pulls say
+  "total", because those two ignore the period. The table fits all six columns at 768px, and below
+  40rem the name column stays pinned while the figures scroll. Zero growth reads "±0", like the tile
+  badges, through the one signed-number formatter the tiles, the leaderboard, the feed, the cards and
+  the impact line now share.
+
+- **Dashboard cards (Repositories).** Footers line up across a row, a hairline replaces Pico's
+  shadow, and the whole card opens the repo, with the ⚠ glyph and the last-synced time raised above
+  the stretched link so their tooltips still show. A card carries its star growth ("+18 stars · 30
+  days") when growth was observed, a lone reading draws a dot instead of an invisible sparkline, and
+  "0 events" is left out. A repo that has never synced shows "Waiting for first sync · in 42m"
+  instead of an empty sparkline over dashes that read as zeroes.
+
+- **First-run guidance from setup to the first sync.** With nothing tracked, Repositories and
+  Analytics say why — "No repositories tracked yet — watchpost only collects the ones you pick." —
+  and link straight to the picker. Setup says it is step one of two and, on a valid token, goes to
+  the picker rather than to an empty dashboard. Saving the picker says what happens next: "Saved —
+  tracking 6 repositories. New ones fill in on the next sync (in 42m), or press Sync now above."
+  Starting a sync on Save was left out: it brings GitHub calls forward from the schedule.
+
+- **Repository picker order and layout (Settings).** Tracked repos list first, and the rest sit in a
+  collapsed "Not tracked (N)" group inside the same form, so a Save still submits them. The table
+  fits a phone, the ⚠ glyph and the fork and archived tags sit after the name, an untracked row
+  leaves Last synced blank rather than saying "never", and Save sits under the table beside a "14 of
+  26 tracked" count. With no repos loaded, only Refresh from GitHub shows.
+
+- **Settings and setup layout and wording.** Settings is one centred column with inputs capped at a
+  readable width. The three save buttons say what they save — Save start page, Save interval, Save
+  selection — and the copy keeps one vocabulary: "repositories" in sentences, "track" as the verb,
+  every notice a full sentence. The setup page shows the brand without nav links, which could only
+  ever redirect back to it.
+
+- **Current section marked in the nav.** The current nav item is ink, bold and underlined, and the
+  brand is ink rather than link blue. Before, every nav link looked the same on every page.
+
+- **One type scale, section rhythm and table style.** `h2` is 1.25rem at weight 600, clearly below
+  the 2rem `h1`; sections sit one 2rem gap apart; small text has one size. Every data table shares
+  one numeric style — right-aligned tabular figures, names that wrap, sort links in ink — and a
+  table wider than its wrapper shows a scroll-edge shadow on the cut-off side. The period select
+  matches the height of the buttons beside it, and the Analytics portfolio chart drops its card frame
+  to match the repo page's chart. On a touch screen sort links, chips, disclosures and row actions
+  get larger hit areas; with a mouse the look is unchanged.
+
 ### Fixed
 
 - **Release downloads count a renamed asset once.** The download total carried every
@@ -30,6 +215,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shows as a one-day spike on the chart. A read that answers with no assets at all leaves the
   day empty, so the previous day's total carries. That only happens when every asset has been
   deleted.
+
+- **Portfolio badges no longer count a newly tracked repo as growth (Analytics).** The badges took
+  the period's movement of the summed star curve, and that curve steps up by a repo's whole level
+  on the day watchpost first reads it. Tracking a 400-star repo therefore showed as +400 stars of
+  growth, and the badge disagreed with the Growth column beneath it. Each badge is now the
+  None-aware sum of the per-repo growth figures, which already measure from a repo's first observed
+  value inside the window, so a badge equals its column added up. The curve keeps its documented
+  step.
+
+- **The sync panel no longer reports a skipped or rate-limited cycle as a success (Settings).** A
+  cycle with every repo in backoff, or with nothing tracked, read as a green "Synced 0 repos", and a
+  rate-limited cycle as a green success for however many repos it reached first. The status now carries how many repos were skipped and
+  whether the cycle stopped on the rate limit or failed, set by the collector where it happens
+  rather than parsed back out of the cycle report's strings. Each case gets its own line: "Synced 4
+  repositories · 2m ago"; "GitHub rate limit reached — sync stopped after 2 of 6. Resumes in 38m";
+  a muted "2 skipped after recent errors; retried after their backoff"; "Nothing to sync yet — pick
+  repositories below."; and, when every repo came back partial, "No repository fully synced", since
+  partial reads have already written rows. A failed cycle shows a fixed category and no detail.
+
+- **A rejected setup token no longer nests a second page inside the form.** The error branch
+  answered with the whole setup page, which htmx swapped into the form, so a bad token showed a
+  second nav and heading inside the first. It now answers with the form alone, the notice above the
+  field, the field marked invalid and described by the notice, and focus back in it. Every setup and
+  settings form also carries `method="post"` and an action matching its `hx-post`, so a submit
+  before htmx loads is a POST and a token never lands in the address bar.
+
+- **Unknown addresses and malformed ids show the styled Not found page.** An unknown path answered
+  an empty 404 and a wrong method a bare 405, and `/repos/abc` answered axum's plain-text "Cannot
+  parse `abc` to a `i64`". Every one of them now renders the app's own page, inside the setup gate,
+  CSRF check and security headers, and never echoes the path, the method or the parser's message. A
+  4xx page is a calm status notice; a 5xx keeps its alert.
+
+- **Pages no longer scroll sideways on a phone.** Long repo names break after the owner's slash, the
+  nav wraps at 360px and 320px, an edit row's hidden labels are clipped by the table wrapper rather
+  than widening the page, a long kind chip stops at its cell, and the toast keeps equal gutters.
+  Wide tables scroll inside their own wrapper, never the page.
+
+- **Muted text, deltas and borders meet AA contrast in both themes.** Delta figures used the chart
+  mark colours, which reach 3:1 — enough for a mark, not for text — and now read Pico's text-grade
+  insert and delete colours. Muted text in the dark theme is lifted to 4.5:1 on the card surface, a
+  dark chart slot that was byte-identical to its light twin is re-stepped, and tooltips, toasts and
+  the skip link share one border token defined in both themes.
+
+- **Keyboard focus and chip state show without colour or hover.** Every focusable control draws one
+  opaque 2px ring set off from its edge, which Pico's translucent ring did not reliably show; a
+  focused KPI tile differs from an unfocused one, and the tiles no longer draw one group ring
+  around the whole row. A switched-off kind chip shows a hollow dot and a muted label, so on and off
+  differ in shape and not only in colour, and unchecked checkboxes have a border that reads.
+
+- **Swapped confirmations are announced once.** A status that arrives together with its text in an
+  htmx swap is not reliably spoken, and a poll that re-renders unchanged text can be spoken again.
+  Every page now has one visually hidden live region outside `<main>`, and a settle hook copies the
+  first `data-announce` text of a swap into it only when it changed; the event confirmations and the
+  sync sentence use it. When the control that started a swap is gone afterwards, focus lands on the
+  nearest focusable container, such as the sync panel, rather than on `<body>`.
 
 ## [1.3.0] - 2026-09-08
 
