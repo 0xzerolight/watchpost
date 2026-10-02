@@ -1049,6 +1049,34 @@ async fn the_repo_page_client_hooks_ship_in_the_assets() {
     );
 }
 
+/// On a phone the kind cell is the event row's flexible track between the
+/// date and the actions. A chip never wraps, so a long kind, which may run to
+/// forty characters, ran under the Edit button; inside that grid it stops at
+/// its cell's edge with an ellipsis.
+#[tokio::test]
+async fn a_long_kind_chip_stops_at_its_cell_on_a_phone() {
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+    let phone = css
+        .split_once("@media (max-width: 40rem) {\n  table.wp-events,")
+        .unwrap_or_else(|| panic!("no phone events grid in app.css"))
+        .1;
+    let rule = phone
+        .split_once("table.wp-events > tbody > tr > td:nth-child(2) > .wp-chip {")
+        .unwrap_or_else(|| panic!("no phone kind-chip rule in the events grid"))
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+    for needle in [
+        "max-width: 100%;",
+        "overflow: hidden;",
+        "text-overflow: ellipsis;",
+    ] {
+        assert!(rule.contains(needle), "{needle} missing from {rule}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------

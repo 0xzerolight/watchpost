@@ -1170,6 +1170,29 @@ tr.wp-edit-row [name="kind"] {
     grid-area: kind;
   }
 
+  /*
+   * The kind cell is the flexible track between the date and the actions,
+   * and a chip never wraps, so a long kind (up to forty characters) ran under
+   * Edit. Here the chip stops at its cell's edge with an ellipsis; the filter
+   * chips above the table still spell every kind in full. Wrapping inside
+   * the pill was rejected: a two-line pill reads as a blob, not a label.
+   * `inline-block` because an ellipsis needs a block container, which the
+   * chip's own `inline-flex` is not.
+   */
+  table.wp-events > tbody > tr > td:nth-child(2) > .wp-chip {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(2) > .wp-chip::before {
+    display: inline-block;
+    margin-right: 0.3rem;
+    vertical-align: 0.05em;
+  }
+
   table.wp-events > tbody > tr > td:nth-child(3) {
     grid-area: event;
   }
