@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use maud::Markup;
 use rusqlite::Connection;
@@ -24,6 +24,7 @@ use serde::Deserialize;
 use crate::csrf::CsrfToken;
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
+use crate::routes::PathId;
 use crate::routes::html::repo::{
     ChartPayload, ChartSeries, KpiData, PopularParams, RepoView, Sort, popular_table, repo_body,
 };
@@ -63,7 +64,7 @@ enum Fragment {
 ///   are allowlisted the same way (see [`Sort::parse`]).
 pub async fn repo_page(
     State(state): State<Arc<AppState>>,
-    Path(repo_id): Path<i64>,
+    PathId(repo_id): PathId<i64>,
     Query(params): Query<RepoParams>,
     csrf: CsrfToken,
     headers: HeaderMap,

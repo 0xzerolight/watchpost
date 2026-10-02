@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
@@ -35,6 +35,7 @@ use serde::Deserialize;
 
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
+use crate::routes::PathId;
 use crate::routes::html::repo::{
     EventDraft, EventErrors, EventsView, event_form_row, event_row, events_section,
 };
@@ -68,7 +69,7 @@ pub struct EventForm {
 /// POST /repos/{id}/events
 pub async fn event_create(
     State(state): State<Arc<AppState>>,
-    Path(repo_id): Path<i64>,
+    PathId(repo_id): PathId<i64>,
     Form(form): Form<EventForm>,
 ) -> Result<Response, AppError> {
     let outcome = state
@@ -98,7 +99,7 @@ pub async fn event_create(
 /// every method but GET — the same extractor serves both this and the create.
 pub async fn event_update(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
     Form(form): Form<EventForm>,
 ) -> Result<Response, AppError> {
     let outcome = state
@@ -126,7 +127,7 @@ pub async fn event_update(
 /// DELETE /repos/{id}/events/{eid}
 pub async fn event_delete(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Response, AppError> {
     let data = state
         .db
@@ -147,7 +148,7 @@ pub async fn event_delete(
 /// form's Cancel button swaps back in.
 pub async fn event_row_get(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Markup, AppError> {
     Ok(event_row(repo_id, &fetch(&state, repo_id, event_id).await?))
 }
@@ -155,7 +156,7 @@ pub async fn event_row_get(
 /// GET /repos/{id}/events/{eid}/edit — the same row as inputs.
 pub async fn event_edit_form(
     State(state): State<Arc<AppState>>,
-    Path((repo_id, event_id)): Path<(i64, i64)>,
+    PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Markup, AppError> {
     let event = fetch(&state, repo_id, event_id).await?;
     Ok(event_form_row(repo_id, event_id, &EventDraft::from(&event)))

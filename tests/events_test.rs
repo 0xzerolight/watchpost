@@ -893,6 +893,33 @@ async fn unknown_ids_are_not_found() {
     );
 }
 
+/// A malformed id in either segment is an address that names nothing: the
+/// styled 404, never axum's plain-text 400. Every request carries a valid
+/// token, so the CSRF layer lets the mutations through to the extractor.
+#[tokio::test]
+async fn malformed_ids_are_not_found() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    for (method, uri) in [
+        ("DELETE", "/repos/1/events/x"),
+        ("PUT", "/repos/1/events/x"),
+        ("DELETE", "/repos/abc/events/1"),
+        ("POST", "/repos/abc/events"),
+        ("GET", "/repos/1/events/x"),
+        ("GET", "/repos/1/events/x/edit"),
+    ] {
+        let resp = h.send(method, uri, &valid_fields()).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("That page or item does not exist."),
+            "{method} {uri}: {body}"
+        );
+        assert!(!body.contains("Cannot parse"), "{method} {uri}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn csrf_required_on_all_three_mutations() {
     let h = harness();

@@ -931,6 +931,27 @@ async fn unknown_repo_is_not_found() {
     );
 }
 
+/// `/repos/abc` names nothing, exactly as `/repos/999` does, so it gets the
+/// same styled page instead of axum's text/plain 400 with a type name in it.
+#[tokio::test]
+async fn a_malformed_repo_id_is_the_styled_not_found_page() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    for uri in ["/repos/abc", "/repos/1.5", "/repos/%20"] {
+        let resp = h.get(uri).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+        let body = body_string(resp).await;
+        assert!(body.starts_with("<!DOCTYPE html>"), "{uri}: {body}");
+        assert!(
+            body.contains("That page or item does not exist."),
+            "{uri}: {body}"
+        );
+        assert!(!body.contains("i64"), "{uri}: {body}");
+        assert!(!body.contains("Cannot parse"), "{uri}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn markup_escapes_repo_and_referrer_names() {
     let h = harness();

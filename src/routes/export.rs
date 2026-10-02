@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rusqlite::Connection;
@@ -32,6 +32,7 @@ use serde::Serialize;
 
 use crate::db::queries;
 use crate::errors::{AppError, DbError};
+use crate::routes::PathId;
 use crate::state::AppState;
 use crate::types::{
     ContainerPullRow, Event, Metric, PopularKind, PopularRow, ReleaseAssetRow, RepoOverview,
@@ -57,7 +58,7 @@ const CSV_COLUMNS: [&str; 12] = [
 /// GET /repos/{id}/export.csv
 pub async fn export_csv(
     State(state): State<Arc<AppState>>,
-    Path(repo_id): Path<i64>,
+    PathId(repo_id): PathId<i64>,
 ) -> Result<Response, AppError> {
     let (name, body) = state
         .db
@@ -76,7 +77,7 @@ pub async fn export_csv(
 /// GET /repos/{id}/export.json
 pub async fn export_json(
     State(state): State<Arc<AppState>>,
-    Path(repo_id): Path<i64>,
+    PathId(repo_id): PathId<i64>,
 ) -> Result<Response, AppError> {
     let doc = state
         .db
