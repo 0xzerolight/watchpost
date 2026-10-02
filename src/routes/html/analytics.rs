@@ -11,10 +11,10 @@
 use maud::{Markup, html};
 use serde::Serialize;
 
-use crate::routes::html::index::nothing_tracked;
+use crate::routes::html::index::{nothing_tracked, sync_failures_notice};
 use crate::routes::html::{
-    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script,
-    page_header, period_select, plural, signed, slash_breaks, table_wrap,
+    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, error_glyph,
+    json_script, page_header, period_select, plural, signed, slash_breaks, table_wrap,
 };
 use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
@@ -135,6 +135,9 @@ pub struct LeaderRow {
     /// publishes no release assets, and one shipping binaries publishes no
     /// image.
     pub pulls: Option<i64>,
+    /// The stored category of the repo's last failed sync, shown as the ⚠
+    /// glyph beside its name. `None` when the last sync succeeded.
+    pub last_error: Option<String>,
 }
 
 /// Everything the page renders, borrowed from the handler's one `db.call`.
@@ -162,6 +165,9 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
         @if view.leaders.is_empty() {
             (nothing_tracked())
         } @else {
+            (sync_failures_notice(
+                view.leaders.iter().filter(|row| row.last_error.is_some()).count(),
+            ))
             (portfolio_section(view))
             (leaders_section(view.leaders, view.days))
             (changes_section(view.changes, view.changes_truncated))
@@ -206,6 +212,9 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                                 td {
                                     a href=(format!("/repos/{}", row.repo_id)) {
                                         (slash_breaks(&row.name))
+                                    }
+                                    @if let Some(error) = &row.last_error {
+                                        " " (error_glyph(error))
                                     }
                                 }
                                 td { (level(row.stars)) }
@@ -497,6 +506,7 @@ mod tests {
             views_change: [None; PERIOD_COUNT],
             downloads: Some(155),
             pulls: Some(70),
+            last_error: None,
         }
     }
 
@@ -840,6 +850,43 @@ mod tests {
             .find(r#"<span data-period-value="-1" hidden>400</span>"#)
             .unwrap();
         assert!(cell < out.find("wp-views-change").unwrap(), "out was {out}");
+    }
+
+    #[test]
+    fn a_failed_sync_is_named_above_the_portfolio_and_marked_in_its_row() {
+        let payload = payload(vec![Some(12)]);
+        let mut broken = leader("octo/b", Some(1));
+        broken.last_error = Some("network error".into());
+        let rows = [leader("octo/a", Some(3)), broken];
+        let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
+
+        let line = out
+            .find("1 repository failed its last sync")
+            .expect("line rendered");
+        let portfolio = out.find("<h2>Portfolio</h2>").expect("portfolio rendered");
+        assert!(line < portfolio, "out was {out}");
+        assert!(
+            out.contains(r#"<a href="/settings#wp-repos">see Settings</a>"#),
+            "out was {out}"
+        );
+        // The glyph sits beside the failing repo's name, and only there.
+        assert!(
+            out.contains(&format!(
+                r#"<a href="/repos/7">octo/<wbr>b</a> {}"#,
+                error_glyph("network error").into_string()
+            )),
+            "out was {out}"
+        );
+        assert_eq!(out.matches("wp-danger").count(), 1, "out was {out}");
+    }
+
+    #[test]
+    fn a_healthy_portfolio_has_no_failure_line_or_glyph() {
+        let payload = payload(vec![Some(12)]);
+        let rows = [leader("octo/a", Some(3))];
+        let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
+        assert!(!out.contains("last sync"), "out was {out}");
+        assert!(!out.contains("wp-danger"), "out was {out}");
     }
 
     fn change(deltas: Vec<(ChangeMetric, i64)>) -> RepoChange {

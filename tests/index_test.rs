@@ -349,6 +349,35 @@ async fn last_error_renders_a_badge_with_the_message() {
 }
 
 #[tokio::test]
+async fn a_failed_sync_is_announced_above_the_cards() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    h.state
+        .db
+        .call(|c| queries::record_sync_err(c, ID_A, "github 502", None))
+        .await
+        .unwrap();
+
+    let body = body_string(h.get("/repos").await).await;
+
+    let line = body
+        .find("1 repository failed its last sync")
+        .unwrap_or_else(|| panic!("no failure line in {body}"));
+    assert!(line < body.find(r#"class="wp-cards""#).unwrap(), "{body}");
+}
+
+#[tokio::test]
+async fn healthy_repos_draw_no_failure_line() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/repos").await).await;
+
+    assert!(!body.contains("failed its last sync"), "{body}");
+}
+
+#[tokio::test]
 async fn last_synced_at_renders_as_relative_time() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A, true).await;

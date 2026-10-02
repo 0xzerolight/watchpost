@@ -135,6 +135,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             views_change: per_period_vs_previous(&views),
             downloads: queries::latest_downloads_total(conn, repo.repo_id)?,
             pulls: queries::latest_container_pulls(conn, repo.repo_id)?,
+            last_error: repo.last_error.clone(),
         });
     }
 

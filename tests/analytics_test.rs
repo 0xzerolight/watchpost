@@ -758,3 +758,45 @@ async fn a_gap_in_either_week_shows_no_change() {
 
     assert!(!body.contains("wp-views-change"), "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// Sync failures
+// ---------------------------------------------------------------------------
+
+/// Analytics is where a maintainer starts the day, so a broken collection has
+/// to show there, not only on a card two clicks away.
+#[tokio::test]
+async fn a_failed_sync_shows_on_the_start_page() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    h.seed_stars(ID_B, days_ago(0), 5).await;
+    h.state
+        .db
+        .call(|c| queries::record_sync_err(c, ID_B, "github 502", None))
+        .await
+        .unwrap();
+
+    let body = h.body("/analytics").await;
+
+    let line = body
+        .find("1 repository failed its last sync")
+        .unwrap_or_else(|| panic!("no failure line in {body}"));
+    assert!(line < body.find("<h2>Portfolio</h2>").unwrap(), "{body}");
+    assert!(body.contains(r#"href="/settings#wp-repos""#), "{body}");
+    // The stored category only, on the glyph beside the name.
+    assert!(body.contains(r#"data-tooltip="github 502""#), "{body}");
+}
+
+#[tokio::test]
+async fn a_healthy_portfolio_shows_no_failure_line() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+
+    let body = h.body("/analytics").await;
+
+    assert!(!body.contains("failed its last sync"), "{body}");
+    assert!(!body.contains("Last sync failed"), "{body}");
+}

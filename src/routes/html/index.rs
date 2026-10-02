@@ -11,7 +11,8 @@ use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use crate::routes::html::{
-    empty_state, error_glyph, future_timestamp, json_script_class, page_header, plural, timestamp,
+    Notice, empty_state, error_glyph, future_timestamp, json_script_class, notice, page_header,
+    plural, timestamp,
 };
 use crate::types::RepoOverview;
 
@@ -34,6 +35,9 @@ pub fn index_body(cards: &[Card], next_sync: Option<DateTime<Utc>>, tz: Tz) -> M
         @if cards.is_empty() {
             (nothing_tracked())
         } @else {
+            (sync_failures_notice(
+                cards.iter().filter(|(repo, _)| repo.last_error.is_some()).count(),
+            ))
             div class="wp-cards" {
                 @for (repo, spark) in cards {
                     (repo_card(repo, spark, next_sync, tz))
@@ -64,6 +68,29 @@ pub fn nothing_tracked() -> Markup {
 /// drawing.
 pub fn awaiting_first_sync(repo: &RepoOverview) -> bool {
     repo.last_synced_at.is_none() && repo.date.is_none()
+}
+
+/// One calm line when any tracked repository's last sync failed, pointing at
+/// the picker, where each failure is listed. Nothing at all when none did.
+///
+/// On both overview pages, because Analytics is where a maintainer starts the
+/// day and one ⚠ in a grid or a table is easy to scroll past; an expired token
+/// fails every repository at once while the page still looked healthy. Info,
+/// not Error: `role="alert"` would interrupt a screenreader on every page load
+/// for a standing condition. The line carries only the count; each glyph's
+/// tooltip carries the stored category, never more.
+pub fn sync_failures_notice(failed: usize) -> Markup {
+    let n = failed as i64;
+    html! {
+        @if n > 0 {
+            (notice(Notice::Info, html! {
+                span aria-hidden="true" { "⚠ " }
+                (n) " " (plural(n, "repository", "repositories")) " failed "
+                (plural(n, "its", "their")) " last sync — "
+                a href="/settings#wp-repos" { "see Settings" }
+            }))
+        }
+    }
 }
 
 /// One repo card. `spark` is the dense star series from
@@ -348,5 +375,42 @@ mod tests {
         assert!(!awaiting_first_sync(&failed_with_rows));
         assert!(awaiting_first_sync(&RepoOverview::default()));
         assert!(!awaiting_first_sync(&synced(RepoOverview::default())));
+    }
+
+    fn failing(repo_id: i64) -> Card {
+        let repo = synced(RepoOverview {
+            repo_id,
+            last_error: Some("github 502".into()),
+            ..RepoOverview::default()
+        });
+        (repo, Vec::new())
+    }
+
+    #[test]
+    fn failed_syncs_are_one_calm_line_above_the_cards() {
+        let one = index_body(&[failing(1)], None, Tz::UTC).into_string();
+        assert!(
+            one.contains(
+                r#"<p class="wp-notice wp-notice-info" role="status"><span aria-hidden="true">⚠ </span>1 repository failed its last sync — <a href="/settings#wp-repos">see Settings</a></p>"#
+            ),
+            "out was {one}"
+        );
+        assert!(
+            one.find("failed its last sync").unwrap() < one.find("wp-cards").unwrap(),
+            "out was {one}"
+        );
+        let two = index_body(&[failing(1), failing(2)], None, Tz::UTC).into_string();
+        assert!(
+            two.contains("2 repositories failed their last sync"),
+            "out was {two}"
+        );
+    }
+
+    #[test]
+    fn no_failed_sync_draws_no_line() {
+        let healthy: Card = (synced(RepoOverview::default()), Vec::new());
+        let out = index_body(&[healthy], None, Tz::UTC).into_string();
+        assert!(!out.contains("last sync"), "out was {out}");
+        assert_eq!(sync_failures_notice(0).into_string(), "");
     }
 }
