@@ -1126,15 +1126,22 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>, tz: Tz) -> Markup {
     }
 }
 
+/// The timeline table: Date, Kind, Event, Actions.
+///
+/// Notes live in the Event cell under the title rather than in a column of
+/// their own. A column of "notes" toggles was empty on most rows, and opening
+/// one widened it and reflowed every row in the table; inside the cell,
+/// opening a note only makes its own row taller. The `aria-label` names the
+/// table in a screenreader's table list, where a visible caption would only
+/// repeat the section's own heading.
 fn events_table(repo_id: i64, events: &[Event]) -> Markup {
     html! {
-        table {
+        table class="wp-events" aria-label="Events" {
             thead {
                 tr {
                     th scope="col" { "Date" }
                     th scope="col" { "Kind" }
                     th scope="col" { "Event" }
-                    th scope="col" { "Notes" }
                     th scope="col" { "Actions" }
                 }
             }
@@ -1166,10 +1173,8 @@ pub fn event_row(repo_id: i64, event: &Event) -> Markup {
                 } @else {
                     (event.title)
                 }
-            }
-            td {
                 @if !event.notes.trim().is_empty() {
-                    details { summary { "notes" } (render_markdown(&event.notes)) }
+                    details class="wp-notes" { summary { "Notes" } (render_markdown(&event.notes)) }
                 }
             }
             td {
@@ -1186,16 +1191,38 @@ pub fn event_row(repo_id: i64, event: &Event) -> Markup {
                     hx-get=(format!("{base}/edit"))
                     hx-target="closest tr"
                     hx-swap="outerHTML"
-                    hx-disabled-elt="this" { "Edit" }
-                button type="button" class="wp-action" id=(format!("event-del-{}", event.id))
+                    hx-disabled-elt="this" { "Edit" (row_context(event)) }
+                // The prompt names the event and says the delete is final. The
+                // `data-confirm-*` hooks give the dialog a heading to match and
+                // a danger-styled "Delete" in place of "Confirm / Confirm".
+                button type="button" class="wp-action wp-action-danger"
+                    id=(format!("event-del-{}", event.id))
                     hx-delete=(base)
-                    hx-confirm="Delete event?"
+                    hx-confirm=(format!(
+                        "Delete “{}” ({})? This cannot be undone.",
+                        event.title, event.date
+                    ))
+                    data-confirm-title="Delete event"
+                    data-confirm-label="Delete"
+                    data-confirm-danger
                     hx-target="#events-section"
                     hx-swap="outerHTML"
                     hx-disabled-elt="this"
-                    hx-indicator="closest tr" { "Delete" }
+                    hx-indicator="closest tr" { "Delete" (row_context(event)) }
             }
         }
+    }
+}
+
+/// The event a row's buttons act on, spoken but not shown.
+///
+/// A screenreader lists buttons by name, and a column of identical "Edit"
+/// and "Delete" says nothing about which row each acts on once the reader
+/// reaches it by Tab. The visible label stays one word, because the row
+/// already shows the title and date beside it.
+fn row_context(event: &Event) -> Markup {
+    html! {
+        span class="wp-visually-hidden" { " " (event.title) ", " (event.date) }
     }
 }
 
@@ -1248,8 +1275,6 @@ pub fn event_form_row(repo_id: i64, event_id: i64, values: &EventDraft) -> Marku
                         aria-invalid=[errors.url.is_some().then_some("true")]
                         aria-describedby=[errors.url.is_some().then(|| format!("{url}-error"))];
                 }))
-            }
-            td {
                 (field_compact(&notes, "Notes", None, html! {
                     textarea id=(notes) name="notes" rows="3" { (values.notes) }
                 }))
@@ -1258,7 +1283,10 @@ pub fn event_form_row(repo_id: i64, event_id: i64, values: &EventDraft) -> Marku
                 // Each button disables only itself. `hx-disabled-elt="closest tr"`
                 // would look tidier and would post an empty event: htmx drops
                 // disabled inputs, and this row *is* what `hx-include` collects.
-                button type="button" class="wp-action" id=(format!("event-save-{event_id}"))
+                // Save keeps Pico's fill: it is the one action on the row that
+                // commits anything.
+                button type="button" class="wp-action wp-action-primary"
+                    id=(format!("event-save-{event_id}"))
                     data-save
                     hx-put=(base)
                     hx-include="closest tr"
@@ -2207,8 +2235,14 @@ mod tests {
             1,
             "out was {out}"
         );
+        // The prompt names what is about to go and says it is final; the
+        // hooks give the dialog a matching heading and a danger "Delete".
         assert!(
-            out.contains(r##"hx-confirm="Delete event?" hx-target="#events-section""##),
+            out.contains(concat!(
+                r#"hx-confirm="Delete “Launch” (2026-08-10)? This cannot be undone." "#,
+                r#"data-confirm-title="Delete event" data-confirm-label="Delete" data-confirm-danger "#,
+                r##"hx-target="#events-section""##
+            )),
             "out was {out}"
         );
     }
@@ -2355,7 +2389,16 @@ mod tests {
             out.contains(r#"<a href="https://example.com/x" rel="noopener noreferrer">Launch</a>"#),
             "out was {out}"
         );
-        assert!(out.contains("<summary>notes</summary>"), "out was {out}");
+        // Notes sit under the title, in the same cell: opening one grows its
+        // own row instead of widening a column for every row.
+        assert!(
+            out.contains(concat!(
+                r#"rel="noopener noreferrer">Launch</a>"#,
+                r#"<details class="wp-notes"><summary>Notes</summary>"#
+            )),
+            "out was {out}"
+        );
+        assert_eq!(out.matches("<td").count(), 4, "out was {out}");
         assert!(out.contains("<strong>bold</strong>"), "out was {out}");
 
         // The edit row keeps the id and kind attributes, so the marker code
@@ -2380,12 +2423,76 @@ mod tests {
             "form was {form}"
         );
         assert!(form.contains(r#"id="ev-7-title""#), "form was {form}");
+        // Four cells like the display row, the notes under title and link.
+        assert_eq!(form.matches("<td").count(), 4, "form was {form}");
+        let event_cell = form.split("<td").nth(3).expect("a third cell");
+        assert!(event_cell.contains(r#"id="ev-7-title""#), "form was {form}");
+        assert!(event_cell.contains(r#"id="ev-7-notes""#), "form was {form}");
         // The action buttons are addressable, so a busy state can name them.
         assert!(
             form.contains(r#"id="event-save-7" data-save hx-put="#),
             "form was {form}"
         );
         assert!(form.contains(r#"id="event-cancel-7""#), "form was {form}");
+    }
+
+    /// A column of identical "Edit" and "Delete" says nothing about which
+    /// event a button acts on once it is reached by Tab; Delete must not look
+    /// like Edit; and only the edit row's Save keeps the primary fill.
+    #[test]
+    fn row_buttons_name_their_event_and_delete_reads_as_destructive() {
+        let event = Event {
+            id: 7,
+            repo_id: 1,
+            date: "2026-09-01".into(),
+            title: "r/ajatt".into(),
+            notes: String::new(),
+            url: None,
+            kind: Some("reddit".into()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let out = event_row(1, &event).into_string();
+        assert!(
+            out.contains(
+                r#">Edit<span class="wp-visually-hidden"> r/ajatt, 2026-09-01</span></button>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(
+                r#">Delete<span class="wp-visually-hidden"> r/ajatt, 2026-09-01</span></button>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"class="wp-action wp-action-danger" id="event-del-7""#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"class="wp-action" id="event-edit-7""#),
+            "out was {out}"
+        );
+
+        let form = event_form_row(1, 7, &EventDraft::from(&event)).into_string();
+        assert!(
+            form.contains(r#"class="wp-action wp-action-primary" id="event-save-7""#),
+            "form was {form}"
+        );
+        assert!(
+            form.contains(r#"class="wp-action" id="event-cancel-7""#),
+            "form was {form}"
+        );
+
+        let section = events_section(&events_view(std::slice::from_ref(&event), &[])).into_string();
+        assert!(
+            section.contains(r#"<table class="wp-events" aria-label="Events">"#),
+            "section was {section}"
+        );
+        assert!(
+            !section.contains(r#"<th scope="col">Notes</th>"#),
+            "{section}"
+        );
     }
 
     #[test]

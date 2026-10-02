@@ -734,15 +734,45 @@
 }
 
 /*
- * Per-row edit/delete controls. Pico sizes buttons for forms, which makes a
- * pair of them in a table cell as tall as the row they belong to; these stay
- * out of the way until they are wanted.
+ * Per-row edit and delete controls: quiet ghost buttons. Pico fills every
+ * button in the primary colour, which put two saturated blocks on every event
+ * row, the loudest ink on the page and louder than the titles they act on.
+ * These are transparent with a hairline, in body ink, and take the primary
+ * colour only on hover and keyboard focus. Delete keeps the danger ink at
+ * rest, so the destructive one never looks like Edit. The edit row's Save
+ * keeps Pico's fill, being the one action on the row that commits.
  */
 .wp-action {
   width: auto;
   margin: 0 var(--wp-space-1) 0 0;
   padding: 0.15rem 0.6rem;
+  border-color: var(--wp-border);
+  background-color: transparent;
+  color: inherit;
   font-size: var(--wp-text-sm);
+}
+
+.wp-action:is(:hover, :focus-visible) {
+  border-color: var(--pico-primary);
+  background-color: transparent;
+  color: inherit;
+}
+
+.wp-action-danger,
+.wp-action-danger:is(:hover, :focus-visible) {
+  color: var(--pico-del-color);
+}
+
+.wp-action-danger:is(:hover, :focus-visible) {
+  border-color: var(--pico-del-color);
+}
+
+/* Pico's own button variables, which its hover and focus rules restyle. */
+.wp-action-primary,
+.wp-action-primary:is(:hover, :focus-visible) {
+  border-color: var(--pico-border-color);
+  background-color: var(--pico-background-color);
+  color: var(--pico-color);
 }
 
 /*
@@ -829,6 +859,51 @@ tr.wp-edit-row [name="kind"] {
   margin: 0;
   padding: var(--wp-space-1) var(--wp-space-3);
   font-size: var(--wp-text-sm);
+}
+
+/*
+ * The events table: Date, Kind, Event, Actions. Date, Kind and Actions shrink
+ * to their content and never wrap. A date broken at its hyphen, and Edit
+ * stacked over Delete, each doubled a row's height. The Event column takes
+ * the rest and is the one that wraps, anywhere, so a long title or a pasted
+ * URL cannot widen the table.
+ */
+table.wp-events :is(thead, tbody) :is(th, td):is(:nth-child(1), :nth-child(2), :nth-child(4)) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+table.wp-events td:nth-child(3) {
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A note under its event's title. Pico dresses a `<details>` as an accordion,
+ * with a page-spacing margin and a chevron floated to the cell's far edge.
+ * Here it is a small muted toggle on its own line. `:not([role])` matches
+ * Pico's summary colour rule, whose weight this has to beat.
+ */
+.wp-notes {
+  margin: 0;
+}
+
+.wp-notes > summary:not([role]) {
+  display: inline-block;
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+  line-height: 1.5;
+}
+
+.wp-notes > summary::after {
+  display: none;
+}
+
+.wp-notes[open] > summary {
+  margin-bottom: var(--wp-space-1);
+}
+
+.wp-notes > :last-child {
+  margin-bottom: 0;
 }
 
 /*

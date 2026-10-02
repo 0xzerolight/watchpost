@@ -778,7 +778,7 @@ async fn edit_form_and_cancel_swap_the_same_row() {
         "row was {row}"
     );
     assert!(
-        row.contains(r#"hx-confirm="Delete event?""#),
+        row.contains(r#"hx-confirm="Delete “Editable” (2026-08-10)? This cannot be undone.""#),
         "row was {row}"
     );
 }
@@ -992,7 +992,7 @@ async fn notes_markdown_rendered_safely() {
     assert!(!body.contains("<script>alert(1)"), "body was {body}");
     assert!(!body.contains("javascript:alert(2)"), "body was {body}");
     // Notes hide behind a disclosure so a long one cannot swamp the table.
-    assert!(body.contains("<summary>notes</summary>"), "body was {body}");
+    assert!(body.contains("<summary>Notes</summary>"), "body was {body}");
 }
 
 #[tokio::test]
@@ -1004,7 +1004,7 @@ async fn notes_disclosure_is_omitted_when_empty() {
 
     let body = body_string(h.get("/repos/1").await).await;
     assert!(
-        !body.contains("<summary>notes</summary>"),
+        !body.contains("<summary>Notes</summary>"),
         "empty notes must not render a disclosure: {body}"
     );
 }
