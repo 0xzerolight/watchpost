@@ -1506,8 +1506,12 @@ pub fn event_row(repo_id: i64, event: &Event, older: bool, impact: Option<&Event
             class=[older.then_some("wp-more-row")] {
             td { (event.date) }
             td {
+                // On a phone the chip stops at its cell with an ellipsis, so
+                // the title spells the kind in full.
                 @if let Some(kind) = &event.kind {
-                    span class=(format!("wp-chip {}", kind_class(&event.kind))) { (kind) }
+                    span class=(format!("wp-chip {}", kind_class(&event.kind))) title=(kind) {
+                        (kind)
+                    }
                 }
             }
             td {
@@ -2759,6 +2763,46 @@ mod tests {
             "{out}"
         );
         assert_eq!(out.matches("data-chip-all").count(), 1, "out was {out}");
+    }
+
+    /// On a phone the row's chip stops at its cell with an ellipsis
+    /// ("newsletter" reads "new…"), so the chip's title spells the kind in
+    /// full. A user-supplied kind is attribute text there too, escaped by maud.
+    #[test]
+    fn a_row_chip_carries_its_full_kind_as_a_title() {
+        let mut event = Event {
+            id: 7,
+            repo_id: 1,
+            date: "2026-08-10".into(),
+            title: "Issue 12".into(),
+            notes: String::new(),
+            url: None,
+            kind: Some("newsletter".into()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let out = event_row(1, &event, false, None).into_string();
+        let class = kind_class(&event.kind);
+        assert!(
+            out.contains(&format!(
+                r#"<span class="wp-chip {class}" title="newsletter">newsletter</span>"#
+            )),
+            "out was {out}"
+        );
+
+        event.kind = Some("\"'<x>".into());
+        let out = event_row(1, &event, false, None).into_string();
+        assert!(
+            out.contains(r#"title="&quot;'&lt;x&gt;">&quot;'&lt;x&gt;</span>"#),
+            "out was {out}"
+        );
+        assert!(!out.contains("<x>"), "out was {out}");
+
+        // A row with no kind has no chip, so no title either.
+        event.kind = None;
+        let out = event_row(1, &event, false, None).into_string();
+        assert!(!out.contains("wp-chip"), "out was {out}");
+        assert!(!out.contains(" title="), "out was {out}");
     }
 
     #[test]
