@@ -59,11 +59,16 @@ pub fn token_panel(slot: &GhSlot, msg: Option<(Notice, String)>) -> Markup {
 /// arrive together.
 fn token_form(label: &str) -> Markup {
     html! {
+        // `method` and `action` are for a browser without JavaScript: with
+        // `hx-post` alone the form submitted as a GET and put the token in the
+        // URL. As a POST it lacks the CSRF header and is refused, styled.
         form hx-post="/settings/token"
             hx-target="#token-panel"
             hx-swap="outerHTML"
             hx-disabled-elt="find button[type=submit]"
-            hx-indicator="#token-spinner" {
+            hx-indicator="#token-spinner"
+            method="post"
+            action="/settings/token" {
             label for="settings-token" { "Personal access token" }
             // `type=password` so a screen-shared settings page does not put
             // the token on display; autocomplete is off because a browser
@@ -106,7 +111,9 @@ pub fn landing_panel(selected: LandingPage, msg: Option<(Notice, String)>) -> Ma
                 hx-target="#landing-panel"
                 hx-swap="outerHTML"
                 hx-disabled-elt="find button[type=submit]"
-                hx-indicator="#landing-spinner" {
+                hx-indicator="#landing-spinner"
+                method="post"
+                action="/settings/landing" {
                 (field("settings-landing", "Open on", None, html! {
                     select #settings-landing name="page" {
                         @for page in LANDING_PAGES {
@@ -226,7 +233,9 @@ fn schedule_form(view: &ScheduleView) -> Markup {
             hx-target="#schedule-panel"
             hx-swap="outerHTML"
             hx-disabled-elt="find button[type=submit]"
-            hx-indicator="#schedule-spinner" {
+            hx-indicator="#schedule-spinner"
+            method="post"
+            action="/settings/schedule" {
             (field("settings-interval", "Sync every", view.error.as_deref(), html! {
                 input type="text"
                     id="settings-interval"
@@ -282,7 +291,9 @@ pub fn repos_picker(repos: &[RepoRow], msg: Option<(Notice, String)>, tz: Tz) ->
             hx-target="this"
             hx-swap="outerHTML"
             hx-disabled-elt="find button[type=submit]"
-            hx-indicator="#repos-spinner" {
+            hx-indicator="#repos-spinner"
+            method="post"
+            action="/settings/repos" {
             @if let Some((kind, text)) = msg {
                 (notice(kind, html! { (text) }))
             }
@@ -857,5 +868,64 @@ mod tests {
         );
         // A second press before the first cycle registers starts another one.
         assert!(out.contains(r#"hx-disabled-elt="this""#), "{out}");
+    }
+
+    /// Every `<form …>` start tag in `out`. None of these forms carries a `>`
+    /// inside an attribute value, so the first `>` closes the tag.
+    fn form_tags(out: &str) -> Vec<&str> {
+        out.match_indices("<form ")
+            .map(|(at, _)| {
+                let len = out[at..].find('>').expect("an unterminated form tag");
+                &out[at..at + len]
+            })
+            .collect()
+    }
+
+    /// The value of attribute `name` in a start tag. The leading space keeps
+    /// `action` from matching inside another attribute's name.
+    fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+        let key = format!(" {name}=\"");
+        let start = tag.find(&key)? + key.len();
+        let len = tag[start..].find('"')?;
+        Some(&tag[start..start + len])
+    }
+
+    /// With JavaScript off, a form with only `hx-post` submits as a GET to the
+    /// page it is on: the token lands in the URL, and the picker's ticks are
+    /// silently dropped. `method="post"` to the same URL makes it a POST that
+    /// CSRF refuses with the styled page, which at least says it failed.
+    #[test]
+    fn every_settings_form_posts_natively_to_its_own_htmx_url() {
+        let slot = |source: TokenSource| GhSlot {
+            client: None,
+            source,
+            hint: None,
+        };
+        let schedule = ScheduleView::current(
+            &resolved(
+                ScheduleSource::Database,
+                Schedule::Every(std::time::Duration::from_secs(3600)),
+                Some("1h"),
+            ),
+            None,
+            None,
+        );
+        let pages = [
+            token_panel(&slot(TokenSource::Database), None),
+            token_panel(&slot(TokenSource::Unset), None),
+            landing_panel(LandingPage::Repos, None),
+            schedule_panel(&schedule, Tz::UTC),
+            repos_picker(&[repo("octo/x", None, None)], None, Tz::UTC),
+        ];
+        let mut seen = 0;
+        for out in pages.map(Markup::into_string) {
+            for tag in form_tags(&out) {
+                seen += 1;
+                let hx = attr(tag, "hx-post").unwrap_or_else(|| panic!("no hx-post: {tag}"));
+                assert_eq!(attr(tag, "method"), Some("post"), "{tag}");
+                assert_eq!(attr(tag, "action"), Some(hx), "{tag}");
+            }
+        }
+        assert_eq!(seen, 5, "every form was checked");
     }
 }

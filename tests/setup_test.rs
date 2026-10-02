@@ -264,6 +264,36 @@ async fn a_token_github_rejects_is_not_saved() {
     assert_eq!(h.stored_token().await, None);
 }
 
+/// A rejected token used to answer with the whole page, which the form
+/// (`hx-target="this"`, `outerHTML`) swapped into itself: a second nav, a
+/// second heading and the field at the bottom, once more per attempt. The
+/// answer is the form alone, with the error tied to the field and the caret
+/// put back in it.
+#[tokio::test]
+async fn a_rejected_token_answers_with_the_form_alone() {
+    let server = mock_rate_limit(401, json!({"message": "Bad credentials"})).await;
+    let h = unconfigured(server.uri().parse().unwrap());
+
+    let resp = h.post_form("/setup", "token=ghp_bad").await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.starts_with(r#"<form id="setup-form""#), "{body}");
+    assert!(!body.contains("<!DOCTYPE"), "{body}");
+    assert!(!body.contains("<nav"), "{body}");
+    assert!(!body.contains("<h1"), "{body}");
+    assert_eq!(body.matches(r#"role="alert""#).count(), 1, "{body}");
+    assert!(body.contains(r#"<div id="wp-setup-error">"#), "{body}");
+    assert!(body.contains(r#"aria-invalid="true""#), "{body}");
+    assert!(
+        body.contains(r#"aria-describedby="wp-setup-error""#),
+        "{body}"
+    );
+    assert!(body.contains(" autofocus"), "{body}");
+    // The rejected value is never echoed back into the field.
+    assert!(!body.contains("ghp_bad"), "{body}");
+}
+
 /// A token with no repository permissions still authenticates, and that is the
 /// right outcome: a missing permission costs one endpoint, not the install.
 #[tokio::test]
