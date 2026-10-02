@@ -205,7 +205,7 @@ async fn lists_tracked_repos_with_counts() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
-    assert!(body.contains(REPO_A), "body was {body}");
+    assert!(body.contains("octo/<wbr>aaa"), "body was {body}");
     // Name links through to the repo page.
     assert!(body.contains(r#"href="/repos/1""#), "body was {body}");
     // Latest-row stats, each rendered as its own value cell.
@@ -272,6 +272,15 @@ async fn untracked_or_hidden_absent() {
 
     assert!(!body.contains(REPO_A), "untracked repo leaked: {body}");
     assert!(!body.contains(REPO_B), "hidden repo leaked: {body}");
+    // Card titles break after the slash; check that form too.
+    assert!(
+        !body.contains("octo/<wbr>aaa"),
+        "untracked repo leaked: {body}"
+    );
+    assert!(
+        !body.contains("octo/<wbr>bbb"),
+        "hidden repo leaked: {body}"
+    );
     // The hidden repo's stats must not leak either, card or no card.
     assert!(spark_payloads(&body).is_empty(), "body was {body}");
     // With nothing left to show, the page falls back to the empty state.
@@ -477,10 +486,12 @@ async fn the_dashboard_is_cards_only() {
 
     assert!(!body.contains("Recent changes"), "body was {body}");
     assert!(!body.contains("wp-changes"), "body was {body}");
-    assert!(!body.contains("+3 stars"), "body was {body}");
+    // The feed's chip, not the words: the card's own caption says
+    // "+3 stars · 30 days" about the same movement.
+    assert!(!body.contains(">+3 stars</span>"), "body was {body}");
     // The cards it was burying are still there.
     assert!(body.contains(r#"class="wp-cards""#), "body was {body}");
-    assert!(body.contains(REPO_A), "body was {body}");
+    assert!(body.contains("octo/<wbr>aaa"), "body was {body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -548,4 +559,27 @@ async fn the_root_never_redirects_to_itself() {
         let resp = h.get("/").await;
         assert_ne!(resp.headers()["location"], "/", "stored was {stored}");
     }
+}
+
+/// A repo read once draws a dot on its sparkline, by the same rule as the big
+/// charts (`strandedPointRadius`), where a point radius of 0 left a 1px speck.
+/// The rule lives only in app.js, which every page fetches from the router, so
+/// this reads it there: no zero point radius anywhere, and the stranded-point
+/// rule used twice, by the repo charts and by the sparkline.
+#[tokio::test]
+async fn a_lone_reading_draws_a_dot_on_its_sparkline() {
+    let h = harness();
+    let js = body_string(h.get("/assets/app.js").await).await;
+    assert!(
+        !js.contains("pointRadius: 0,"),
+        "a sparkline still hides its points"
+    );
+    assert!(
+        !js.contains("point: { radius: 0 }"),
+        "a chart default still hides sparkline points"
+    );
+    assert!(
+        js.matches("pointRadius: strandedPointRadius").count() >= 2,
+        "the sparkline does not use the stranded-point rule"
+    );
 }

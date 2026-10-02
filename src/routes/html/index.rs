@@ -12,8 +12,9 @@ use maud::{Markup, html};
 
 use crate::routes::html::{
     Notice, empty_state, error_glyph, future_timestamp, json_script_class, notice, page_header,
-    plural, timestamp,
+    plural, signed, slash_breaks, timestamp,
 };
+use crate::series::growth;
 use crate::types::RepoOverview;
 
 /// How many days of stars a card's sparkline shows. The array embedded per
@@ -102,6 +103,10 @@ pub fn sync_failures_notice(failed: usize) -> Markup {
 /// sparkline over three dashes: when the first numbers arrive, as a countdown
 /// to the next scheduled cycle. With no scheduler running there is nothing to
 /// count down to, and the line just says it is waiting.
+///
+/// The title link is the card's only link and, stretched over the card in CSS,
+/// its whole click target: the sparkline is the most inviting thing on a card
+/// and used to do nothing. The name breaks after the slash.
 pub fn repo_card(
     repo: &RepoOverview,
     spark: &[Option<i64>],
@@ -111,8 +116,8 @@ pub fn repo_card(
     html! {
         article class="wp-card" {
             header class="wp-row" {
-                h2 class="wp-card-title wp-grow" {
-                    a href=(format!("/repos/{}", repo.repo_id)) { (repo.name) }
+                h2 class="wp-card-title" {
+                    a href=(format!("/repos/{}", repo.repo_id)) { (slash_breaks(&repo.name)) }
                 }
                 @if let Some(error) = &repo.last_error {
                     (error_glyph(error))
@@ -137,15 +142,37 @@ pub fn repo_card(
                     canvas class="spark" {}
                     (json_script_class("spark-data", &spark))
                 }
+                (spark_caption(spark))
                 ul class="wp-stats" {
                     (stat("Stars", repo.stars))
                     (stat("Forks", repo.forks))
                     (stat("Open issues", repo.issues))
                 }
                 footer class="wp-muted wp-small" {
-                    (repo.event_count) " " (plural(repo.event_count, "event", "events"))
-                    " · synced " (timestamp(repo.last_synced_at.as_deref(), tz))
+                    // A count only when there is one. "0 events" on most cards
+                    // was the same nothing repeated down the grid, and an
+                    // event count is a COUNT(*), never unobserved, so leaving
+                    // the zero out hides no gap.
+                    @if repo.event_count > 0 {
+                        (repo.event_count) " " (plural(repo.event_count, "event", "events")) " · "
+                    }
+                    "synced " (timestamp(repo.last_synced_at.as_deref(), tz))
                 }
+            }
+        }
+    }
+}
+
+/// What the sparkline shows, in words: how far the stars moved over its
+/// [`SPARK_DAYS`], from [`growth`] over the same series the line draws. Each
+/// card scales its own line, so +2 on 13 stars draws the same cliff as +18 on
+/// 103; the caption is what tells them apart. Left out when the window holds no
+/// reading, which [`growth`] reports as `None`: no "+0" for "nobody looked".
+fn spark_caption(spark: &[Option<i64>]) -> Markup {
+    html! {
+        @if let Some(n) = growth(spark) {
+            p class="wp-card-caption wp-muted wp-small" {
+                (signed(n)) " " (plural(n.abs(), "star", "stars")) " · " (SPARK_DAYS) " days"
             }
         }
     }
@@ -200,7 +227,9 @@ mod tests {
     #[test]
     fn card_title_is_a_heading_not_a_bold_paragraph() {
         // A grid of cards is a list of sections; each needs a heading for the
-        // document outline, and `.wp-grow` belongs on whatever the row lays out.
+        // document outline. No `.wp-grow`: that utility's `flex: 1 1 auto`
+        // would win over the title's zero basis and push the glyph onto a
+        // line of its own under a long name.
         let repo = RepoOverview {
             repo_id: 7,
             name: "octo/x".into(),
@@ -208,10 +237,12 @@ mod tests {
         };
         let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
         assert!(
-            out.contains(r#"<h2 class="wp-card-title wp-grow"><a href="/repos/7">octo/x</a></h2>"#),
+            out.contains(r#"<h2 class="wp-card-title"><a href="/repos/7">octo/<wbr>x</a></h2>"#),
             "out was {out}"
         );
         assert!(!out.contains("<strong class="), "out was {out}");
+        // One link per card: the stretched title link is the whole card's.
+        assert_eq!(out.matches("<a ").count(), 1, "out was {out}");
     }
 
     #[test]
@@ -412,5 +443,41 @@ mod tests {
         let out = index_body(&[healthy], None, Tz::UTC).into_string();
         assert!(!out.contains("last sync"), "out was {out}");
         assert_eq!(sync_failures_notice(0).into_string(), "");
+    }
+
+    #[test]
+    fn a_card_without_events_leaves_the_count_out() {
+        let repo = synced(RepoOverview::default());
+        let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
+        assert!(!out.contains("events"), "out was {out}");
+        assert!(
+            out.contains(r#"<footer class="wp-muted wp-small">synced <time"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn the_sparkline_is_captioned_with_its_growth() {
+        let repo = synced(RepoOverview::default());
+        let caption = |spark: &[Option<i64>]| repo_card(&repo, spark, None, Tz::UTC).into_string();
+
+        let grew = caption(&[None, Some(100), Some(118)]);
+        assert!(
+            grew.contains(
+                r#"<p class="wp-card-caption wp-muted wp-small">+18 stars · 30 days</p>"#
+            ),
+            "out was {grew}"
+        );
+        // Under the line it describes, above the stats.
+        assert!(
+            grew.find("spark-data").unwrap() < grew.find("wp-card-caption").unwrap()
+                && grew.find("wp-card-caption").unwrap() < grew.find("wp-stats").unwrap(),
+            "out was {grew}"
+        );
+        assert!(caption(&[Some(5), Some(6)]).contains(">+1 star · 30 days<"));
+        assert!(caption(&[Some(6), Some(5)]).contains(">\u{2212}1 star · 30 days<"));
+        assert!(caption(&[Some(5), Some(5)]).contains(">\u{00b1}0 stars · 30 days<"));
+        // Nothing observed in the window: no caption, not "+0".
+        assert!(!caption(&[None, None]).contains("wp-card-caption"));
     }
 }

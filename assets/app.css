@@ -350,21 +350,74 @@
   gap: var(--wp-space-4);
 }
 
-/* Pico gives articles a generous default margin, which a grid already spaces. */
+/*
+ * A dashboard card: a flex column whose footer is pushed to the bottom, so
+ * footers line up along a grid row whatever a long name does to one header.
+ * A hairline instead of Pico's card shadow, whose 96px blur drew a grey halo
+ * round the whole grid in light mode. `position: relative` anchors the
+ * stretched link below; the margin is Pico's article margin, which the grid's
+ * gap already replaces.
+ */
 .wp-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   margin: 0;
+  border: 1px solid var(--wp-border);
+  box-shadow: none;
+}
+
+.wp-card:has(.wp-card-title a:hover) {
+  border-color: var(--pico-muted-color);
+}
+
+/* The title row never wraps, so the error glyph stays beside the name. */
+.wp-card > header {
+  flex-wrap: nowrap;
+  align-items: baseline;
+}
+
+.wp-card > footer {
+  margin-top: auto;
+}
+
+/* What sits above the footer keeps the gap the footer's own margin gave. */
+.wp-card > :is(.wp-stats, .wp-card-waiting) {
+  margin-bottom: var(--pico-block-spacing-vertical);
 }
 
 /*
  * A card's title is a heading for the document outline, not for Pico's heading
- * scale — left at its default the repo name (or a chart's) would be set larger
- * than the page's own `h1` block and dwarf what it labels. The row owns the
- * spacing, so the heading keeps none of its own.
+ * scale — left at its default the repo name would be set larger than the
+ * page's own `h1` block and dwarf what it labels. It takes the row's spare
+ * width from a zero basis and wraps anywhere, after the slash first, so a
+ * 60-character name stays inside its card and the glyph stays beside it.
  */
 .wp-card-title {
+  flex: 1 1 0;
+  min-width: 0;
   margin: 0;
   font-size: 1rem;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The stretched link: the title link's box covers the whole card, so a click
+ * on the sparkline or the stats opens the repo, while the tab order keeps one
+ * link per card and a screenreader still hears the repo name as its text.
+ * The sparkline box is positioned too, so the overlay needs its own layer, and
+ * the error glyph a higher one so its tooltip still opens on hover and focus.
+ */
+.wp-card-title a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.wp-card .wp-danger {
+  z-index: 2;
 }
 
 /*
@@ -609,6 +662,17 @@
   .wp-leaders.wp-num-table td:first-child:is(:hover, :focus-within) {
     z-index: 2;
   }
+}
+
+/* The card's figures, on the shared figure scale in tabular digits. */
+.wp-stats strong {
+  font-size: var(--wp-text-figure-sm);
+  font-variant-numeric: var(--wp-figure-numeric);
+}
+
+/* The sparkline's caption sits tight under the line it describes. */
+.wp-card-caption {
+  margin: calc(var(--wp-space-2) * -1) 0 var(--wp-space-3);
 }
 
 /*
