@@ -1705,8 +1705,16 @@
    * Answers whether it rendered, which also says whether `applyFilter` has
    * already run this pass — `renderCharts` ends with one, and callers use that
    * instead of filtering the page a second time.
+   *
+   * It is also where the period first reaches the links to other pages
+   * (`updatePeriodLinks`). `boot` calls it on every page, with or without a
+   * chart, which makes it the one boot hook this section owns.
    */
   function initRepoCharts() {
+    // First, and whatever follows: a page with no chart (a repo with nothing
+    // observed yet, or no Chart.js) can still have arrived on a `?days=`, and
+    // its links should pass that on.
+    updatePeriodLinks(currentDays);
     if (typeof Chart === "undefined") {
       return false;
     }
@@ -1723,8 +1731,9 @@
 
   /*
    * Zoom to `value` days: re-render from the payload already in the page, put
-   * the choice in the address bar and hand it to the sort links, so a reload, a
-   * shared link or a sort click all stay on the period showing.
+   * the choice in the address bar and hand it to the sort links and the links
+   * to other pages, so a reload, a shared link, a sort click or a hop to
+   * Analytics or another repo all stay on the period showing.
    * `replaceState` rather than `pushState` — a zoom is not a navigation, and the
    * back button should leave the page rather than step through every period the
    * reader tried.
@@ -1738,6 +1747,7 @@
     currentDays = days;
     syncPeriodUrl(days);
     updateSortLinks(days);
+    updatePeriodLinks(days);
   }
 
   function syncPeriodUrl(days) {
@@ -1779,6 +1789,50 @@
       link.setAttribute("href", next);
       link.setAttribute("hx-get", next);
       htmx.process(link);
+    }
+  }
+
+  /*
+   * Carry `days` into the links that open another page with a period: the
+   * leaderboard and Recent changes rows on Analytics, the nav's Analytics
+   * link, and anything marked `data-period-link` (the repo header's crumb,
+   * switcher and previous/next). Without it the period lived only in each
+   * page's own address, and every hop between Analytics and a repo opened
+   * on All again.
+   *
+   * The destination decides, not the selector. `/analytics` and
+   * `/repos/{id}` take a period; anything else a selector catches — the crumb
+   * back to `/repos`, which has none, or Settings in the nav — stays as
+   * rendered. The spelling is `applyPeriod`'s, so All is no parameter at
+   * all, as in the address bar. Only `href`: none of these is an htmx
+   * request, so unlike `updateSortLinks` there is nothing for `htmx.process`
+   * to re-read.
+   *
+   * Remembering the period across visits (localStorage) was left out on
+   * purpose: a stored choice would change what a bare URL opens on, which is
+   * the owner's call. With JavaScript off these links stay as the server
+   * rendered them, and each page opens on its default.
+   */
+  var PERIOD_LINKS =
+    "a[data-period-link], .wp-leaders a[href], .wp-changes a[href], nav a[href]";
+
+  function takesPeriod(url) {
+    return (
+      url.origin === window.location.origin &&
+      (url.pathname === "/analytics" || /^\/repos\/\d+$/.test(url.pathname))
+    );
+  }
+
+  function updatePeriodLinks(days) {
+    var links = document.querySelectorAll(PERIOD_LINKS);
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var url = parseUrl(link.getAttribute("href"));
+      if (!url || !takesPeriod(url)) {
+        continue;
+      }
+      applyPeriod(url.searchParams, days);
+      link.setAttribute("href", url.pathname + url.search + url.hash);
     }
   }
 

@@ -140,3 +140,20 @@ async fn every_series_wears_the_one_accent() {
         &[r#"cssVar: "--wp-chart-tick""#, "descriptor.secondary"],
     );
 }
+
+/// Links to other pages carry the chosen period: REPO-07's crumb, switcher
+/// and previous/next (`data-period-link`), the leaderboard and feed names and
+/// the nav's Analytics link, rewritten at boot and on every period change.
+#[tokio::test]
+async fn the_period_follows_links_to_other_pages() {
+    let js = asset("/assets/app.js").await;
+    assert_has(
+        &js,
+        "app.js",
+        &[
+            "function updatePeriodLinks(",
+            "a[data-period-link]",
+            "updatePeriodLinks(days);",
+        ],
+    );
+}
