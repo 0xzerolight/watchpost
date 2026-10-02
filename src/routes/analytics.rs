@@ -84,10 +84,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
     // there is no first repo to take a calendar from.
     let mut labels: Vec<String> = Vec::new();
     let mut stars_total: Vec<Option<i64>> = Vec::new();
-    // Summed only for the totals' delta badges; never shipped to the client.
-    let mut forks_total: Vec<Option<i64>> = Vec::new();
-    let mut issues_total: Vec<Option<i64>> = Vec::new();
-    let mut prs_total: Vec<Option<i64>> = Vec::new();
+    let mut totals = Totals::of(&repos);
     let mut leaders = Vec::with_capacity(repos.len());
 
     for repo in &repos {
@@ -95,23 +92,30 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
         if labels.is_empty() {
             labels = rows.iter().map(|(date, _)| date.clone()).collect();
             stars_total = vec![None; labels.len()];
-            forks_total = vec![None; labels.len()];
-            issues_total = vec![None; labels.len()];
-            prs_total = vec![None; labels.len()];
         }
         let stars: Vec<Option<i64>> = rows.into_iter().map(|(_, value)| value).collect();
         add_into(&mut stars_total, stars.iter().copied());
-        for (total, metric) in [
-            (&mut forks_total, Metric::Forks),
-            (&mut issues_total, Metric::Issues),
-            (&mut prs_total, Metric::Prs),
+
+        // Each badge is every repo's own growth added up, never growth over
+        // the summed curve. The curve steps up on the day a repo is first
+        // read, and measured across that step a newly tracked 500-star repo
+        // read as "+500". Per repo, `growth` anchors on a first real reading,
+        // so the badge always equals the leaderboard's Growth column summed.
+        // `add_into` keeps a repo with no reading in the window out of the sum
+        // rather than adding a zero.
+        let star_growth = per_period(&stars, growth);
+        add_into(&mut totals.stars_delta, star_growth.into_iter());
+        for (delta, metric) in [
+            (&mut totals.forks_delta, Metric::Forks),
+            (&mut totals.issues_delta, Metric::Issues),
+            (&mut totals.prs_delta, Metric::Prs),
         ] {
-            add_into(
-                total,
+            let series: Vec<Option<i64>> =
                 queries::dense_series(conn, repo.repo_id, metric, window)?
                     .into_iter()
-                    .map(|(_, value)| value),
-            );
+                    .map(|(_, value)| value)
+                    .collect();
+            add_into(delta, per_period(&series, growth).into_iter());
         }
 
         let views: Vec<Option<i64>> =
@@ -124,7 +128,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             repo_id: repo.repo_id,
             name: repo.name.clone(),
             stars: repo.stars,
-            star_growth: per_period(&stars, growth),
+            star_growth,
             views: per_period(&views, sum_observed),
             downloads: queries::latest_downloads_total(conn, repo.repo_id)?,
             pulls: queries::latest_container_pulls(conn, repo.repo_id)?,
@@ -136,12 +140,6 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
     // repos the dashboard already renders as cards. Name breaks a tie so the
     // order is stable across renders.
     leaders.sort_by(|a, b| b.stars.cmp(&a.stars).then_with(|| a.name.cmp(&b.name)));
-
-    let mut totals = Totals::of(&repos);
-    totals.stars_delta = per_period(&stars_total, growth);
-    totals.forks_delta = per_period(&forks_total, growth);
-    totals.issues_delta = per_period(&issues_total, growth);
-    totals.prs_delta = per_period(&prs_total, growth);
 
     Ok(PageData {
         totals,

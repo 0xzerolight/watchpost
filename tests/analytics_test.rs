@@ -352,17 +352,51 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
         body.contains(r#"<strong class="wp-total-value">42</strong>"#),
         "{body}"
     );
-    // The delta badge rides the same summed series the portfolio chart plots,
-    // so the two always agree: A moved 25 → 30, and B's first reading is a
-    // genuine step up in the total — +12 of arrival plus +5 of growth.
+    // The badge is each repo's own growth, added up: A moved 25 → 30, and B,
+    // read once, has not moved. B's arrival steps the curve up; it is not
+    // growth.
     assert!(
-        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+17</span>"#),
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+5</span>"#),
         "{body}"
     );
     assert!(
         !body.contains(r#"data-period-value="-1" class="wp-delta"#),
         "{body}"
     );
+}
+
+/// The badge is the Growth column added up. Measured across the summed curve
+/// instead, B's arrival at 7 stars two days ago counted as growth: +13 where
+/// the two repos grew by +4 and +2.
+#[tokio::test]
+async fn a_newly_tracked_repo_adds_its_growth_to_the_badge_not_its_level() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    h.seed_stars(ID_A, days_ago(10), 100).await;
+    h.seed_stars(ID_A, days_ago(0), 104).await;
+    h.seed_stars(ID_B, days_ago(2), 7).await;
+    h.seed_stars(ID_B, days_ago(0), 9).await;
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+6</span>"#),
+        "{body}"
+    );
+    assert!(!body.contains(">+13</span>"), "{body}");
+    // The column the badge adds up.
+    assert!(
+        body.contains(r#"<span data-period-value="7">+4</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<span data-period-value="7">+2</span>"#),
+        "{body}"
+    );
+    // The curve keeps its documented step: 104 + 9 today.
+    let series = stars(&island(&body, "chart-data"));
+    assert_eq!(series[series.len() - 1], Some(113), "{body}");
 }
 
 #[tokio::test]

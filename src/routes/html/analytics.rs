@@ -74,9 +74,13 @@ pub struct Totals {
     pub forks: Option<i64>,
     pub issues: Option<i64>,
     pub prs: Option<i64>,
-    /// Movement per entry of [`PERIODS`], measured by the handler over the
-    /// same summed dense series the chart plots — the badge and the curve can
-    /// never disagree.
+    /// Movement per entry of [`PERIODS`]: each repo's own
+    /// [`growth`](crate::series::growth) over that window, added up by the
+    /// handler. Not growth over the summed curve the chart plots — that curve
+    /// steps up on the day a repo is first observed, and reading the step as
+    /// growth turned a newly tracked repo's whole star count into "+N". Summed
+    /// per repo, the badge always equals the leaderboard's Growth column added
+    /// up, while the curve keeps its documented step.
     pub stars_delta: [Option<i64>; PERIOD_COUNT],
     pub forks_delta: [Option<i64>; PERIOD_COUNT],
     pub issues_delta: [Option<i64>; PERIOD_COUNT],
@@ -97,8 +101,8 @@ impl Totals {
             forks: sum_levels(repos, |repo| repo.forks),
             issues: sum_levels(repos, |repo| repo.issues),
             prs: sum_levels(repos, |repo| repo.prs),
-            // The deltas need the summed dense series, which only the handler
-            // holds — it fills these after.
+            // The deltas need each repo's dense series, which only the
+            // handler holds — it adds them in after.
             ..Totals::default()
         }
     }
