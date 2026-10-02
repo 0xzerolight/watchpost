@@ -874,6 +874,97 @@ async fn path_sort_is_independent_of_the_referrer_sort() {
     assert!(at(&body, "reddit") < at(&body, "google"), "body was {body}");
 }
 
+/// The tables ignore the period, and say so: the note under the heading
+/// names the span they cover and is the same at every period. Past ten rows
+/// the rest render with the disclosure hook, both on the page and in a sort
+/// fragment.
+#[tokio::test]
+async fn traffic_sources_say_they_are_all_time_and_mark_rows_past_ten() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_views(ID_A, days_ago(20), 5, 3).await;
+    for i in 0..12 {
+        h.seed_referrer(ID_A, days_ago(1), &format!("site{i:02}.example"), 50 - i, 1)
+            .await;
+    }
+
+    for query in ["", "?days=7"] {
+        let body = body_string(h.get(&format!("/repos/1{query}")).await).await;
+        assert!(body.contains("<h2>Traffic sources</h2>"), "{query}: {body}");
+        assert!(
+            body.contains(&format!(
+                r#"All time since <time datetime="{}">"#,
+                days_ago(20)
+            )),
+            "{query}: {body}"
+        );
+        assert!(
+            body.contains("not affected by the period above. Uniques is a peak, never a total."),
+            "{query}: {body}"
+        );
+        assert!(
+            body.contains(r#"<div class="wp-split">"#),
+            "{query}: {body}"
+        );
+        assert_eq!(
+            body.matches(r#"<tr class="wp-more-row">"#).count(),
+            2,
+            "{query}: {body}"
+        );
+        assert!(
+            body.contains(r#"data-more-show="Show all 12""#),
+            "{query}: {body}"
+        );
+    }
+
+    let refs = body_string(h.get_targeting("/repos/1", "refs-table").await).await;
+    assert!(
+        refs.starts_with(r#"<table id="refs-table" class="wp-num-table" data-more="10">"#),
+        "{refs}"
+    );
+    assert!(!refs.contains("wp-split"), "{refs}");
+}
+
+/// A repo with no observed views has no first day to name, so the note
+/// leaves the date out rather than inventing one.
+#[tokio::test]
+async fn the_traffic_note_drops_its_date_when_nothing_was_observed() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    h.seed_referrer(ID_A, days_ago(1), "google", 5, 4).await;
+
+    let body = body_string(h.get("/repos/1").await).await;
+    assert!(
+        body.contains("All time, not affected by the period above."),
+        "{body}"
+    );
+}
+
+/// The repo page's disclosures and switcher are half server markup, half
+/// app.js. With the client half renamed or gone the page still renders every
+/// row, nothing collapses and nothing fails, so the client half is pinned
+/// here, fetched as a browser gets it. REPO-05 and REPO-07 extend the list.
+#[tokio::test]
+async fn the_repo_page_client_hooks_ship_in_the_assets() {
+    let h = harness();
+    let js = body_string(h.get("/assets/app.js").await).await;
+    for name in [
+        // Row disclosure (REPO-02): the class toggle, the boot and settle
+        // pass, and the two selectors the delegated click reads.
+        "function setMore(",
+        "function initMore(",
+        "[data-more-toggle]",
+        "table[data-more]",
+    ] {
+        assert!(js.contains(name), "app.js is missing {name}");
+    }
+    let css = body_string(h.get("/assets/app.css").await).await;
+    assert!(
+        css.contains(".wp-collapsed .wp-more-row {\n  display: none;\n}"),
+        "app.css no longer hides the rows past the cut"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Events + errors
 // ---------------------------------------------------------------------------

@@ -743,6 +743,58 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * Repo page: traffic sources. The two tables sit side by side once there is
+ * room for both, so a referrer and the page it led to read as a pair instead
+ * of two page-width lists, each count next to its label. `minmax(0, 1fr)`
+ * lets a long path wrap inside its column rather than widen the grid. Below
+ * 64rem they stack.
+ */
+.wp-split {
+  display: grid;
+  gap: var(--wp-space-4) var(--wp-space-6);
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .wp-split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+/* Ten rows of each table is the reading unit; Pico pads a row for one. */
+.wp-split .wp-num-table :is(th, td) {
+  padding-block: var(--wp-space-1);
+}
+
+/* One sentence under a section heading, saying what the section covers. */
+.wp-section-note {
+  margin-top: calc(var(--wp-space-2) * -1);
+}
+
+/*
+ * Row disclosure. The server renders every row and marks the ones past the
+ * cut; app.js puts `wp-collapsed` on the table, so with JavaScript off
+ * nothing is hidden. A class rather than `hidden` on the rows, because the
+ * events table's `row.hidden` belongs to the kind filter.
+ */
+.wp-collapsed .wp-more-row {
+  display: none;
+}
+
+/* Pico rules a heavy line above a footer; the toggle row is not a total. */
+.wp-more-foot td {
+  padding-block: var(--wp-space-2) 0;
+  border-top: 0;
+}
+
+.wp-more-toggle {
+  width: auto;
+  margin: 0;
+  padding: var(--wp-space-1) var(--wp-space-3);
+  font-size: var(--wp-text-sm);
+}
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab

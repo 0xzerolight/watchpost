@@ -18,8 +18,9 @@ use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    ALL_DAYS, PERIOD_COUNT, PERIODS, delta_badge, empty_row, empty_state, field, field_compact,
-    json_script, kind_class, page_header, period_select, render_markdown, spinner, table_wrap,
+    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_row, empty_state, field,
+    field_compact, json_script, kind_class, page_header, period_select, render_markdown, spinner,
+    table_wrap,
 };
 use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
@@ -132,6 +133,19 @@ impl ChartSeries {
     }
 }
 
+/// The label of the first day `values` was observed, if it ever was.
+///
+/// Where an "All" figure starts. The payload's labels open at the floor of a
+/// month even for a repo first seen last week, so the first label is not the
+/// answer; the first `Some` is.
+fn first_observed<'a>(labels: &'a [String], values: &[Option<i64>]) -> Option<&'a str> {
+    values
+        .iter()
+        .position(Option::is_some)
+        .and_then(|i| labels.get(i))
+        .map(String::as_str)
+}
+
 /// The KPI tiles' figures, one struct per page render.
 ///
 /// Derived from the same dense series the `#chart-data` island ships, by the
@@ -219,6 +233,12 @@ impl From<&Event> for EventMarker {
 // ---------------------------------------------------------------------------
 // Popular table sorting
 // ---------------------------------------------------------------------------
+
+/// How many rows a long table shows before its toggle. The traffic tables and
+/// the events table share it, so the page reads in one unit everywhere. Rows
+/// past it still render; the client collapses them, so with JavaScript off
+/// every row shows.
+pub const SHOWN_ROWS: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -313,10 +333,20 @@ impl Sort {
     /// Order the rows in place. Sorting happens here rather than in SQL: the
     /// lists are the handful of referrers and paths GitHub reports, and one
     /// ordering rule beats three interpolated `ORDER BY` variants.
+    ///
+    /// Names compare without regard to case, then by the raw name so the
+    /// order stays total. A byte-wise compare put every capitalised referrer
+    /// (Bing, DuckDuckGo, Google) ahead of every lower-case one.
     pub fn apply(self, rows: &mut [PopularItem]) {
+        let by_name = |a: &PopularItem, b: &PopularItem| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.name.cmp(&b.name))
+        };
         rows.sort_by(|a, b| {
             let primary = match self.key {
-                SortKey::Name => a.name.cmp(&b.name),
+                SortKey::Name => by_name(a, b),
                 SortKey::Count => a.count.cmp(&b.count),
                 SortKey::Uniques => a.uniques.cmp(&b.uniques),
             };
@@ -326,7 +356,7 @@ impl Sort {
             };
             // Ties resolve by name in both directions, so a re-sort of equal
             // values never shuffles rows around.
-            ordered.then_with(|| a.name.cmp(&b.name))
+            ordered.then_with(|| by_name(a, b))
         });
     }
 }
@@ -339,15 +369,18 @@ impl Sort {
 /// but `hx-replace-url` rewrites the whole address bar, so a sort link that
 /// dropped it would make a reload after sorting forget the charts' zoom.
 #[derive(Debug, Clone, Copy)]
-pub struct PopularParams {
+pub struct PopularParams<'a> {
     pub repo_id: i64,
+    /// `owner/name`. Every path row starts with it, and the paths table shows
+    /// what comes after.
+    pub repo_name: &'a str,
     pub refs_sort: Sort,
     pub paths_sort: Sort,
     /// The currently selected chart period, [`ALL_DAYS`] when default.
     pub days: i64,
 }
 
-impl PopularParams {
+impl PopularParams<'_> {
     fn sort(self, kind: PopularKind) -> Sort {
         match kind {
             PopularKind::Referrers => self.refs_sort,
@@ -404,7 +437,7 @@ pub struct RepoView<'a> {
     pub events: &'a [Event],
     /// Distinct event kinds on this repo, for the filter chips and datalist.
     pub kinds: &'a [String],
-    pub popular: PopularParams,
+    pub popular: PopularParams<'a>,
     /// Display zone, for the new-event date default. The chart columns below
     /// are UTC day keys and stay that way.
     pub tz: Tz,
@@ -597,60 +630,156 @@ pub fn chart_card(title: &str, canvas_id: &str) -> Markup {
     }
 }
 
-/// The two popular tables. All-time, independently of the chart period: the
-/// lists are short and GitHub's own referrer data is already a rolling
-/// fortnight, so slicing them again by the charts' zoom mostly emptied them.
+/// The traffic-source tables: where views came from, and which pages they
+/// landed on.
+///
+/// All-time, independently of the chart period. The lists are short, and
+/// GitHub's own referrer data is already a rolling fortnight, so slicing them
+/// again by the charts' zoom mostly emptied them. That choice used to be
+/// invisible: the tile above followed the period and these did not, under a
+/// heading that repeated the tile's "Views". So the note under the heading
+/// says it, and says what the uniques column is. Its date is the first observed
+/// day of views in the payload this page already ships, rather than a query of
+/// its own. A repo with none leaves the date out instead of inventing one.
+///
+/// The `.wp-split` wrapper is the section's, outside both tables. A sort swaps
+/// a table's own `outerHTML`, so a wrapper inside the fragment would nest a
+/// fresh grid per click.
 fn popular_section(view: &RepoView) -> Markup {
+    let since = first_observed(&view.payload.labels, &view.payload.series.views_count);
     html! {
         section {
-            h2 { "Views" }
-            // The wrapper is the section's, not the table's: a sort swaps the
-            // table's own `outerHTML` inside it, so a fragment that carried one
-            // would nest a fresh scroll container per click.
-            (table_wrap(popular_table(PopularKind::Referrers, view.referrers, &view.popular)))
-            (table_wrap(popular_table(PopularKind::Paths, view.paths, &view.popular)))
+            h2 { "Traffic sources" }
+            p class="wp-section-note wp-muted wp-small" {
+                "All time"
+                @if let Some(first) = since {
+                    " since " (date_stamp(first))
+                }
+                ", not affected by the period above. Uniques is a peak, never a total."
+            }
+            div class="wp-split" {
+                (table_wrap(popular_table(PopularKind::Referrers, view.referrers, &view.popular)))
+                (table_wrap(popular_table(PopularKind::Paths, view.paths, &view.popular)))
+            }
         }
     }
 }
 
 /// One sortable table. Its own `id` is the swap target, so the table element
-/// must be the fragment's root — the caption carries the heading rather than an
-/// `<h3>` outside it, which a swap would leave behind.
+/// must be the fragment's root. The caption carries the heading (an `<h3>`,
+/// so heading navigation reaches both tables) rather than a heading outside
+/// it, which a swap would leave behind.
+///
+/// Every row renders. Rows past [`SHOWN_ROWS`] carry `wp-more-row`, and the
+/// table carries `data-more` plus a toggle that ships `hidden`. The client
+/// collapses those rows and shows the toggle, so with JavaScript off the
+/// table is whole. A sort re-renders the hook along with the rows.
 pub fn popular_table(kind: PopularKind, rows: &[PopularItem], params: &PopularParams) -> Markup {
     let (caption, name_label) = match kind {
         PopularKind::Referrers => ("Referrers", "Referrer"),
         PopularKind::Paths => ("Paths", "Path"),
     };
     let sort = params.sort(kind);
+    let more = rows.len() > SHOWN_ROWS;
     html! {
-        table id=(table_id(kind)) {
-            caption { (caption) }
+        table id=(table_id(kind)) class="wp-num-table" data-more=[more.then_some(SHOWN_ROWS)] {
+            caption { h3 { (caption) } }
             thead {
                 tr {
                     (sort_th(kind, SortKey::Name, name_label, sort, params))
                     (sort_th(kind, SortKey::Count, "Views", sort, params))
-                    (sort_th(kind, SortKey::Uniques, "Uniques", sort, params))
+                    (sort_th(kind, SortKey::Uniques, "Peak uniques", sort, params))
                 }
             }
             tbody {
                 @if rows.is_empty() {
                     (empty_row(3, "Nothing recorded yet."))
                 }
-                @for row in rows {
-                    tr {
-                        td {
-                            (row.name)
-                            @if let Some(title) = &row.title {
-                                br;
-                                span class="wp-muted wp-small" { (title) }
-                            }
-                        }
+                @for (i, row) in rows.iter().enumerate() {
+                    tr class=[(i >= SHOWN_ROWS).then_some("wp-more-row")] {
+                        (name_cell(kind, row, params.repo_name))
                         td { (row.count) }
                         td { (row.uniques) }
                     }
                 }
             }
+            @if more {
+                tfoot class="wp-more-foot" {
+                    tr {
+                        td colspan="3" {
+                            (more_toggle(
+                                &format!("Show all {}", rows.len()),
+                                &format!("Show top {SHOWN_ROWS}"),
+                            ))
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/// A row's label cell.
+///
+/// A path is shown relative to the repo, because every one of them starts with
+/// the `/owner/name` this page is about; the full path stays in `title`.
+/// GitHub's own title for the page goes on a second line only when it says
+/// something the path does not. For most rows it is the path again.
+fn name_cell(kind: PopularKind, row: &PopularItem, repo_name: &str) -> Markup {
+    match kind {
+        PopularKind::Referrers => html! { td { (row.name) } },
+        PopularKind::Paths => {
+            let shown = relative_path(&row.name, repo_name);
+            let title = row.title.as_deref().filter(|title| says_more(title, shown));
+            html! {
+                td title=(row.name) {
+                    (shown)
+                    @if let Some(title) = title {
+                        br;
+                        span class="wp-muted wp-small" { (title) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `path` with its leading `/{repo_name}` taken off, matched without regard to
+/// case as GitHub matches it; the repo root reads `/`. A path under some other
+/// prefix (a renamed repo's old name, or a sibling whose name merely starts
+/// the same) comes back whole.
+fn relative_path<'a>(path: &'a str, repo_name: &str) -> &'a str {
+    let end = repo_name.len() + 1;
+    let under_repo = path.starts_with('/')
+        && path
+            .get(1..end)
+            .is_some_and(|name| name.eq_ignore_ascii_case(repo_name));
+    if !under_repo {
+        return path;
+    }
+    match &path[end..] {
+        "" => "/",
+        rest if rest.starts_with('/') => rest,
+        _ => path,
+    }
+}
+
+/// Whether GitHub's page title adds anything to the path shown. It does not
+/// when it is the same path, with or without its leading slash.
+fn says_more(title: &str, shown: &str) -> bool {
+    title.trim_start_matches('/') != shown.trim_start_matches('/')
+}
+
+/// The toggle for a table's rows past [`SHOWN_ROWS`].
+///
+/// It ships `hidden`, so with JavaScript off nothing offers to hide rows that
+/// nothing would hide. The client unhides it when it collapses the table, and
+/// swaps its label between the two `data-more-*` texts. `aria-expanded`
+/// starts true because, until the client acts, every row is showing.
+fn more_toggle(show: &str, hide: &str) -> Markup {
+    html! {
+        button type="button" class="secondary outline wp-more-toggle" data-more-toggle
+            data-more-show=(show) data-more-hide=(hide) aria-expanded="true" hidden { (show) }
     }
 }
 
@@ -1091,13 +1220,20 @@ mod tests {
         }
     }
 
-    fn params() -> PopularParams {
+    fn params() -> PopularParams<'static> {
         PopularParams {
             repo_id: 1,
+            repo_name: "octo/x",
             refs_sort: Sort::parse(PopularKind::Referrers, None, None),
             paths_sort: Sort::parse(PopularKind::Paths, None, None),
             days: ALL_DAYS,
         }
+    }
+
+    /// Byte offset of `needle` in `out`, for asserting order.
+    fn at(out: &str, needle: &str) -> usize {
+        out.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not found in {out}"))
     }
 
     #[test]
@@ -1177,14 +1313,24 @@ mod tests {
 
     #[test]
     fn tables_are_captioned_by_what_they_list() {
+        // An h3 inside the caption: heading navigation reaches each table,
+        // and the table is still the root a sort swap replaces.
         let refs = popular_table(PopularKind::Referrers, &[], &params()).into_string();
-        assert!(refs.contains("<caption>Referrers</caption>"), "was {refs}");
+        assert!(
+            refs.contains("<caption><h3>Referrers</h3></caption>"),
+            "was {refs}"
+        );
 
         let paths = popular_table(PopularKind::Paths, &[], &params()).into_string();
-        assert!(paths.contains("<caption>Paths</caption>"), "was {paths}");
+        assert!(
+            paths.contains("<caption><h3>Paths</h3></caption>"),
+            "was {paths}"
+        );
         // "Popular" was an adjective doing a heading's job; the section above
         // these two tables now says what the numbers are.
         assert!(!paths.contains("Popular"), "was {paths}");
+        // A peak, never a total: the header says which.
+        assert!(paths.contains("Peak uniques<svg"), "was {paths}");
     }
 
     #[test]
@@ -1197,9 +1343,11 @@ mod tests {
         // An empty table still renders its swap target, and says why it is
         // empty across the full width of the columns it has.
         assert!(
-            out.starts_with(r#"<table id="refs-table">"#),
+            out.starts_with(r#"<table id="refs-table" class="wp-num-table"><caption>"#),
             "out was {out}"
         );
+        // Nothing to disclose in an empty table.
+        assert!(!out.contains("<tfoot"), "out was {out}");
         assert!(
             out.contains(r#"<tr class="wp-empty-row"><td colspan="3">"#),
             "out was {out}"
@@ -1286,17 +1434,154 @@ mod tests {
         );
     }
 
+    /// GitHub's title for a path is usually the path again, minus the repo
+    /// prefix. It earns a second line only when it says something new.
     #[test]
-    fn path_title_renders_under_the_path() {
-        let rows = vec![PopularItem {
-            name: "/docs".into(),
-            title: Some("Docs page".into()),
-            count: 3,
-            uniques: 2,
-        }];
+    fn path_title_renders_only_when_it_says_something_new() {
+        let rows = vec![
+            PopularItem {
+                name: "/docs".into(),
+                title: Some("Docs page".into()),
+                count: 3,
+                uniques: 2,
+            },
+            PopularItem {
+                name: "/octo/x/blob/main/README.md".into(),
+                title: Some("/blob/main/README.md".into()),
+                count: 2,
+                uniques: 1,
+            },
+        ];
         let out = popular_table(PopularKind::Paths, &rows, &params()).into_string();
-        assert!(out.contains("/docs"), "out was {out}");
-        assert!(out.contains("Docs page"), "out was {out}");
+        assert!(
+            out.contains(
+                r#"title="/docs">/docs<br><span class="wp-muted wp-small">Docs page</span></td>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"title="/octo/x/blob/main/README.md">/blob/main/README.md</td>"#),
+            "out was {out}"
+        );
+    }
+
+    /// Every path on this page starts with the repo it is about; the cell
+    /// shows what comes after, with the full path on hover.
+    #[test]
+    fn paths_show_relative_to_the_repo_with_the_full_path_in_the_title() {
+        let rows = vec![
+            PopularItem {
+                name: "/octo/x".into(),
+                title: Some("Overview".into()),
+                count: 9,
+                uniques: 3,
+            },
+            PopularItem {
+                name: "/Octo/X/releases/tag/v1".into(),
+                title: Some("releases/tag/v1".into()),
+                count: 5,
+                uniques: 2,
+            },
+            PopularItem {
+                name: "/octo/xy/issues".into(),
+                title: None,
+                count: 1,
+                uniques: 1,
+            },
+        ];
+        let out = popular_table(PopularKind::Paths, &rows, &params()).into_string();
+        // The root reads "/", and its title adds something.
+        assert!(
+            out.contains(
+                r#"title="/octo/x">/<br><span class="wp-muted wp-small">Overview</span></td>"#
+            ),
+            "out was {out}"
+        );
+        // The prefix is matched without regard to case.
+        assert!(
+            out.contains(r#"title="/Octo/X/releases/tag/v1">/releases/tag/v1</td>"#),
+            "out was {out}"
+        );
+        // A sibling repo whose name merely starts the same keeps its path.
+        assert!(
+            out.contains(r#"title="/octo/xy/issues">/octo/xy/issues</td>"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn rows_past_the_first_ten_carry_the_disclosure_hook() {
+        let rows: Vec<PopularItem> = (0..12)
+            .map(|i| item(&format!("site{i:02}.example"), 100 - i, 1))
+            .collect();
+        let out = popular_table(PopularKind::Referrers, &rows, &params()).into_string();
+        assert!(
+            out.starts_with(r#"<table id="refs-table" class="wp-num-table" data-more="10">"#),
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<tr class="wp-more-row">"#).count(),
+            2,
+            "out was {out}"
+        );
+        // The first marked row is the eleventh.
+        assert!(
+            at(&out, "site09") < at(&out, "wp-more-row"),
+            "out was {out}"
+        );
+        assert!(
+            at(&out, "wp-more-row") < at(&out, "site10"),
+            "out was {out}"
+        );
+        // The toggle ships hidden: with JS off every row shows, and nothing
+        // offers to hide them.
+        assert!(
+            out.contains(concat!(
+                r#"<tfoot class="wp-more-foot"><tr><td colspan="3">"#,
+                r#"<button type="button" class="secondary outline wp-more-toggle" data-more-toggle "#,
+                r#"data-more-show="Show all 12" data-more-hide="Show top 10" aria-expanded="true" hidden>"#,
+                "Show all 12</button></td></tr></tfoot>"
+            )),
+            "out was {out}"
+        );
+
+        let ten = popular_table(PopularKind::Referrers, &rows[..10], &params()).into_string();
+        assert!(!ten.contains("data-more"), "ten was {ten}");
+        assert!(!ten.contains("wp-more"), "ten was {ten}");
+    }
+
+    /// Byte order put every capitalised referrer before every lower-case one:
+    /// Bing, DuckDuckGo, Google, then chatgpt.com.
+    #[test]
+    fn name_sort_ignores_case_and_breaks_ties_on_the_raw_name() {
+        let mut rows = vec![
+            item("Google", 1, 1),
+            item("bing", 1, 1),
+            item("github.com", 1, 1),
+            item("DuckDuckGo", 1, 1),
+            item("b", 1, 1),
+            item("B", 1, 1),
+        ];
+        Sort {
+            key: SortKey::Name,
+            dir: SortDir::Asc,
+        }
+        .apply(&mut rows);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["B", "b", "bing", "DuckDuckGo", "github.com", "Google"]
+        );
+
+        // Equal counts fall back to the same case-blind name order.
+        let mut rows = vec![item("Zeta", 5, 1), item("alpha", 5, 1)];
+        Sort {
+            key: SortKey::Count,
+            dir: SortDir::Desc,
+        }
+        .apply(&mut rows);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["alpha", "Zeta"]);
     }
 
     /// A payload whose stars series is `observed`, everything else a gap.

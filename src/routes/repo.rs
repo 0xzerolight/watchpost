@@ -101,6 +101,7 @@ pub async fn repo_page(
         kinds: &page.kinds,
         popular: PopularParams {
             repo_id,
+            repo_name: &page.repo.name,
             refs_sort,
             paths_sort,
             days: selected,

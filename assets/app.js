@@ -2206,6 +2206,84 @@
   });
 
   // -------------------------------------------------------------------------
+  // Repo page: row disclosure and switcher
+  // -------------------------------------------------------------------------
+
+  /*
+   * Long tables open on their first rows. The server renders every row, marks
+   * the ones past the cut `wp-more-row`, and gives the table `data-more` plus a
+   * toggle that ships `hidden`. Collapsing is a class on the table, set here,
+   * so with JavaScript off nothing collapses and nothing offers to.
+   *
+   * Which tables the reader opened is kept by id. A sort swaps the whole
+   * table, and the fresh one would otherwise close again under the pointer. A
+   * Set rather than a flag on the element, because the element is what the
+   * swap throws away.
+   */
+  var openTables = new Set();
+
+  function setMore(table, open) {
+    table.classList.toggle("wp-collapsed", !open);
+    if (open) {
+      openTables.add(table.id);
+    } else {
+      openTables.delete(table.id);
+    }
+    var toggle = table.querySelector("[data-more-toggle]");
+    if (toggle) {
+      toggle.hidden = false;
+      toggle.setAttribute("aria-expanded", String(open));
+      // Attribute text the server wrote; `textContent` keeps it text.
+      toggle.textContent = toggle.getAttribute(
+        open ? "data-more-hide" : "data-more-show",
+      );
+    }
+  }
+
+  /* Collapse every disclosure table in `root`, or `root` itself, unless the reader opened it. */
+  function initMore(root) {
+    var tables =
+      root.matches && root.matches("table[data-more]")
+        ? [root]
+        : root.querySelectorAll("table[data-more]");
+    for (var i = 0; i < tables.length; i++) {
+      setMore(tables[i], openTables.has(tables[i].id));
+    }
+  }
+
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    var toggle = target.closest("[data-more-toggle]");
+    var table = toggle ? toggle.closest("table[data-more]") : null;
+    if (table) {
+      setMore(table, table.classList.contains("wp-collapsed"));
+    }
+  });
+
+  /*
+   * After settle, not after swap: for the swap htmx dresses the new table in
+   * the old one's `class` and puts the server's back at settle, so a class set
+   * any earlier would be wiped. The settled element is the event's target.
+   */
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    var target = evt.target;
+    if (target && (target.id === "refs-table" || target.id === "paths-table")) {
+      initMore(target);
+    }
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      initMore(document);
+    });
+  } else {
+    initMore(document);
+  }
+
+  // -------------------------------------------------------------------------
   // Focus continuity
   // -------------------------------------------------------------------------
 
