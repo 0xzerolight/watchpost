@@ -588,6 +588,30 @@
 }
 
 /*
+ * A failed sync's category on the leaderboard glyph. The glyph opens to the
+ * right, over the figures (`leader_error_glyph`), but Pico draws a tooltip as
+ * one unbroken line, and a stored category runs to a hundred characters,
+ * wider than a phone's table. `max-content` keeps a short one on one line;
+ * past the cap it wraps instead of being cut at the scrolling wrapper's edge.
+ */
+.wp-leaders [data-tooltip]::before {
+  width: max-content;
+  max-width: min(18rem, 50vw);
+  white-space: normal;
+}
+
+/*
+ * On a phone every name cell is pinned at `z-index: 1`, so the next row's
+ * cell painted over the lower lines of an open tooltip. The cell holding it
+ * steps above its neighbours while hovered or focused.
+ */
+@media (max-width: 40rem) {
+  .wp-leaders.wp-num-table td:first-child:is(:hover, :focus-within) {
+    z-index: 2;
+  }
+}
+
+/*
  * Direction is carried by the sign character first and the colour second, so
  * the row still reads on a monochrome screen and for a reader who cannot
  * separate the two hues. The colour is on text, so it has to reach 4.5:1, not

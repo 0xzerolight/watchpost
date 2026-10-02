@@ -378,6 +378,24 @@ async fn healthy_repos_draw_no_failure_line() {
 }
 
 #[tokio::test]
+async fn the_leaderboard_glyph_wraps_a_long_category_instead_of_clipping_it() {
+    // Pico's tooltip is one unbroken line. The leaderboard glyph sits in a
+    // table that scrolls inside its wrapper, and a stored category runs to a
+    // hundred characters, so without this rule most of it was cut off.
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+    let rule = css
+        .split_once("\n.wp-leaders [data-tooltip]::before {")
+        .unwrap_or_else(|| panic!("no leaderboard tooltip rule in app.css"))
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(rule.contains("white-space: normal;"), "{rule}");
+    assert!(rule.contains("max-width:"), "{rule}");
+}
+
+#[tokio::test]
 async fn last_synced_at_renders_as_relative_time() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A, true).await;
