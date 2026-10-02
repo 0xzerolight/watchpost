@@ -524,6 +524,32 @@ async fn a_repo_name_cannot_break_out_of_the_leaderboard() {
     );
 }
 
+/// On a phone the pinned name cell inherited `.wp-num-table`'s
+/// `overflow-wrap: anywhere`, which took every break point into its minimum
+/// width; the cell stayed at its 9rem floor and "anki_miner_android" split
+/// mid-word. `break-word` leaves those break points out of the minimum, so
+/// the cell grows to the longest segment and the name breaks at the slash.
+/// The selector carries both classes, or the later `.wp-num-table` rule at the
+/// same specificity overrides it and the fix silently does nothing.
+#[tokio::test]
+async fn a_pinned_repo_name_breaks_at_the_slash_not_mid_word() {
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+
+    let pinned = css
+        .split_once(
+            "@media (max-width: 40rem) {\n  .wp-leaders.wp-num-table :is(th, td):first-child {",
+        )
+        .expect("no pinned leaderboard name rule in app.css")
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+
+    assert!(pinned.contains("position: sticky;"), "{pinned}");
+    assert!(pinned.contains("overflow-wrap: break-word;"), "{pinned}");
+}
+
 #[tokio::test]
 async fn downloads_are_the_newest_count_per_asset_not_a_sum_of_rows() {
     let h = harness();
