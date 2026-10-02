@@ -6,6 +6,7 @@
 //! and a page that loses `historyCacheSize = 0` only breaks on the back button.
 //! Both failures are invisible to a smoke test, so they are pinned here.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -88,7 +89,7 @@ async fn app_css_is_served_as_css() {
     );
     let body = body_string(resp).await;
     assert!(body.contains("--wp-marker-0"), "body was {body}");
-    assert!(body.contains(".chart-box"), "body was {body}");
+    assert!(body.contains("--wp-border"), "body was {body}");
     // The shared components ui.rs emits are styled here and nowhere else.
     assert!(body.contains(".wp-notice"), "body was {body}");
 }
@@ -97,6 +98,127 @@ async fn app_css_is_served_as_css() {
 async fn app_css_ignores_the_cache_busting_query() {
     let resp = get("/assets/app.css?v=9.9.9").await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// The declarations of the first rule whose selector line is exactly
+/// `selector`, up to its closing brace. Panics when there is none, so a
+/// renamed selector fails loudly instead of passing vacuously. An indented
+/// selector (a rule inside `@media`) is matched with its indentation.
+fn rule<'a>(css: &'a str, selector: &str) -> &'a str {
+    let open = format!("\n{selector} {{");
+    css.split_once(open.as_str())
+        .unwrap_or_else(|| panic!("no `{selector}` rule in app.css"))
+        .1
+        .split('}')
+        .next()
+        .unwrap()
+}
+
+/// The custom properties a block declares, by name.
+fn declared(block: &str) -> BTreeSet<&str> {
+    block
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.starts_with("--")
+                .then(|| line.split(':').next().unwrap())
+        })
+        .collect()
+}
+
+/// The two dark blocks are one remapping written twice: the media query that
+/// follows the OS, and `[data-theme="dark"]` for forcing a scheme. A token
+/// added to one and forgotten in the other is right in one mode of dark and
+/// wrong in the other, which no other test would notice.
+#[tokio::test]
+async fn both_dark_blocks_remap_the_same_tokens() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let media = declared(rule(&css, r#"  :root:not([data-theme="light"])"#));
+    let attr = declared(rule(&css, r#"[data-theme="dark"]"#));
+    assert!(!media.is_empty(), "no dark media block found");
+    assert_eq!(media, attr, "the two dark blocks have drifted apart");
+    for name in ["--wp-marker-5", "--wp-border", "--pico-muted-color"] {
+        assert!(media.contains(name), "the dark blocks do not set {name}");
+    }
+}
+
+/// Delta text used to wear the green and red chart-mark slots, which are
+/// picked for 3:1 as marks and measured 3.6:1 and 3.95:1 as text. Text needs
+/// 4.5:1, so deltas read Pico's own ins/del text colours.
+#[tokio::test]
+async fn deltas_read_text_colours_and_floating_surfaces_share_one_border() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let root = rule(&css, ":root");
+    for decl in [
+        "--wp-delta-up: var(--pico-ins-color);",
+        "--wp-delta-down: var(--pico-del-color);",
+        "--wp-border: var(--pico-muted-border-color);",
+    ] {
+        assert!(root.contains(decl), ":root is missing `{decl}`");
+    }
+    assert_eq!(
+        rule(&css, ".wp-delta-up").trim(),
+        "color: var(--wp-delta-up);"
+    );
+    assert_eq!(
+        rule(&css, ".wp-delta-down").trim(),
+        "color: var(--wp-delta-down);"
+    );
+    for selector in ["#chart-tip", ".wp-toast", ".wp-skip"] {
+        assert!(
+            rule(&css, selector).contains("border: 1px solid var(--wp-border);"),
+            "{selector} does not use --wp-border"
+        );
+    }
+}
+
+/// Pico shows focus as a translucent box-shadow (about 1.8:1) and an unticked
+/// checkbox at about 1.4:1. A pressed KPI tile looked the same focused or not,
+/// and an off chip differed from an on one by a 16% tint. Each of these needs
+/// a cue that is not a faint shade of the same colour.
+#[tokio::test]
+async fn focus_and_toggle_state_do_not_rest_on_colour() {
+    let css = body_string(get("/assets/app.css").await).await;
+
+    let ring = rule(
+        &css,
+        r#":root :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible"#,
+    );
+    assert!(
+        ring.contains("outline: 2px solid var(--pico-primary);"),
+        "{ring}"
+    );
+    assert!(ring.contains("outline-offset: 2px;"), "{ring}");
+    assert!(ring.contains("box-shadow: none;"), "{ring}");
+
+    let light = declared(rule(&css, r#":root:not([data-theme="dark"])"#));
+    let dark = declared(rule(&css, r#"  :root:not([data-theme="light"])"#));
+    for scheme in [&light, &dark] {
+        assert!(
+            scheme.contains("--pico-form-element-border-color"),
+            "a scheme leaves the control border at Pico's 1.4:1"
+        );
+    }
+
+    let group = rule(&css, ".wp-kpis");
+    assert!(
+        group.contains("--pico-group-box-shadow-focus-with-button: none;"),
+        "{group}"
+    );
+    assert!(
+        rule(&css, r#".wp-kpis[role="group"] > button.wp-kpi"#).contains("margin-left: 0;"),
+        "tiles still collapse into one segmented bar"
+    );
+    assert!(
+        !css.contains(".wp-kpi:is(:hover, :focus-visible)"),
+        "hover and keyboard focus must be distinct states"
+    );
+
+    assert!(
+        rule(&css, r#".wp-chip[aria-pressed="false"]::before"#)
+            .contains("background: transparent;"),
+        "an off chip must show a hollow dot"
+    );
 }
 
 #[tokio::test]
@@ -138,6 +260,12 @@ async fn app_js_defines_the_watchpost_namespace() {
         // to `window.confirm`.
         "htmx:confirm",
         "[data-confirm-ok]",
+        // Per-trigger dialog copy: the heading, the OK label and the danger
+        // style come from the button that asked. Lose the reader and every
+        // delete reverts to "Confirm / Confirm".
+        "data-confirm-title",
+        "data-confirm-label",
+        "data-confirm-danger",
         // An event row is a table row, not a form, so Enter in one of its
         // fields submits nothing without this listener.
         "tr.wp-edit-row",
@@ -152,6 +280,14 @@ async fn app_js_defines_the_watchpost_namespace() {
         // comment and in `applyFilter`'s selector, so a plain needle would go
         // on passing with the fallback deleted.
         r#"getElementById("events-section")"#,
+        // The general fallback before it: the nearest container that takes
+        // parked focus, which is how a sync status keeps the keyboard.
+        r#"[tabindex="-1"]:not(#main)"#,
+        // The one announcer for swapped confirmations. Lose the hook and
+        // "Event added." and the sync outcome go back to being heard by some
+        // screenreaders and not others.
+        "data-announce",
+        r#"getElementById("wp-live")"#,
         // Polls must not record or consume a focus id — this is what tells a
         // poll from a press.
         "triggeringEvent",
@@ -355,7 +491,7 @@ async fn a_stale_etag_is_answered_with_the_asset() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(body_string(resp).await.contains(".chart-box"));
+    assert!(body_string(resp).await.contains("--wp-border"));
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +597,8 @@ async fn the_repositories_page_renders_the_base_layout() {
         body.contains(r#"<main id="main" class="container" tabindex="-1">"#),
         "{body}"
     );
+    // One no-JS notice per page, inside main where the skip link lands.
+    assert_eq!(body.matches("<noscript>").count(), 1, "{body}");
 
     // The skip link only works as the first focusable element on the page, so
     // its position is part of the contract, not just its presence.
@@ -529,5 +667,113 @@ async fn the_repositories_page_reuses_an_existing_token() {
     assert_eq!(
         hx_headers(&body_string(resp).await),
         serde_json::json!({ "x-csrf-token": TOKEN })
+    );
+}
+
+/// The nav's current entry used to differ from its neighbours by one shade of
+/// blue. A long repo name, an edit row's hidden labels and a sync-error tooltip
+/// each widened a phone page past the viewport.
+#[tokio::test]
+async fn the_shell_marks_its_section_and_keeps_to_the_viewport() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let current = rule(
+        &css,
+        r#"body > nav a[aria-current]:not([aria-current="false"])"#,
+    );
+    for decl in [
+        "color: inherit;",
+        "font-weight: 600;",
+        "text-decoration-thickness: 2px;",
+    ] {
+        assert!(current.contains(decl), "nav current is missing `{decl}`");
+    }
+    assert!(rule(&css, ".wp-brand").contains("color: inherit;"));
+    assert!(rule(&css, ".wp-page-header hgroup").contains("min-width: 0;"));
+    assert!(rule(&css, ".wp-page-header h1").contains("overflow-wrap: anywhere;"));
+    assert!(rule(&css, ".wp-table-wrap").contains("position: relative;"));
+}
+
+/// The leaderboard right-aligned its figures in tabular digits; the traffic
+/// tables did not, and their sort headers were link-blue and underlined. One
+/// class now carries the look, and every wrapper says when it scrolls.
+#[tokio::test]
+async fn numeric_tables_share_one_style_and_wrappers_show_their_scroll_edge() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let figures = rule(&css, ".wp-num-table :is(th, td):not(:first-child)");
+    for decl in [
+        "text-align: right;",
+        "font-variant-numeric: tabular-nums;",
+        "white-space: nowrap;",
+        "width: 1%;",
+    ] {
+        assert!(figures.contains(decl), ".wp-num-table is missing `{decl}`");
+    }
+    assert!(
+        rule(&css, ".wp-num-table :is(th, td):first-child").contains("overflow-wrap: anywhere;")
+    );
+    assert!(rule(&css, ".wp-num-table caption").contains("caption-side: top;"));
+    assert!(rule(&css, ".wp-num-table th a").contains("text-decoration: none;"));
+    assert!(
+        rule(&css, ".wp-table-wrap")
+            .contains("background-attachment: local, local, scroll, scroll;"),
+        "no scroll-edge cue on the wrapper"
+    );
+}
+
+/// Off-scale literals (0.85rem, 0.8rem) sat beside the 0.8125rem step, so two
+/// "small" sizes shared a row; h2 was 28px under a 32px h1; and the two tips
+/// were identical blocks that could drift. Touch targets grow only under a
+/// coarse pointer, so the desktop look is unchanged.
+#[tokio::test]
+async fn type_and_spacing_come_from_the_scale() {
+    let css = body_string(get("/assets/app.css").await).await;
+    for literal in ["0.85rem", "0.8rem"] {
+        assert!(
+            !css.contains(literal),
+            "off-scale literal {literal} in app.css"
+        );
+    }
+    let root = rule(&css, ":root");
+    for token in [
+        "--wp-section-gap:",
+        "--wp-text-h2:",
+        "--wp-text-figure:",
+        "--wp-text-figure-sm:",
+        "--wp-figure-numeric:",
+    ] {
+        assert!(root.contains(token), ":root is missing {token}");
+    }
+    assert!(rule(&css, "main h2").contains("font-size: var(--wp-text-h2);"));
+    assert!(rule(&css, "main > section").contains("margin-block-end: var(--wp-section-gap);"));
+    assert!(
+        rule(&css, ".wp-field-inline")
+            .contains("--pico-form-element-spacing-vertical: var(--wp-space-1);")
+    );
+    // One tip rule. Stated so that it holds both now (`#marker-tip,\n#chart-tip {`)
+    // and after the post-merge cleanup drops the retired marker tip
+    // (`\n#chart-tip {`): exactly one rule opens on `#chart-tip`, and the
+    // marker tip never has a block of its own again.
+    assert_eq!(
+        css.matches("\n#chart-tip {").count(),
+        1,
+        "tip rules are not merged"
+    );
+    assert!(
+        !css.contains("\n#marker-tip {"),
+        "the marker tip has its own rule again"
+    );
+    assert!(
+        css.contains("@media (pointer: coarse)"),
+        "no touch-target block"
+    );
+}
+
+#[tokio::test]
+async fn a_destructive_confirm_has_its_own_button_style() {
+    let css = body_string(get("/assets/app.css").await).await;
+    let danger = rule(&css, "#wp-confirm .wp-confirm-danger");
+    assert!(
+        danger.contains("--pico-background-color: var(--pico-del-color);"),
+        "{danger}"
     );
 }

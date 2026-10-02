@@ -75,6 +75,42 @@ pub fn last_observed(values: &[Option<i64>]) -> Option<i64> {
     values.iter().rev().find_map(|value| *value)
 }
 
+/// How a rate series' sum moved over each entry of [`PERIODS`] against the
+/// same number of days just before it, as a whole percentage.
+///
+/// Complete UTC days only. The last slot is today, which GitHub is still
+/// filling, so it is dropped before either window is cut; a half-counted day
+/// compared with a whole one reads as a fall that never happened. `Some` only
+/// when every day of both windows was observed and the earlier sum is above
+/// zero: a gap is unknown traffic, and summing round it would also read as a
+/// fall, while a zero base has no percentage at all. Averaging per observed
+/// day was rejected here: both windows are meant to be equal spans, and a
+/// per-day rate compares two different sets of days while hiding that either
+/// window was incomplete. An event's impact line
+/// ([`crate::routes::html::repo::event_impact`]) does average per observed day,
+/// because its after-window is still filling and is shorter than its
+/// before-window by design, so equal spans are not on offer there. "All" has
+/// no earlier window and is always `None`, as
+/// [`crate::routes::html::delta_badge`] leaves it blank.
+pub fn per_period_vs_previous(values: &[Option<i64>]) -> [Option<i64>; PERIOD_COUNT] {
+    let complete = &values[..values.len().saturating_sub(1)];
+    PERIODS.map(|(days, _)| {
+        let n = usize::try_from(days).ok().filter(|n| *n > 0)?;
+        let split = complete.len().checked_sub(n)?;
+        let start = split.checked_sub(n)?;
+        // `Option`'s `Sum` is `None` as soon as one day is.
+        let current: i64 = complete[split..].iter().copied().sum::<Option<i64>>()?;
+        let previous: i64 = complete[start..split]
+            .iter()
+            .copied()
+            .sum::<Option<i64>>()?;
+        if previous <= 0 {
+            return None;
+        }
+        Some(((current - previous) as f64 * 100.0 / previous as f64).round() as i64)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +181,72 @@ mod tests {
         let figures = per_period(&values, |slice| Some(slice.len() as i64));
         // The 7-day column over two days of history is two days, not a panic.
         assert_eq!(figures[0], Some(2));
+    }
+
+    /// Fourteen complete days and today's partial bucket.
+    fn fortnight(previous: [Option<i64>; 7], current: [Option<i64>; 7]) -> Vec<Option<i64>> {
+        let mut values = previous.to_vec();
+        values.extend(current);
+        values.push(Some(999));
+        values
+    }
+
+    #[test]
+    fn views_change_compares_complete_windows_and_drops_today() {
+        // Previous week 70, current week 140; today's 999 is not counted.
+        let out = per_period_vs_previous(&fortnight([Some(10); 7], [Some(20); 7]));
+        assert_eq!(out[0], Some(100));
+        // Thirty days need sixty complete days; fourteen are not enough.
+        assert_eq!(out[1], None);
+    }
+
+    #[test]
+    fn views_change_reports_a_fall_rounded_to_a_whole_percent() {
+        // anki_miner_android, Sep 17-23 against Sep 24-30: 26 then 15.
+        let previous = [4, 4, 4, 2, 1, 2, 9].map(Some);
+        let current = [0, 2, 0, 2, 2, 2, 7].map(Some);
+        assert_eq!(
+            per_period_vs_previous(&fortnight(previous, current))[0],
+            Some(-42)
+        );
+    }
+
+    #[test]
+    fn a_gap_in_either_window_gives_no_change() {
+        // A missing day is unknown traffic, not a fall.
+        let mut previous = [Some(10); 7];
+        previous[3] = None;
+        assert_eq!(
+            per_period_vs_previous(&fortnight(previous, [Some(20); 7]))[0],
+            None
+        );
+        let mut current = [Some(20); 7];
+        current[6] = None;
+        assert_eq!(
+            per_period_vs_previous(&fortnight([Some(10); 7], current))[0],
+            None
+        );
+        // Today's bucket may be a gap without hiding anything.
+        let mut values = fortnight([Some(10); 7], [Some(20); 7]);
+        *values.last_mut().unwrap() = None;
+        assert_eq!(per_period_vs_previous(&values)[0], Some(100));
+    }
+
+    #[test]
+    fn a_zero_base_gives_no_change() {
+        // Nothing to divide by: no percentage, not "+Infinity%".
+        let out = per_period_vs_previous(&fortnight([Some(0); 7], [Some(5); 7]));
+        assert_eq!(out[0], None);
+    }
+
+    #[test]
+    fn all_never_has_a_previous_window() {
+        let values: Vec<Option<i64>> = vec![Some(1); 800];
+        let out = per_period_vs_previous(&values);
+        let all = PERIODS.iter().position(|(days, _)| *days < 0).unwrap();
+        assert_eq!(out[all], None);
+        // A year does: 730 complete days are there.
+        let year = PERIODS.iter().position(|(days, _)| *days == 365).unwrap();
+        assert_eq!(out[year], Some(0));
     }
 }

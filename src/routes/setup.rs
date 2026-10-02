@@ -77,15 +77,11 @@ pub async fn setup_gate(State(state): State<Arc<AppState>>, req: Request, next: 
 
 /// GET /setup — the form, plus what the token needs to be able to do.
 pub async fn setup_page(csrf: CsrfToken) -> Markup {
-    render(&csrf, None)
+    render(&csrf)
 }
 
-/// POST /setup — validate, save, and hand the browser to the dashboard.
-pub async fn setup_submit(
-    State(state): State<Arc<AppState>>,
-    csrf: CsrfToken,
-    body: String,
-) -> Response {
+/// POST /setup — validate, save, and hand the browser to the picker.
+pub async fn setup_submit(State(state): State<Arc<AppState>>, body: String) -> Response {
     let raw = form_field(&body, "token").unwrap_or_default();
     match apply_token(&state, &raw).await {
         Ok(()) => {
@@ -98,16 +94,23 @@ pub async fn setup_submit(
             });
 
             // The whole page changes, so htmx is told to navigate rather than
-            // to swap a fragment into the form it just submitted.
+            // to swap a fragment into the form it just submitted. Step two is
+            // picking repositories, so it goes to the picker rather than to a
+            // dashboard that has nothing tracked to show.
             let mut resp = StatusCode::OK.into_response();
-            resp.headers_mut()
-                .insert("hx-redirect", HeaderValue::from_static("/"));
+            resp.headers_mut().insert(
+                "hx-redirect",
+                HeaderValue::from_static("/settings#wp-repos"),
+            );
             resp
         }
-        // 200, not 4xx: htmx only swaps a 4xx for the 422 the event forms
-        // answer with, so an error status here would discard the re-rendered
-        // form and leave the page unchanged. See `assets/htmx-config.js`.
-        Err(msg) => render(&csrf, Some(msg)).into_response(),
+        // The form alone, not the page: the form swaps itself `outerHTML`, so
+        // a whole document in reply nested a second nav, heading and form
+        // inside the first, once more per attempt. 200, not 4xx: htmx only
+        // swaps a 4xx for the 422 the event forms answer with, so an error
+        // status here would discard the re-rendered form and leave the page
+        // unchanged. See `assets/htmx-config.js`.
+        Err(msg) => token_form(Some(msg)).into_response(),
     }
 }
 
@@ -165,52 +168,77 @@ pub fn form_field(body: &str, key: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-/// The page. `error` is the notice a rejected submission carries back.
-fn render(csrf: &CsrfToken, error: Option<String>) -> Markup {
+/// The page, as a first visit sees it. A rejected submission never re-renders
+/// it: it answers with [`token_form`] alone.
+///
+/// [`NavItem::Setup`] gives the shell the brand and no links: every link
+/// would only redirect back here. The subtitle names the second step, so the
+/// reader knows Save token is not the end of it.
+fn render(csrf: &CsrfToken) -> Markup {
     base(
         "Setup",
-        NavItem::None,
+        NavItem::Setup,
         csrf,
         html! {
-            (page_header("Set up watchpost", None, None))
-            section {
-                p {
-                    "watchpost reads your repositories through the GitHub API, so it needs a \
-                     personal access token. A "
-                    a href="https://github.com/settings/personal-access-tokens/new"
-                        target="_blank" rel="noopener" { "fine-grained token" }
-                    " is the better choice; under "
-                    strong { "Repository permissions" }
-                    " grant:"
-                }
-                ul {
-                    @for (name, why) in PERMISSIONS {
-                        li { strong { (name) } " — " (why) }
+            div class="wp-narrow" {
+                (page_header(
+                    "Set up watchpost",
+                    Some(html! { "Step 1 of 2 — next you pick which repositories to track." }),
+                    None,
+                ))
+                section {
+                    p {
+                        "watchpost reads your repositories through the GitHub API, so it needs a \
+                         personal access token. A "
+                        a href="https://github.com/settings/personal-access-tokens/new"
+                            target="_blank" rel="noopener" { "fine-grained token" }
+                        " is the better choice; under "
+                        strong { "Repository permissions" }
+                        " grant:"
                     }
+                    ul {
+                        @for (name, why) in PERMISSIONS {
+                            li { strong { (name) } " — " (why) }
+                        }
+                    }
+                    p {
+                        "A classic token with the "
+                        code { "repo" }
+                        " scope also works. A missing permission costs that one part of a \
+                         collection pass rather than the pass, so you can start with less and \
+                         come back to it."
+                    }
+                    (token_form(None))
                 }
-                p {
-                    "A classic token with the "
-                    code { "repo" }
-                    " scope also works. A missing permission costs that one part of a \
-                     collection pass rather than the pass, so you can start with less and \
-                     come back to it."
-                }
-                (token_form(error))
             }
         },
     )
 }
 
-/// The field itself, swapped in place when a submission comes back rejected.
+/// The field itself, and the whole answer to a rejected submission.
+///
+/// With an error, the notice is tied to the input (`aria-describedby`), the
+/// input says it is invalid, and `autofocus` puts the caret back in the field:
+/// htmx focuses an `[autofocus]` element in swapped content. A wrapper carries
+/// the notice's id because [`notice`] renders its own paragraph and takes no
+/// attributes.
+///
+/// `method` and `action` are for a browser running without JavaScript. With
+/// `hx-post` alone, the form submitted as a GET to `/setup` and put the token
+/// in the URL. As a POST it carries no CSRF header, so the middleware refuses
+/// it with the styled page and the token goes nowhere.
 fn token_form(error: Option<String>) -> Markup {
+    let invalid = error.is_some();
     html! {
         form id="setup-form"
             hx-post="/setup"
             hx-target="this"
             hx-swap="outerHTML"
-            hx-disabled-elt="find button[type=submit]" {
+            hx-disabled-elt="find button[type=submit]"
+            method="post"
+            action="/setup" {
             @if let Some(text) = error {
-                (notice(Notice::Error, html! { (text) }))
+                div id="wp-setup-error" { (notice(Notice::Error, html! { (text) })) }
             }
             label for="setup-token" { "Personal access token" }
             // `type=password` so a screen-shared or shoulder-surfed setup does
@@ -223,6 +251,9 @@ fn token_form(error: Option<String>) -> Markup {
                 autocomplete="off"
                 spellcheck="false"
                 placeholder="github_pat_… or ghp_…"
+                aria-invalid=[invalid.then_some("true")]
+                aria-describedby=[invalid.then_some("wp-setup-error")]
+                autofocus[invalid]
                 required;
             div class="wp-actions" {
                 button type="submit" { "Save token" }
@@ -261,5 +292,26 @@ mod tests {
             form_field("token=%20ghp_x", "token").as_deref(),
             Some(" ghp_x")
         );
+    }
+
+    /// Without JavaScript a form with no `method` submits as a GET to the page
+    /// it is on, which put a pasted token in the address bar, the history and
+    /// any proxy log. `method="post"` to the URL htmx posts to makes that
+    /// submit a POST, which CSRF then refuses with the styled page.
+    #[test]
+    fn the_token_form_posts_natively_to_the_url_htmx_posts_to() {
+        for error in [None, Some("x".to_owned())] {
+            let out = token_form(error).into_string();
+            assert!(out.contains(r#"hx-post="/setup""#), "{out}");
+            assert!(out.contains(r#" method="post" action="/setup">"#), "{out}");
+        }
+    }
+
+    #[test]
+    fn a_clean_form_is_neither_invalid_nor_focused() {
+        let out = token_form(None).into_string();
+        assert!(!out.contains("aria-invalid"), "{out}");
+        assert!(!out.contains("autofocus"), "{out}");
+        assert!(!out.contains("wp-setup-error"), "{out}");
     }
 }

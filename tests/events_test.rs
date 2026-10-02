@@ -30,7 +30,7 @@ use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
 use watchpost::routes::router;
 use watchpost::state::AppState;
-use watchpost::types::{Event, GhRepo};
+use watchpost::types::{Event, GhRepo, StatSnapshot, TrafficDay, TrafficKind};
 
 const REPO_A: &str = "octo/aaa";
 const ID_A: i64 = 1;
@@ -174,6 +174,41 @@ impl Harness {
             .call(move |c| queries::events_for_repo(c, repo_id, None))
             .await
             .unwrap()
+    }
+
+    /// One day of views, written the way the collector writes them.
+    async fn seed_views(&self, repo_id: i64, date: String, count: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                queries::upsert_traffic_days(
+                    c,
+                    repo_id,
+                    TrafficKind::Views,
+                    &[TrafficDay {
+                        timestamp: format!("{date}T00:00:00Z"),
+                        count,
+                        uniques: 1,
+                    }],
+                )
+            })
+            .await
+            .unwrap();
+    }
+
+    /// One day's star count, as a sync's snapshot records it.
+    async fn seed_stars(&self, repo_id: i64, date: String, stars: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                let snapshot = StatSnapshot {
+                    stars: Some(stars),
+                    ..StatSnapshot::default()
+                };
+                queries::upsert_stats(c, repo_id, &date, &snapshot)
+            })
+            .await
+            .unwrap();
     }
 
     /// Create one event through the handler and hand back its row id.
@@ -333,6 +368,82 @@ async fn create_lands_row_and_markers() {
     assert_eq!(events[0].repo_id, ID_A);
 }
 
+/// The impact line comes from series the mutation response loads itself, so
+/// a swapped section keeps it, and so does the row Cancel swaps back.
+#[tokio::test]
+async fn a_mutation_response_keeps_the_impact_lines() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    // Two observed days in the week before the event, two after it.
+    for (ago, count) in [(10, 10), (8, 20), (4, 30), (2, 50)] {
+        h.seed_views(ID_A, days_ago(ago), count).await;
+    }
+    let date = days_ago(5);
+    let resp = h
+        .send(
+            "POST",
+            "/repos/1/events",
+            &[
+                ("date", date.as_str()),
+                ("title", "Posted"),
+                ("notes", ""),
+                ("url", ""),
+                ("kind", ""),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains(concat!(
+            r#"<div class="wp-impact wp-muted wp-small">"#,
+            "Views/day 15 → 40 (+167%) (5 days so far)</div>"
+        )),
+        "{body}"
+    );
+
+    let id = h.events(ID_A).await[0].id;
+    let row = body_string(h.get(&format!("/repos/1/events/{id}")).await).await;
+    assert!(row.contains("Views/day 15 → 40"), "{row}");
+}
+
+/// A repo younger than the chart's minimum span: the page pads its series
+/// with unobserved days before the first reading, and the swapped row must
+/// read the same window, or the star change would appear only after a swap.
+#[tokio::test]
+async fn a_swapped_row_agrees_with_the_page_on_a_young_repo() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    for ago in 1..=10 {
+        h.seed_stars(ID_A, days_ago(ago), 20 - ago).await;
+    }
+    for (ago, count) in [(10, 10), (9, 20), (6, 30), (4, 50)] {
+        h.seed_views(ID_A, days_ago(ago), count).await;
+    }
+    let date = days_ago(8);
+    let id = h
+        .create(
+            ID_A,
+            &[
+                ("date", date.as_str()),
+                ("title", "Posted"),
+                ("notes", ""),
+                ("url", ""),
+                ("kind", ""),
+            ],
+        )
+        .await;
+
+    let impact = |body: &str| {
+        let start = body.find("wp-impact").expect("an impact line");
+        let end = start + body[start..].find("</div>").unwrap();
+        body[start..end].to_owned()
+    };
+    let page = body_string(h.get("/repos/1").await).await;
+    let row = body_string(h.get(&format!("/repos/1/events/{id}")).await).await;
+    assert_eq!(impact(&row), impact(&page));
+}
+
 #[tokio::test]
 async fn create_leaves_optional_fields_null_when_blank() {
     let h = harness();
@@ -417,7 +528,10 @@ async fn create_bad_url_422_no_row() {
         body.starts_with(r#"<section id="events-section""#),
         "{body}"
     );
-    assert!(body.contains("<details open>"), "form must reopen: {body}");
+    assert!(
+        body.contains(r#"<details class="wp-add-event" open>"#),
+        "form must reopen: {body}"
+    );
     assert!(body.contains(r#"role="alert""#), "no error message: {body}");
     assert!(h.events(ID_A).await.is_empty(), "row was written anyway");
 }
@@ -476,6 +590,84 @@ async fn create_overlong_kind_422() {
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(h.events(ID_A).await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_kind_cap_is_forty_inclusive_and_says_so() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let resp = h
+        .send("POST", "/repos/1/events", &with("kind", &"k".repeat(41)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains("Keep the kind to 40 characters or fewer."),
+        "{body}"
+    );
+
+    let resp = h
+        .send("POST", "/repos/1/events", &with("kind", &"k".repeat(40)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_empty_date_asks_for_a_date() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let resp = h.send("POST", "/repos/1/events", &with("date", "")).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_string(resp).await;
+    assert!(body.contains("Pick a date."), "{body}");
+    assert!(!body.contains("YYYY-MM-DD"), "{body}");
+}
+
+/// Each mutation says it landed, once and politely, and the next one
+/// replaces the line rather than adding to it.
+#[tokio::test]
+async fn each_mutation_confirms_itself_once() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    let body = body_string(h.send("POST", "/repos/1/events", &valid_fields()).await).await;
+    assert_eq!(
+        body.matches(r#"<p class="wp-notice wp-notice-success" data-announce>Event added.</p>"#)
+            .count(),
+        1,
+        "{body}"
+    );
+
+    let id = h.events(ID_A).await[0].id;
+    let body = body_string(
+        h.send(
+            "PUT",
+            &format!("/repos/1/events/{id}"),
+            &with("title", "Renamed"),
+        )
+        .await,
+    )
+    .await;
+    assert!(body.contains(r#"data-announce>Event saved.</p>"#), "{body}");
+    assert!(!body.contains("Event added."), "{body}");
+
+    let body = body_string(
+        h.send("DELETE", &format!("/repos/1/events/{id}"), &[])
+            .await,
+    )
+    .await;
+    assert!(
+        body.contains(r#"data-announce>Event deleted.</p>"#),
+        "{body}"
+    );
+
+    // The page itself and a rejected create carry none.
+    let page = body_string(h.get("/repos/1").await).await;
+    assert!(!page.contains("wp-notice-success"), "{page}");
+    let rejected = body_string(h.send("POST", "/repos/1/events", &with("title", "")).await).await;
+    assert!(!rejected.contains("wp-notice-success"), "{rejected}");
 }
 
 #[tokio::test]
@@ -778,8 +970,41 @@ async fn edit_form_and_cancel_swap_the_same_row() {
         "row was {row}"
     );
     assert!(
-        row.contains(r#"hx-confirm="Delete event?""#),
+        row.contains(r#"hx-confirm="Delete “Editable” (2026-08-10)? This cannot be undone.""#),
         "row was {row}"
+    );
+}
+
+/// Cancel swaps a display row back in on its own, so the row has to know
+/// whether it is one of the older rows the page collapses. One that came back
+/// unmarked would reappear in a collapsed list.
+#[tokio::test]
+async fn a_cancelled_row_comes_back_marked_by_where_it_sorts() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    let mut ids = Vec::new();
+    for day in 1..=11 {
+        let date = format!("2026-08-{day:02}");
+        let title = format!("Event {day}");
+        ids.push(
+            h.create(ID_A, &[("date", date.as_str()), ("title", title.as_str())])
+                .await,
+        );
+    }
+
+    // Newest first: Aug 11 is row one, Aug 1 the eleventh.
+    let oldest = body_string(h.get(&format!("/repos/1/events/{}", ids[0])).await).await;
+    assert!(
+        oldest.starts_with(&format!(
+            r#"<tr id="event-row-{}" class="wp-more-row">"#,
+            ids[0]
+        )),
+        "{oldest}"
+    );
+    let newest = body_string(h.get(&format!("/repos/1/events/{}", ids[10])).await).await;
+    assert!(
+        newest.starts_with(&format!(r#"<tr id="event-row-{}">"#, ids[10])),
+        "{newest}"
     );
 }
 
@@ -893,6 +1118,33 @@ async fn unknown_ids_are_not_found() {
     );
 }
 
+/// A malformed id in either segment is an address that names nothing: the
+/// styled 404, never axum's plain-text 400. Every request carries a valid
+/// token, so the CSRF layer lets the mutations through to the extractor.
+#[tokio::test]
+async fn malformed_ids_are_not_found() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+
+    for (method, uri) in [
+        ("DELETE", "/repos/1/events/x"),
+        ("PUT", "/repos/1/events/x"),
+        ("DELETE", "/repos/abc/events/1"),
+        ("POST", "/repos/abc/events"),
+        ("GET", "/repos/1/events/x"),
+        ("GET", "/repos/1/events/x/edit"),
+    ] {
+        let resp = h.send(method, uri, &valid_fields()).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("That page or item does not exist."),
+            "{method} {uri}: {body}"
+        );
+        assert!(!body.contains("Cannot parse"), "{method} {uri}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn csrf_required_on_all_three_mutations() {
     let h = harness();
@@ -965,7 +1217,7 @@ async fn notes_markdown_rendered_safely() {
     assert!(!body.contains("<script>alert(1)"), "body was {body}");
     assert!(!body.contains("javascript:alert(2)"), "body was {body}");
     // Notes hide behind a disclosure so a long one cannot swamp the table.
-    assert!(body.contains("<summary>notes</summary>"), "body was {body}");
+    assert!(body.contains("<summary>Notes</summary>"), "body was {body}");
 }
 
 #[tokio::test]
@@ -977,7 +1229,7 @@ async fn notes_disclosure_is_omitted_when_empty() {
 
     let body = body_string(h.get("/repos/1").await).await;
     assert!(
-        !body.contains("<summary>notes</summary>"),
+        !body.contains("<summary>Notes</summary>"),
         "empty notes must not render a disclosure: {body}"
     );
 }
@@ -1061,9 +1313,12 @@ async fn add_form_is_collapsed_and_defaults_to_today() {
     h.seed_repo(ID_A, REPO_A).await;
 
     let body = body_string(h.get("/repos/1").await).await;
-    assert!(body.contains("<summary>Add event</summary>"), "{body}");
+    assert!(body.contains(">Add event</summary>"), "{body}");
     // Collapsed until something went wrong.
-    assert!(!body.contains("<details open>"), "body was {body}");
+    assert!(
+        !body.contains(r#"<details class="wp-add-event" open>"#),
+        "body was {body}"
+    );
     assert!(
         body.contains(&format!(r#"value="{}""#, today())),
         "date must default to today: {body}"

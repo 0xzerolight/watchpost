@@ -24,7 +24,32 @@ pub enum SyncStatus {
         ok: u32,
         /// `(repo name, error)` for every repo that failed or partially failed.
         failed: Vec<(String, String)>,
+        /// Tracked repos passed over because an earlier failure put them in
+        /// backoff. Counted so a cycle that synced nothing does not read as a
+        /// success.
+        skipped: u32,
+        /// Repos tracked when the cycle read its list; 0 when it stopped before
+        /// reading it.
+        tracked: u32,
+        /// Why the cycle stopped early, if it did.
+        aborted: Option<CycleAbort>,
     },
+}
+
+/// Why a cycle stopped before the end, in the terms the sync panel may show.
+///
+/// An enum rather than the sentence [`crate::collector::CycleReport`] used to
+/// keep. The sentence held a database error's own words ("db: …"), which must
+/// never reach a page, and the panel needs the rate limit's deadline as an
+/// instant it can render in `WATCHPOST_TZ`, not as preformatted UTC. Parsing
+/// the sentence back was the rejected alternative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleAbort {
+    /// GitHub's rate limit closed the gate, which reopens at `until`.
+    RateLimited { until: DateTime<Utc> },
+    /// The cycle could not read its own repo list. The detail is in the log
+    /// line written where it happened, and only there.
+    Failed,
 }
 
 /// What the process knows about its GitHub credential right now.

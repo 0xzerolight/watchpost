@@ -19,7 +19,7 @@ Please leave a ⭐ star if watchpost is useful - it helps others find it :).
 <h3 align="center">Demo</h3>
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="A watchpost repo page in dark mode: stat tiles for stars, views, clones and downloads over a full-width star chart spanning 90 days, promo event markers dotted along its top." width="720">
+  <img src="assets/screenshot.png" alt="A watchpost repo page in dark mode: stat tiles for stars, views, clones and downloads over a full-width star chart of its whole history, promo event markers dotted along its top." width="720">
 </p>
 
 <p align="center">
@@ -187,7 +187,7 @@ More detail, and the caveats worth knowing before you draw conclusions from the 
 
 | Issue | Fix |
 |-------|-----|
-| **No repositories listed** | Open **Settings**, press **Refresh from GitHub**, tick the repos you want and **Save**. Nothing is tracked by default. |
+| **No repositories listed** | Open **Settings**, press **Refresh from GitHub**, tick the repos you want and **Save selection**. Nothing is tracked by default. |
 | **Views and clones charts are empty** | The token is missing *Administration: read*, or the repo is not one you own or administer. `--doctor` shows the per-repo last error. |
 | **Container exits, or "unable to open database"** | `data/` is not writable by the uid the container runs as. Set `PUID`/`PGID` in the install directory's `.env` to your own uid/gid and restart. |
 | **Syncs stop and nothing updates** | You are rate limited. `--doctor` prints the remaining budget and the reset time. Collection resumes on its own. |

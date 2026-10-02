@@ -70,18 +70,23 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                 // on every page before reaching the content.
                 a href="#main" class="wp-skip" { "Skip to content" }
                 nav class="container" {
-                    ul { li { a href="/" { strong { "watchpost" } } } }
+                    // The brand is a name, not a sixth link, so it is styled
+                    // as ink (`.wp-brand`) rather than link blue.
+                    ul { li { a href="/" class="wp-brand" { strong { "watchpost" } } } }
                     // One loop over `LANDING_PAGES` rather than three literals:
                     // the nav's hrefs and the start page setting's destinations
                     // are then the same list, so a nav link cannot point at a
                     // path the setting would never produce, or the other way
-                    // round. The array's order is the nav's order.
-                    ul {
-                        @for page in crate::landing::LANDING_PAGES {
-                            li {
-                                a href=(page.path())
-                                    aria-current=[(NavItem::of(page) == nav).then_some("page")] {
-                                    (page.label())
+                    // round. The array's order is the nav's order. The setup
+                    // page has no list at all: every link would bounce back.
+                    @if nav != NavItem::Setup {
+                        ul {
+                            @for page in crate::landing::LANDING_PAGES {
+                                li {
+                                    a href=(page.path())
+                                        aria-current=[nav.aria_current(page)] {
+                                        (page.label())
+                                    }
                                 }
                             }
                         }
@@ -90,7 +95,20 @@ pub fn base(title: &str, nav: NavItem, csrf: &CsrfToken, inner: Markup) -> Marku
                 // `tabindex="-1"` makes the skip link's target focusable:
                 // without it the jump moves the viewport but not focus, and
                 // the next Tab lands back at the top of the page.
-                main id="main" class="container" tabindex="-1" { (inner) }
+                main id="main" class="container" tabindex="-1" {
+                    // `<noscript>` is markup, not script, so the CSP has no
+                    // say in it. Without JavaScript the chart area is an empty
+                    // box and every edit control is dead, and nothing said
+                    // why. The sentence is the one place that does, in the
+                    // info tone a notice already has.
+                    noscript {
+                        (notice(Notice::Info, html! {
+                            "Charts and editing need JavaScript; the tables and totals on this page are complete without it."
+                        }))
+                    }
+                    (inner)
+                }
+                (live_region())
                 (toast_region())
                 (confirm_dialog())
             }
@@ -119,6 +137,21 @@ fn toast_region() -> Markup {
     }
 }
 
+/// The page's one polite live region, for confirmations that arrive inside an
+/// htmx swap: "Event added.", the sync panel's outcome.
+///
+/// A live region announces changes to a node that was already in the
+/// document; a status inserted together with its text is not reliably
+/// announced. So swapped confirmations carry `data-announce` and no role
+/// ([`announced`]), and app.js copies their text in here, where
+/// no swap reaches. It ships empty, so a page load announces nothing. Polite,
+/// unlike the toast's assertive alert, which is kept for failures.
+fn live_region() -> Markup {
+    html! {
+        p id="wp-live" class="wp-visually-hidden" role="status" {}
+    }
+}
+
 /// The single confirm dialog every destructive action reuses.
 ///
 /// A native `<dialog>` rather than `window.confirm` so the prompt can name what
@@ -127,14 +160,17 @@ fn toast_region() -> Markup {
 /// attribute rather than by position, so restyling the footer cannot silently
 /// swap Cancel for Confirm.
 ///
-/// The heading is a constant rather than another client-filled slot because
-/// `aria-labelledby` names the dialog from it: pointing at an element the client
-/// might not have written yet would leave the modal with no accessible name at
-/// all, which is worse than the generic one. `aria-describedby` points at the
-/// slot the client *does* fill, so the question is announced along with the
-/// name — without it a screenreader opens on "Confirm, dialog" and never reads
-/// what is about to be destroyed. Cancel comes first in the DOM so
-/// `showModal()`'s initial focus lands on the harmless button.
+/// The heading ships with text ("Confirm") rather than as an empty slot
+/// because `aria-labelledby` names the dialog from it: pointing at an element
+/// the client might not have written yet would leave the modal with no
+/// accessible name at all. A trigger may replace that text, and the OK label,
+/// through `data-confirm-title` and `data-confirm-label`; the client restores
+/// both on close, so a plain `hx-confirm` always reads "Confirm".
+/// `aria-describedby` points at the slot the client always fills, so the
+/// question is announced along with the name — without it a screenreader opens
+/// on "Confirm, dialog" and never reads what is about to be destroyed. Cancel
+/// comes first in the DOM so `showModal()`'s initial focus lands on the
+/// harmless button.
 fn confirm_dialog() -> Markup {
     html! {
         dialog id="wp-confirm" aria-labelledby="wp-confirm-title"
@@ -193,10 +229,10 @@ fn json_island<T: Serialize>(id: Option<&str>, class: Option<&str>, value: &T) -
 /// point of shipping every period's figure.
 ///
 /// The direction class is baked into each span server-side, so a `hidden`
-/// flip recolours correctly without the client writing any text. The sign is
-/// spelled out (U+2212 MINUS SIGN, not a hyphen) so direction survives a
-/// monochrome screen; `Some(0)` is an observed "nothing moved" and `None` an
-/// em-dash "nobody looked", the same distinction every table here keeps.
+/// flip recolours correctly without the client writing any text. The figure
+/// itself goes through [`signed`], so direction survives a monochrome screen;
+/// `Some(0)` is an observed "nothing moved" and `None` an em-dash "nobody
+/// looked", the same distinction every table here keeps.
 pub fn delta_badge(values: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
     html! {
         span class="wp-kpi-delta" {
@@ -211,9 +247,7 @@ pub fn delta_badge(values: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
                             _ => "wp-delta wp-muted",
                         }) {
                         @match value {
-                            Some(n) if *n > 0 => { "+" (n) }
-                            Some(n) if *n < 0 => { "\u{2212}" (n.abs()) }
-                            Some(_) => "\u{00b1}0",
+                            Some(n) => (signed(*n)),
                             None => "—",
                         }
                     }
@@ -294,11 +328,19 @@ fn is_safe_url(url: &str) -> bool {
     }
 }
 
-/// Map an event kind to one of eight stable colour-slot classes.
+/// Map an event kind to one of seven stable colour-slot classes, 1 to 7.
 ///
 /// The djb2 hash below MUST stay byte-for-byte equivalent to the one in
 /// `assets/app.js`, so a kind's server-rendered badge colour matches the colour
 /// its marker gets client-side. Change one, change both.
+///
+/// Slot 0 is the accent every repo chart draws its series in, so a kind never
+/// lands there: a marker in the series colour reads as data. A kind that
+/// hashes to 0 takes `hash % 7 + 1` instead, which spreads those kinds evenly
+/// over the other seven and leaves every kind already on 1 to 7 its colour.
+/// Hashing every kind with `% 7 + 1` was rejected because it recolours most
+/// existing badges; a ninth accent hue was rejected because the eight slots
+/// already span the colour wheel, so any new hue sits next to one of them.
 pub fn kind_class(kind: &Option<String>) -> String {
     let Some(kind) = kind else {
         return "wp-kind-none".to_owned();
@@ -307,7 +349,11 @@ pub fn kind_class(kind: &Option<String>) -> String {
     for byte in kind.as_bytes() {
         hash = hash.wrapping_mul(33) ^ u32::from(*byte);
     }
-    format!("wp-kind-{}", hash % 8)
+    let slot = match hash % 8 {
+        0 => hash % 7 + 1,
+        slot => slot,
+    };
+    format!("wp-kind-{slot}")
 }
 
 /// The htmx `hx-target` header, when the request carries one.
@@ -466,8 +512,10 @@ mod tests {
 
     #[test]
     fn kind_class_is_stable_and_deterministic() {
-        // Pinned: this exact value is what assets/app.js must also produce.
+        // Pinned: these exact values are what assets/app.js must also produce.
+        // "youtube" hashes to slot 0, the series accent, and is moved off it.
         assert_eq!(kind_class(&Some("reddit".to_owned())), "wp-kind-7");
+        assert_eq!(kind_class(&Some("youtube".to_owned())), "wp-kind-6");
         assert_eq!(
             kind_class(&Some("reddit".to_owned())),
             kind_class(&Some("reddit".to_owned()))
@@ -477,10 +525,21 @@ mod tests {
 
     #[test]
     fn kind_class_always_lands_in_range() {
-        for kind in ["", "a", "hn", "release", "blog", "very long kind name ☃"] {
+        // youtube, twitter and launch hash to 0, the series accent's slot.
+        for kind in [
+            "",
+            "a",
+            "hn",
+            "release",
+            "blog",
+            "youtube",
+            "twitter",
+            "launch",
+            "very long kind name ☃",
+        ] {
             let class = kind_class(&Some(kind.to_owned()));
             let slot: u32 = class.strip_prefix("wp-kind-").unwrap().parse().unwrap();
-            assert!(slot < 8, "{kind:?} → {class}");
+            assert!((1..8).contains(&slot), "{kind:?} → {class}");
         }
     }
 
@@ -525,5 +584,88 @@ mod tests {
         assert_eq!(get_hx_target(&headers), None);
         headers.insert("hx-target", "#wp-list".parse().unwrap());
         assert_eq!(get_hx_target(&headers), Some("#wp-list"));
+    }
+
+    fn shell(nav: NavItem) -> String {
+        base("T", nav, &CsrfToken(String::new()), html! {}).into_string()
+    }
+
+    /// A repo page is not a nav destination but lives under Repositories.
+    /// `"true"` marks the section without claiming to be the page.
+    #[test]
+    fn a_repo_page_marks_repositories_as_its_section() {
+        let out = shell(NavItem::Repo);
+        assert!(
+            out.contains(r#"<a href="/repos" aria-current="true">Repositories</a>"#),
+            "{out}"
+        );
+        assert_eq!(out.matches("aria-current").count(), 1, "{out}");
+    }
+
+    /// Before a token exists, every nav link would only redirect back to
+    /// `/setup`.
+    #[test]
+    fn the_setup_shell_shows_the_brand_and_no_links() {
+        let out = shell(NavItem::Setup);
+        assert!(
+            out.contains(r#"<a href="/" class="wp-brand"><strong>watchpost</strong></a>"#),
+            "{out}"
+        );
+        for href in [
+            r#"href="/repos""#,
+            r#"href="/analytics""#,
+            r#"href="/settings""#,
+        ] {
+            assert!(!out.contains(href), "{href} in {out}");
+        }
+    }
+
+    #[test]
+    fn a_page_outside_the_nav_keeps_every_link_and_marks_none() {
+        let out = shell(NavItem::None);
+        for href in [
+            r#"href="/repos""#,
+            r#"href="/analytics""#,
+            r#"href="/settings""#,
+        ] {
+            assert!(out.contains(href), "{href} missing from {out}");
+        }
+        assert!(!out.contains("aria-current"), "{out}");
+    }
+
+    /// With JavaScript off the chart area is an empty box and every edit
+    /// control is dead. One sentence, once per page, says why.
+    #[test]
+    fn the_shell_explains_itself_without_javascript() {
+        let out = base(
+            "T",
+            NavItem::Home,
+            &CsrfToken(String::new()),
+            html! { p { "body" } },
+        )
+        .into_string();
+        assert_eq!(out.matches("<noscript>").count(), 1, "{out}");
+        assert!(
+            out.contains(concat!(
+                r#"<main id="main" class="container" tabindex="-1"><noscript>"#,
+                r#"<p class="wp-notice wp-notice-info" role="status">"#,
+                "Charts and editing need JavaScript; the tables and totals on this page are complete without it.",
+                "</p></noscript><p>body</p></main>"
+            )),
+            "{out}"
+        );
+    }
+
+    /// Confirmations that arrive inside a swap are spoken by one region no
+    /// swap replaces: outside `main`, on every page, empty at load so a page
+    /// load says nothing.
+    #[test]
+    fn every_page_has_one_empty_live_region_outside_main() {
+        let out = shell(NavItem::Home);
+        assert_eq!(out.matches(r#"id="wp-live""#).count(), 1, "{out}");
+        assert!(
+            out.contains(r#"</main><p id="wp-live" class="wp-visually-hidden" role="status"></p>"#),
+            "{out}"
+        );
     }
 }

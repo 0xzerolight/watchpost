@@ -89,12 +89,24 @@ watching yet contributes nothing to the days before its first reading rather tha
 curve on those days is the other repos alone; the day that repo is first read is a genuine step up
 in the total. The same rule makes the growth column honest: it measures from a repo's first
 *observed* value inside the window, not from the window's edge, so a repo first seen halfway
-through reports the movement between two real readings instead of its entire star count.
+through reports the movement between two real readings instead of its entire star count. The
+portfolio badges are the sum of those per-repo growth figures, so a repo's first reading steps the
+curve up without counting as growth, and a badge always equals its Growth column added up.
 
 **Gaps mean "not observed".** If the app was down for a day, that day has no row, and rate metrics
 (views, clones) render as a gap rather than as zero — an honest hole beats an invented zero.
 Cumulative series (stars, download counts) carry the last known value forward across the gap,
 because a total does not stop existing when nobody is watching.
+
+**The two before-and-after comparisons treat gaps differently, on purpose.** The analytics table's
+views change compares a period with the equal span just before it, so it is shown only when every
+day of both windows was observed: a gap in either would make one sum cover fewer days than the
+other. An event's impact line on a repo page compares views per *observed* day, because its
+after-window is still filling and is shorter than its before-window by design, so a rate is the
+only fair comparison and a gap shrinks the denominator instead. Both leave out today, which GitHub
+is still counting. The Views figure beside the change does not: it is the last N days including
+today, while its change compares the N complete days ending yesterday with the N days before them,
+so the two are not read off the same days.
 
 **Stars are backfilled once.** On first sync of a repo, watchpost walks the stargazers API to
 reconstruct the star history from before it was installed. GitHub stops paginating that endpoint at

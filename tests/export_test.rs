@@ -156,6 +156,20 @@ async fn a_repo_with_no_page_has_no_export() {
 }
 
 #[tokio::test]
+async fn a_malformed_repo_id_has_no_export() {
+    let h = harness();
+    h.seed_repo(ID, REPO, true).await;
+
+    for uri in ["/repos/abc/export.csv", "/repos/abc/export.json"] {
+        let resp = h.get(uri).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+        let body = body_string(resp).await;
+        assert!(body.starts_with("<!DOCTYPE html>"), "{uri}: {body}");
+        assert!(!body.contains("Cannot parse"), "{uri}: {body}");
+    }
+}
+
+#[tokio::test]
 async fn both_formats_download_rather_than_render() {
     let h = harness();
     h.seed_repo(ID, REPO, true).await;

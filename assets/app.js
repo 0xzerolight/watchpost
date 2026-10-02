@@ -96,6 +96,25 @@
     return gradient;
   }
 
+  /*
+   * Scriptable backgroundColor for bars. Slightly translucent at rest so the
+   * hover state has somewhere to go, and fainter for a bucket only partly
+   * observed (`chart.$wp.partial`, from `bucketCoverage`), so a three-day week
+   * beside seven-day ones reads as incomplete rather than as a slump. Read off
+   * borderColor at draw time for the reason `areaGradient` is: `applyTheme`
+   * rewrites borderColor, and the next resolve follows it.
+   */
+  function barFill(context) {
+    var chart = context.chart;
+    var dataset = context.dataset || chart.data.datasets[context.datasetIndex];
+    var partial = chart.$wp && chart.$wp.partial;
+    var faded =
+      !!partial &&
+      context.dataIndex !== undefined &&
+      !!partial[context.dataIndex];
+    return hexToRgba(dataset.borderColor, faded ? 0.4 : 0.82);
+  }
+
   var MONTHS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -218,8 +237,10 @@
         var colour = css(dataset.$wpVar, "#888888");
         dataset.borderColor = colour;
         if (dataset.$wpBar) {
-          // Bars resolved their rest fill to a literal rgba at build time.
-          dataset.backgroundColor = hexToRgba(colour, 0.82);
+          // A bar's rest fill is scriptable (`barFill`) and re-reads
+          // borderColor on every draw, like an area wash; overwriting it with
+          // a literal would freeze it and drop the partial-bucket fade. Only
+          // the solid hover fill was resolved at build time.
           dataset.hoverBackgroundColor = colour;
           return;
         }
@@ -244,14 +265,18 @@
   var utf8 = new TextEncoder();
 
   /*
-   * djb2 over the kind's bytes, modulo the eight marker slots.
+   * djb2 over the kind's bytes, onto marker slots 1 to 7.
    *
    * This MUST stay byte-for-byte equivalent to `kind_class` in
    * src/routes/html/mod.rs — the server picks a badge's colour with that one
    * and the client picks the matching marker's colour with this one, so a kind
    * that hashed differently here would wear two colours on the same page.
    * Change one, change both. Pinned by a test on the Rust side:
-   * "reddit" → slot 7 → `--wp-marker-7`.
+   * "reddit" → slot 7 → `--wp-marker-7`, "youtube" → slot 6.
+   *
+   * Slot 0 is the series accent (`CHART_SPECS`), so a kind that hashes to it
+   * takes `hash % 7 + 1` instead; `kind_class` says why that and not a
+   * seven-slot hash for every kind.
    *
    * Two details carry the equivalence:
    *   - iterate UTF-8 *bytes* (Rust's `.bytes()`), not UTF-16 code units, so a
@@ -267,7 +292,8 @@
     for (var i = 0; i < bytes.length; i++) {
       hash = (Math.imul(hash, 33) ^ bytes[i]) >>> 0;
     }
-    return hash % 8;
+    var slot = hash % 8;
+    return slot === 0 ? (hash % 7) + 1 : slot;
   }
 
   function kindColor(kind) {
@@ -377,6 +403,25 @@
   }
 
   /*
+   * How many days a bucket spans on the calendar: 7 for a week, the month's
+   * own length for a month, and null at day zoom, where a bucket is one day
+   * and cannot be partly observed.
+   */
+  function calendarSpan(key, kind) {
+    if (kind === "week") {
+      return 7;
+    }
+    if (kind === "month") {
+      var m = /^(\d{4})-(\d{2})$/.exec(key);
+      // Day 0 of the next month is the last day of this one.
+      return m
+        ? new Date(Date.UTC(Number(m[1]), Number(m[2]), 0)).getUTCDate()
+        : null;
+    }
+    return null;
+  }
+
+  /*
    * Group dense day labels into plot columns.
    *
    * Returns `[{key, title, dayIdxs}]` in ascending order — `key` is the axis
@@ -431,6 +476,21 @@
     return out;
   }
 
+  /*
+   * How many of a bucket's days `values` observed. A null is a day watchpost
+   * did not see; an observed zero counts, because it is a day of data.
+   */
+  function countObserved(values, idxs) {
+    var n = 0;
+    for (var i = 0; i < idxs.length; i++) {
+      var v = values[idxs[i]];
+      if (v !== null && v !== undefined) {
+        n++;
+      }
+    }
+    return n;
+  }
+
   // -------------------------------------------------------------------------
   // Kind filtering
   // -------------------------------------------------------------------------
@@ -467,6 +527,10 @@
   }
 
   function toggleKind(kind) {
+    // A filter over a list that hides its older rows would hide matches with
+    // them, so every chip press shows the whole list first: a filtered view is
+    // never silently partial.
+    showAllEvents();
     if (kind === null || kind === undefined) {
       hiddenKinds.clear();
     } else if (hiddenKinds.has(kind)) {
@@ -515,103 +579,37 @@
   // -------------------------------------------------------------------------
 
   /*
-   * How near the pointer has to be to a marker's column, in pixels, for its tip
-   * to open. Wider than the line it targets: a marker is a stroke on a canvas
-   * with no DOM node behind it, so this slack is the entire hit area, and 5px
-   * asked for a precision a trackpad does not have.
+   * Event markers sit in a lane of their own, `LANE_PX` tall, directly above
+   * the plot and under the legend when there is one; the `wpLane` axis in
+   * `createChart` is what reserves it. Drawn inside the plot, a dot sat on the
+   * top gridline and ran into any series near its maximum. Layout padding was
+   * the rejected alternative: Chart.js puts it outside the legend, so on the
+   * two-series charts the dots would have landed on "Views ● Unique" rather
+   * than above the data.
+   *
+   * `HIT_PX` is how near the pointer has to be to a dot's column, in pixels,
+   * inside that lane. Wider than the dot: a marker is a mark on a canvas with
+   * no DOM node behind it, so this slack is the entire hit area, and 5px asked
+   * for a precision a trackpad does not have. The lane is the whole hit zone;
+   * the plot below it belongs to the data.
+   *
+   * There is no marker tip. A marker's events are listed in the chart tooltip,
+   * under the figures of the column they fall in (`externalTooltip`), so
+   * hovering an event day never trades the numbers for the event. A second
+   * tip that took over near a marker was the rejected arrangement: on an event
+   * day it hid the figures for the whole height of the column.
    *
    * Markers are a mouse enhancement, not a way to reach an event. There is
    * nothing here to focus and nothing to announce — the events table under the
    * charts lists the same events as real rows, with the real links, and that is
    * the accessible equivalent this widget defers to.
    */
+  var LANE_PX = 18;
   var HIT_PX = 8;
-  var tipEl = null;
-
-  function markerTip() {
-    if (tipEl && tipEl.isConnected) {
-      return tipEl;
-    }
-    tipEl = document.getElementById("marker-tip");
-    if (!tipEl) {
-      tipEl = document.createElement("div");
-      tipEl.id = "marker-tip";
-      // On the body rather than inside `.chart-box`: the box is
-      // `overflow`-clipped and only 240px tall, so a tip anchored in it would
-      // be cut off. Absolute positioning against the initial containing block
-      // means page coordinates place it, which is exactly what a mouse event
-      // reports.
-      document.body.appendChild(tipEl);
-    }
-    return tipEl;
-  }
-
-  function hideTip() {
-    if (tipEl) {
-      tipEl.classList.remove("wp-visible");
-    }
-  }
-
-  /*
-   * The host of an event's URL, for the tip's one line about where it points.
-   * Every stored URL came through `validate_event_url` and is an absolute
-   * http(s) one, so the fallback is for a row that predates that check rather
-   * than for anything routine: showing the raw string beats dropping the line.
-   */
-  function urlHost(url) {
-    try {
-      return new URL(url).host || url;
-    } catch (err) {
-      return url;
-    }
-  }
-
-  /*
-   * Fill the tip from `events`. Built node by node with `textContent` — event
-   * titles and kinds are user input, and this is the one place in the client
-   * where they reach the DOM.
-   */
-  function fillTip(tip, events) {
-    tip.textContent = "";
-    events.forEach(function (ev) {
-      var block = document.createElement("div");
-
-      var head = document.createElement("div");
-      var when = document.createElement("strong");
-      when.textContent = ev.date;
-      head.appendChild(when);
-      if (ev.kind) {
-        var kind = document.createElement("span");
-        kind.className = "wp-chip wp-tip-kind wp-kind-" + kindSlot(ev.kind);
-        kind.textContent = ev.kind;
-        head.appendChild(kind);
-      }
-      block.appendChild(head);
-
-      var title = document.createElement("div");
-      title.textContent = ev.title;
-      block.appendChild(title);
-
-      if (ev.url) {
-        var where = document.createElement("div");
-        // Not an `<a>`: the tip is `pointer-events: none`, so a link in it can
-        // never be clicked, and one that looks clickable and is not costs the
-        // reader an attempt. The host says where the event points; the row in
-        // the events table carries the link that actually works.
-        var host = document.createElement("span");
-        host.className = "wp-small wp-muted";
-        host.textContent = urlHost(ev.url);
-        where.appendChild(host);
-        block.appendChild(where);
-      }
-
-      tip.appendChild(block);
-    });
-  }
 
   /*
    * Place an already-visible tip beside a page-coordinate point, flipped away
-   * from the viewport edges. Shared by the marker tip and the chart tooltip.
+   * from the viewport edges.
    *
    * Measurements have to happen after the fill and the unhide: a hidden
    * element reports zero for `offsetWidth`/`offsetHeight`, so a tip measured
@@ -630,10 +628,10 @@
     // still on the element, the height answered for a box of a different width.
     tip.style.left = x + "px";
 
-    // The same flip vertically. Without it a marker near the foot of the window
-    // opened its tip below the fold — the tip is positioned in page
+    // The same flip vertically. Without it a column near the foot of the
+    // window opened its tip below the fold — the tip is positioned in page
     // coordinates, so nothing scrolls it back into view. Flipping above the
-    // cursor keeps it beside the marker it belongs to; the `Math.max` pins a
+    // cursor keeps it beside the column it belongs to; the `Math.max` pins a
     // tip taller than the viewport to the top edge, losing its last line rather
     // than its first.
     var y = pageY + 14;
@@ -644,22 +642,19 @@
     tip.style.top = y + "px";
   }
 
-  function showTip(events, native) {
-    var tip = markerTip();
-    fillTip(tip, events);
-    tip.classList.add("wp-visible");
-    placeTip(tip, native.pageX, native.pageY);
-  }
-
   /*
-   * Scroll an event's table row into view and flash it, so a marker click on
-   * the chart answers "which event is this?" without the reader hunting.
+   * Scroll an event's table row into view and flash it, so a click on an
+   * event's column answers "which event is this?" without the reader hunting.
    */
   function focusRow(id) {
     var row = document.getElementById("event-row-" + id);
     if (!row) {
       return;
     }
+    // An older event sits in the part of the events list that collapses its
+    // older rows; open it first, or the scroll lands on a row that is not
+    // drawn.
+    revealRow(row);
     // Asked at click time rather than cached: the preference can change
     // mid-session, and a reader who has asked for less motion gets the jump —
     // app.css already cancels the flash below for them.
@@ -713,9 +708,15 @@
     return out;
   }
 
+  /*
+   * The events whose dots are under the pointer, which has to be in the lane.
+   * The old zone ran the column's full height plus 8px either side, so on an
+   * event day the bar itself was a marker target, and hovering it traded the
+   * figures for the event.
+   */
   function hitsAt(chart, x, y) {
     var area = chart.chartArea;
-    if (!area || y < area.top - HIT_PX || y > area.bottom + HIT_PX) {
+    if (!area || y < area.top - LANE_PX || y >= area.top) {
       return [];
     }
     return placedEvents(chart)
@@ -725,6 +726,62 @@
       .map(function (placed) {
         return placed.event;
       });
+  }
+
+  /*
+   * The events showing in column `idx`, in `#events-data` order (newest
+   * first). Read through the same `bucketOf` map the dots are placed with, so
+   * the tooltip can never list an event the lane does not mark, or miss one.
+   */
+  function eventsInBucket(chart, idx) {
+    var wp = chart.$wp;
+    if (!wp || idx === undefined || idx < 0) {
+      return [];
+    }
+    return wp.events.filter(function (ev) {
+      return !isHidden(ev.kind) && wp.bucketOf.get(ev.date) === idx;
+    });
+  }
+
+  /* The column under a pointer inside the plot, or -1 anywhere else. */
+  function plotColumnAt(chart, x, y) {
+    var area = chart.chartArea;
+    var scale = chart.scales.x;
+    if (
+      !area ||
+      !scale ||
+      x < area.left ||
+      x > area.right ||
+      y < area.top ||
+      y > area.bottom
+    ) {
+      return -1;
+    }
+    var idx = scale.getValueForPixel(x);
+    return idx >= 0 && idx < chart.data.labels.length ? idx : -1;
+  }
+
+  /*
+   * Point the tooltip at the column of the hovered lane marker, or clear it
+   * when the pointer is in the lane between markers.
+   *
+   * Chart.js picks the hovered column only inside the plot. Outside it, it
+   * keeps whatever was active last, so a pointer sliding along the lane went on
+   * describing the column it left the plot from. Hidden datasets (a legend
+   * click hides one) are left out, as Chart.js leaves them out itself.
+   */
+  function pointTooltipAt(chart, hits, e) {
+    var idx = hits.length ? chart.$wp.bucketOf.get(hits[0].date) : undefined;
+    var active = [];
+    if (idx !== undefined) {
+      chart.data.datasets.forEach(function (_dataset, i) {
+        if (chart.isDatasetVisible(i)) {
+          active.push({ datasetIndex: i, index: idx });
+        }
+      });
+    }
+    chart.setActiveElements(active);
+    chart.tooltip.setActiveElements(active, { x: e.x, y: e.y });
   }
 
   /*
@@ -762,10 +819,10 @@
           return;
         }
         var colour = kindColor(item.event.kind);
-        // The drop line is on demand: only the column under the pointer draws
-        // one, so a chart with a busy month rests as a row of dots instead of
-        // a fence through the data. Solid — a dash pattern is noise, and the
-        // dashes used to be the loudest thing on the plot.
+        // The drop line is on demand: only the column whose dot is under the
+        // pointer draws one, so a chart with a busy month rests as a row of
+        // dots instead of a fence through the data. Solid — a dash pattern is
+        // noise, and the dashes used to be the loudest thing on the plot.
         if (
           hoverX !== null &&
           hoverX !== undefined &&
@@ -774,15 +831,16 @@
           ctx.strokeStyle = hexToRgba(colour, 0.5);
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(item.x, area.top);
+          ctx.moveTo(item.x, area.top - LANE_PX / 2);
           ctx.lineTo(item.x, area.bottom);
           ctx.stroke();
         }
         // The dot is the marker's whole resting presence and the hover
-        // target's advertisement. Full colour, ringed in the card surface so
-        // it separates from whatever it lands on.
+        // target's advertisement, centred in the lane above the plot. Full
+        // colour, ringed in the card surface so it separates from a
+        // neighbouring dot.
         ctx.beginPath();
-        ctx.arc(item.x, area.top + 3, 3, 0, Math.PI * 2);
+        ctx.arc(item.x, area.top - LANE_PX / 2, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = colour;
         ctx.fill();
         ctx.lineWidth = 2;
@@ -792,47 +850,52 @@
       ctx.restore();
     },
 
+    /*
+     * Runs after Chart.js's own tooltip plugin has handled the same event:
+     * registered plugins are notified before a chart's inline ones, which is
+     * what lets the lane override the active column below.
+     */
     afterEvent: function (chart, args) {
       var e = args.event;
       if (!e || !chart.$wp) {
         return;
       }
       if (e.type === "mouseout") {
-        hideTip();
+        chart.canvas.style.cursor = "";
         setHover(chart, null, "");
         return;
       }
       if (e.type !== "mousemove" && e.type !== "click") {
         return;
       }
+      var area = chart.chartArea;
+      var inLane = !!area && e.y >= area.top - LANE_PX && e.y < area.top;
       var hits = hitsAt(chart, e.x, e.y);
+      // In the plot the whole column is the target: its events are listed
+      // under its figures, so a click anywhere in it can jump to them.
+      var events = hits.length
+        ? hits
+        : eventsInBucket(chart, plotColumnAt(chart, e.x, e.y));
       if (e.type === "click") {
-        if (hits.length) {
-          focusRow(hits[0].id);
+        if (events.length) {
+          focusRow(events[0].id);
         }
         return;
       }
-      if (hits.length && e.native) {
-        // Several events on one day (or in one week) share a column, so the
-        // tip lists all of them rather than picking one arbitrarily. The
-        // chart tooltip yields — two tips over one point is noise.
-        hideChartTip();
-        showTip(hits, e.native);
-        chart.canvas.style.cursor = "pointer";
-        setHover(
-          chart,
-          e.x,
-          hits
-            .map(function (ev) {
-              return ev.id;
-            })
-            .join(","),
-        );
-      } else {
-        hideTip();
-        chart.canvas.style.cursor = "";
-        setHover(chart, null, "");
+      if (inLane) {
+        pointTooltipAt(chart, hits, e);
+        args.changed = true;
       }
+      chart.canvas.style.cursor = events.length ? "pointer" : "";
+      setHover(
+        chart,
+        hits.length ? e.x : null,
+        hits
+          .map(function (ev) {
+            return ev.id;
+          })
+          .join(","),
+      );
     },
   };
 
@@ -846,6 +909,9 @@
    * is hovered — it hands this handler the rows and a caret position, and only
    * the rendering is ours. That is what lets the tip wear the page's own
    * card face, which no canvas tooltip option can quite reproduce.
+   *
+   * It is the chart's only tip. A column's events are listed in it under the
+   * column's figures (see `LANE_PX` for the marker tip it replaced).
    */
   var chartTipEl = null;
 
@@ -857,7 +923,9 @@
     if (!chartTipEl) {
       chartTipEl = document.createElement("div");
       chartTipEl.id = "chart-tip";
-      // On the body for the same reason as the marker tip: `.chart-box` clips.
+      // On the body rather than inside the chart's box: the box clips, so a
+      // tip anchored in it would be cut off. Absolute positioning against the
+      // initial containing block means page coordinates place it.
       document.body.appendChild(chartTipEl);
     }
     return chartTipEl;
@@ -870,9 +938,39 @@
   }
 
   /*
-   * Built node by node with `textContent`, like the marker tip: labels here
-   * are watchpost's own strings today, but one discipline for everything that
-   * reaches a tip is cheaper than remembering which strings are trusted.
+   * One line for an event in the tooltip: its kind chip and its title, led by
+   * its date when the column is wider than that day. Built node by node with
+   * `textContent` — event titles and kinds are user input, and this is where
+   * they reach the DOM. No link and no host line: the tip is
+   * `pointer-events: none`, so a link in it could never be clicked, and the
+   * row a click on the column jumps to carries the real one.
+   */
+  function eventLine(ev, withDate) {
+    var line = document.createElement("div");
+    line.className = "wp-tip-event";
+    if (withDate) {
+      var when = document.createElement("span");
+      when.className = "wp-muted wp-small";
+      when.textContent = shortTick(ev.date);
+      line.appendChild(when);
+    }
+    if (ev.kind) {
+      var kind = document.createElement("span");
+      kind.className = "wp-chip wp-kind-" + kindSlot(ev.kind);
+      kind.textContent = ev.kind;
+      line.appendChild(kind);
+    }
+    var title = document.createElement("span");
+    title.className = "wp-tip-event-title";
+    title.textContent = ev.title;
+    line.appendChild(title);
+    return line;
+  }
+
+  /*
+   * Built node by node with `textContent`: labels here are watchpost's own
+   * strings, but event titles are not, and one discipline for everything that
+   * reaches the tip is cheaper than remembering which strings are trusted.
    */
   function externalTooltip(context) {
     var model = context.tooltip;
@@ -881,16 +979,17 @@
       return;
     }
 
+    var chart = context.chart;
+    var index = model.dataPoints[0].dataIndex;
     var tip = chartTip();
     tip.textContent = "";
 
     var title = document.createElement("div");
     title.className = "wp-tip-title";
-    // The bucket heading the period change rewrites — same source as the old
-    // canvas tooltip's title callback, read off the chart, not a captured
-    // array.
-    title.textContent =
-      context.chart.$wp.titles[model.dataPoints[0].dataIndex] || "";
+    // The bucket heading the period change rewrites, read off the chart, not
+    // a captured array. It carries the "N of 7 days observed" note for a
+    // partly observed bucket (`bucketCoverage`).
+    title.textContent = chart.$wp.titles[index] || "";
     tip.appendChild(title);
 
     model.dataPoints.forEach(function (point) {
@@ -900,8 +999,8 @@
       var swatch = document.createElement("span");
       swatch.className = "wp-tip-swatch";
       // CSSOM assignment, which the CSP allows; a style attribute it would
-      // not. The dataset backgroundColor may be a gradient — borderColor is
-      // the solid series colour.
+      // not. The dataset backgroundColor may be a gradient or a scriptable
+      // fill — borderColor is the solid series colour.
       swatch.style.backgroundColor = point.dataset.borderColor;
       row.appendChild(swatch);
 
@@ -924,8 +1023,21 @@
       tip.appendChild(row);
     });
 
+    // What happened in this column, under its figures, in one card. A day
+    // column's events are on that day, so only a wider bucket names the date.
+    var events = eventsInBucket(chart, index);
+    if (events.length) {
+      var rule = document.createElement("div");
+      rule.className = "wp-tip-sep";
+      tip.appendChild(rule);
+      var key = chart.data.labels[index];
+      events.forEach(function (ev) {
+        tip.appendChild(eventLine(ev, ev.date !== key));
+      });
+    }
+
     tip.classList.add("wp-visible");
-    var rect = context.chart.canvas.getBoundingClientRect();
+    var rect = chart.canvas.getBoundingClientRect();
     placeTip(
       tip,
       rect.left + window.scrollX + model.caretX,
@@ -1107,6 +1219,17 @@
    *     line so two washes never muddy each other.
    *   - `order` puts the bars behind the uniques line: Chart.js draws the
    *     higher order first.
+   *   - `cssVar` is one accent, `--wp-marker-0`, for every primary series
+   *     whatever it measures: the pressed tile already names the metric. A hue
+   *     per metric made the page change colour on every tile click, borrowed
+   *     seven of the eight slots the event-kind hash colours markers with
+   *     (reddit dots and the Downloads line were the same red), and spent red
+   *     and green, which mean down and up in the deltas. Slot 0 is the
+   *     series' alone: `kindSlot` and `kind_class` hash kinds onto slots 1 to
+   *     7, so no marker or chip wears the series blue.
+   *   - `secondary` marks the companion line (uniques beside its count). It
+   *     is muted ink and thinner, so the legend tells the two apart by weight
+   *     and tone rather than by a second hue.
    */
   var CHART_SPECS = [
     {
@@ -1132,7 +1255,7 @@
           source: "views_count",
           label: "Views",
           mode: "sum",
-          cssVar: "--wp-marker-1",
+          cssVar: "--wp-marker-0",
           style: "bar",
           order: 2,
         },
@@ -1142,7 +1265,8 @@
           // than a day, so its label comes from the view.
           labelKey: "uniquesLabel",
           mode: "max",
-          cssVar: "--wp-marker-2",
+          cssVar: "--wp-chart-tick",
+          secondary: true,
           order: 1,
         },
       ],
@@ -1156,7 +1280,7 @@
           source: "clones_count",
           label: "Clones",
           mode: "sum",
-          cssVar: "--wp-marker-5",
+          cssVar: "--wp-marker-0",
           style: "bar",
           order: 2,
         },
@@ -1164,7 +1288,8 @@
           source: "clones_uniques",
           labelKey: "uniquesLabel",
           mode: "max",
-          cssVar: "--wp-marker-6",
+          cssVar: "--wp-chart-tick",
+          secondary: true,
           order: 1,
         },
       ],
@@ -1178,7 +1303,7 @@
           source: "downloads_total",
           label: "Downloads",
           mode: "last",
-          cssVar: "--wp-marker-7",
+          cssVar: "--wp-marker-0",
           area: true,
         },
       ],
@@ -1192,7 +1317,7 @@
           source: "pulls_total",
           label: "Container pulls",
           mode: "last",
-          cssVar: "--wp-marker-4",
+          cssVar: "--wp-marker-0",
           area: true,
         },
       ],
@@ -1201,6 +1326,42 @@
 
   function datasetLabel(descriptor, view) {
     return descriptor.labelKey ? view[descriptor.labelKey] : descriptor.label;
+  }
+
+  /*
+   * Tooltip headings and fade flags for one chart, from how much of each
+   * bucket its counted series observed.
+   *
+   * A week or month bucket sums (or peaks) only the days it saw. A first week
+   * that began on a Sunday, or the week in progress, plots one to three days
+   * beside seven-day neighbours and reads as a slump. The values stay exactly
+   * as aggregated; this only says so, in the heading ("Week of 2026-07-27 ·
+   * 1 of 7 days observed") and through `barFill`. The chart's first sum or
+   * max series is the one counted; a 'last' series is a carried level, whole
+   * on any day it has. A bucket that observed nothing is left alone, because
+   * its rows already read "not observed" and "0 of 7 days" would say it twice.
+   * Day zoom has no spans, so nothing there changes.
+   */
+  function bucketCoverage(spec, view) {
+    var counted = null;
+    spec.datasets.forEach(function (descriptor) {
+      if (!counted && descriptor.mode !== "last") {
+        counted = descriptor;
+      }
+    });
+    var seen = counted ? view.observed[counted.source] : null;
+    var partial = view.titles.map(function (_title, i) {
+      var span = view.spans[i];
+      return !!(seen && span && seen[i] > 0 && seen[i] < span);
+    });
+    return {
+      partial: partial,
+      titles: view.titles.map(function (title, i) {
+        return partial[i]
+          ? title + " · " + seen[i] + " of " + view.spans[i] + " days observed"
+          : title;
+      }),
+    };
   }
 
   function buildDataset(descriptor, view) {
@@ -1234,7 +1395,12 @@
       // measurement.
       spanGaps: false,
     };
-    return Object.assign(dataset, LINE_STYLE);
+    Object.assign(dataset, LINE_STYLE);
+    if (descriptor.secondary) {
+      // After LINE_STYLE, which sets the 2px every primary line wears.
+      dataset.borderWidth = 1.5;
+    }
+    return dataset;
   }
 
   /*
@@ -1249,14 +1415,16 @@
       label: datasetLabel(descriptor, view),
       data: view.values[descriptor.source],
       $wpVar: descriptor.cssVar,
-      // The flag `applyTheme` dispatches on: a bar's rest fill is a literal
-      // rgba, not a scriptable gradient, so a scheme flip must rewrite it.
+      // The flag `applyTheme` dispatches on: a bar's hover fill is a literal
+      // colour, so a scheme flip must rewrite it, while its rest fill
+      // (`barFill`) follows borderColor by itself.
       $wpBar: true,
       order: descriptor.order,
-      // Slightly translucent at rest so the hover state has somewhere to go.
-      // `borderColor` stays the solid series colour: the legend and the
-      // tooltip swatch read it, and bars draw no stroke of their own.
-      backgroundColor: hexToRgba(colour, 0.82),
+      // Translucent at rest and fainter for a partly observed bucket
+      // (`barFill`). `borderColor` stays the solid series colour: the legend,
+      // the tooltip swatch and `barFill` read it, and bars draw no stroke of
+      // their own.
+      backgroundColor: barFill,
       hoverBackgroundColor: colour,
       borderColor: colour,
       borderWidth: 0,
@@ -1282,15 +1450,13 @@
       },
       options: {
         responsive: true,
-        // `.chart-box` supplies the height; without this the canvas grows on
-        // every resize.
+        // The chart's container supplies the height; without this the canvas
+        // grows on every resize.
         maintainAspectRatio: false,
         // Animation off: the markers are painted at the axis' final pixel
         // positions, so a tweening axis would leave every dashed line standing
         // beside the column it belongs to until the animation settled.
         animation: false,
-        // Room for the event-marker dots painted at `area.top`.
-        layout: { padding: { top: 8 } },
         // Hovering anywhere in a column reports every series in it, which is
         // what a reader comparing count against uniques wants.
         interaction: { mode: "index", intersect: false },
@@ -1325,6 +1491,21 @@
               callback: compactTick,
             },
           },
+          // The event markers' lane (see `LANE_PX`): an empty axis box, which
+          // Chart.js lays out between the legend and the plot, the one place
+          // a box can go there. Nothing on it draws, and no dataset binds to
+          // it: datasets take the first x scale, `x`, which is why this one
+          // is declared after it.
+          wpLane: {
+            type: "category",
+            position: "top",
+            grid: { display: false },
+            border: { display: false },
+            ticks: { display: false },
+            afterFit: function (scale) {
+              scale.height = LANE_PX;
+            },
+          },
         },
         plugins: {
           // A legend earns its space only where there are two series to tell
@@ -1344,6 +1525,13 @@
           tooltip: {
             enabled: false,
             external: externalTooltip,
+            // Rows in declaration order, as the legend reads them (see
+            // `solidLegendLabels`). Chart.js otherwise orders tooltip items by
+            // dataset `order`, the paint order that puts the bars behind the
+            // uniques line, and the tip read "Unique" above "Views".
+            itemSort: function (a, b) {
+              return a.datasetIndex - b.datasetIndex;
+            },
           },
         },
       },
@@ -1352,8 +1540,8 @@
 
     /*
      * What this file keeps on a chart beyond what Chart.js knows about: the
-     * events to mark, the date → column map that places them, and the tooltip
-     * headings.
+     * events to mark, the date → column map that places them, the tooltip
+     * headings, and which buckets were only partly observed (`barFill`).
      *
      * Attached after construction — the first render happens inside the
      * constructor, before this exists, which is why the plugin treats a missing
@@ -1364,10 +1552,12 @@
      * holding, so handing a chart a second `$wp` would strand its markers on
      * the first one.
      */
+    var coverage = bucketCoverage(spec, view);
     chart.$wp = {
       events: events,
       bucketOf: view.bucketOf,
-      titles: view.titles,
+      titles: coverage.titles,
+      partial: coverage.partial,
     };
 
     live.add(chart);
@@ -1421,9 +1611,11 @@
     // Fields, never the object — see `createChart`. Colours are deliberately
     // not rewritten here: they are already whatever the current scheme
     // resolved to, and `applyTheme` owns changing them.
+    var coverage = bucketCoverage(spec, view);
     chart.$wp.events = events;
     chart.$wp.bucketOf = view.bucketOf;
-    chart.$wp.titles = view.titles;
+    chart.$wp.titles = coverage.titles;
+    chart.$wp.partial = coverage.partial;
     chart.update("none");
     return chart;
   }
@@ -1523,8 +1715,16 @@
    * Answers whether it rendered, which also says whether `applyFilter` has
    * already run this pass — `renderCharts` ends with one, and callers use that
    * instead of filtering the page a second time.
+   *
+   * It is also where the period first reaches the links to other pages
+   * (`updatePeriodLinks`). `boot` calls it on every page, with or without a
+   * chart, which makes it the one boot hook this section owns.
    */
   function initRepoCharts() {
+    // First, and whatever follows: a page with no chart (a repo with nothing
+    // observed yet, or no Chart.js) can still have arrived on a `?days=`, and
+    // its links should pass that on.
+    updatePeriodLinks(currentDays);
     if (typeof Chart === "undefined") {
       return false;
     }
@@ -1541,8 +1741,9 @@
 
   /*
    * Zoom to `value` days: re-render from the payload already in the page, put
-   * the choice in the address bar and hand it to the sort links, so a reload, a
-   * shared link or a sort click all stay on the period showing.
+   * the choice in the address bar and hand it to the sort links and the links
+   * to other pages, so a reload, a shared link, a sort click or a hop to
+   * Analytics or another repo all stay on the period showing.
    * `replaceState` rather than `pushState` — a zoom is not a navigation, and the
    * back button should leave the page rather than step through every period the
    * reader tried.
@@ -1556,6 +1757,7 @@
     currentDays = days;
     syncPeriodUrl(days);
     updateSortLinks(days);
+    updatePeriodLinks(days);
   }
 
   function syncPeriodUrl(days) {
@@ -1601,13 +1803,59 @@
   }
 
   /*
+   * Carry `days` into the links that open another page with a period: the
+   * leaderboard and Recent changes rows on Analytics, the nav's Analytics
+   * link, and anything marked `data-period-link` (the repo header's crumb,
+   * switcher and previous/next). Without it the period lived only in each
+   * page's own address, and every hop between Analytics and a repo opened
+   * on All again.
+   *
+   * The destination decides, not the selector. `/analytics` and
+   * `/repos/{id}` take a period; anything else a selector catches — the crumb
+   * back to `/repos`, which has none, or Settings in the nav — stays as
+   * rendered. The spelling is `applyPeriod`'s, so All is no parameter at
+   * all, as in the address bar. Only `href`: none of these is an htmx
+   * request, so unlike `updateSortLinks` there is nothing for `htmx.process`
+   * to re-read.
+   *
+   * Remembering the period across visits (localStorage) was left out on
+   * purpose: a stored choice would change what a bare URL opens on, which is
+   * the owner's call. With JavaScript off these links stay as the server
+   * rendered them, and each page opens on its default.
+   */
+  var PERIOD_LINKS =
+    "a[data-period-link], .wp-leaders a[href], .wp-changes a[href], nav a[href]";
+
+  function takesPeriod(url) {
+    return (
+      url.origin === window.location.origin &&
+      (url.pathname === "/analytics" || /^\/repos\/\d+$/.test(url.pathname))
+    );
+  }
+
+  function updatePeriodLinks(days) {
+    var links = document.querySelectorAll(PERIOD_LINKS);
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i];
+      var url = parseUrl(link.getAttribute("href"));
+      if (!url || !takesPeriod(url)) {
+        continue;
+      }
+      applyPeriod(url.searchParams, days);
+      link.setAttribute("href", url.pathname + url.search + url.hash);
+    }
+  }
+
+  /*
    * Everything the charts plot at the trailing `days` of `payload`, and
    * nothing about the charts themselves.
    *
-   * Returns `{keys, titles, bucketOf, kind, uniquesLabel, values}` — axis
-   * labels, tooltip headings, the marker plugin's date → column map, the bucket
-   * width the window came out at, the name the uniques series goes by at that
-   * width, and one rolled-up array per series named in `CHART_SPECS`.
+   * Returns `{keys, titles, bucketOf, kind, spans, uniquesLabel, values,
+   * observed}` — axis labels, tooltip headings, the marker plugin's date →
+   * column map, the bucket width the window came out at, each bucket's
+   * calendar length (null at day zoom), the name the uniques series goes by
+   * at that width, one rolled-up array per series named in `CHART_SPECS`, and
+   * per series how many days of each bucket it observed.
    */
   function computeView(payload, days) {
     var labels = tail(payload.labels, days);
@@ -1625,11 +1873,15 @@
     });
 
     var values = {};
+    var observed = {};
     CHART_SPECS.forEach(function (spec) {
       spec.datasets.forEach(function (descriptor) {
         var series = tail(source[descriptor.source], days);
         values[descriptor.source] = buckets.map(function (bucket) {
           return agg(series, bucket.dayIdxs, descriptor.mode);
+        });
+        observed[descriptor.source] = buckets.map(function (bucket) {
+          return countObserved(series, bucket.dayIdxs);
         });
       });
     });
@@ -1643,11 +1895,15 @@
       }),
       bucketOf: bucketOf,
       kind: kind,
+      spans: buckets.map(function (b) {
+        return calendarSpan(b.key, kind);
+      }),
       // At day zoom the uniques point is that day's unique count; wider
       // buckets cannot sum it (see `agg`), so the label says what the number
       // really is.
       uniquesLabel: kind === "day" ? "Unique" : "Peak daily unique",
       values: values,
+      observed: observed,
     };
   }
 
@@ -1811,7 +2067,15 @@
               borderWidth: 1.5,
               borderJoinStyle: "round",
               borderCapStyle: "round",
-              pointRadius: 0,
+              // The big charts' rule: a reading with no neighbours draws a
+              // dot, where a radius of 0 left a repo read once as a 1px
+              // speck. A run of three or more stays a bare line. Filled with
+              // the line colour, not the area gradient, which is nearly
+              // transparent at a dot's height; `applyTheme` recolours it.
+              pointRadius: strandedPointRadius,
+              pointBackgroundColor: colour,
+              pointBorderWidth: 0,
+              pointHoverRadius: 0,
               tension: 0,
               // Same rule as the big charts: a day with no observation is a
               // break, not a dip to zero.
@@ -1827,7 +2091,6 @@
           // tooltip to chase with a pointer.
           scales: { x: { display: false }, y: { display: false } },
           plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          elements: { point: { radius: 0 } },
         },
       });
       live.add(chart);
@@ -2036,8 +2299,36 @@
   // -------------------------------------------------------------------------
 
   /*
+   * The dialog's resting copy. A trigger may override the heading and the OK
+   * label for one prompt; both are put back on close, so the next plain
+   * `hx-confirm` reads exactly as the shell ships it.
+   */
+  var CONFIRM_DEFAULT = "Confirm";
+
+  /*
+   * What the triggering element asks the dialog to say: `data-confirm-title`
+   * for the heading, `data-confirm-label` for the OK button, and the bare
+   * `data-confirm-danger` for a destructive action. These are read as
+   * attributes and written as `textContent`, the same rule the toast keeps:
+   * a title that came from a stored event can never become markup. The OK
+   * button's own marker is `data-confirm-ok`, which is why the trigger's label
+   * attribute is not called that.
+   */
+  function confirmCopy(elt) {
+    function read(name) {
+      var value = elt && elt.getAttribute ? elt.getAttribute(name) : null;
+      return value && value.trim() ? value : null;
+    }
+    return {
+      title: read("data-confirm-title") || CONFIRM_DEFAULT,
+      label: read("data-confirm-label") || CONFIRM_DEFAULT,
+      danger: !!(elt && elt.hasAttribute && elt.hasAttribute("data-confirm-danger")),
+    };
+  }
+
+  /*
    * Fill the shell's `#wp-confirm` with `question` and open it, answering
-   * `done(true)` only if the reader pressed Confirm. Returns false — having
+   * `done(true)` only if the reader pressed OK. Returns false — having
    * changed nothing — if the shell is missing a part, so the caller can leave
    * the request to htmx rather than swallow it.
    *
@@ -2045,10 +2336,11 @@
    * the inert background and Escape all come from the platform.
    */
   function openConfirm(dlg, question, elt, done) {
+    var titleEl = dlg.querySelector("#wp-confirm-title");
     var textEl = dlg.querySelector("#wp-confirm-text");
     var okBtn = dlg.querySelector("[data-confirm-ok]");
     var cancelBtn = dlg.querySelector("[data-confirm-cancel]");
-    if (!textEl || !okBtn || !cancelBtn) {
+    if (!titleEl || !textEl || !okBtn || !cancelBtn) {
       return false;
     }
 
@@ -2071,11 +2363,15 @@
      * Escape, whose `cancel` event closes it by default. Resolving on `close`
      * instead of wiring the three paths separately is what keeps the teardown
      * whole: the two click handlers are removed on the one event that cannot be
-     * skipped, so the next dialog cannot answer with the last one's callback.
+     * skipped, so the next dialog cannot answer with the last one's callback,
+     * and the copy goes back to the shell's own.
      */
     function onClose() {
       okBtn.removeEventListener("click", onOk);
       cancelBtn.removeEventListener("click", onCancel);
+      titleEl.textContent = CONFIRM_DEFAULT;
+      okBtn.textContent = CONFIRM_DEFAULT;
+      okBtn.classList.remove("wp-confirm-danger");
       // Focus goes back to the button that asked. The platform restores it by
       // itself only when that button held focus to begin with, and Safari does
       // not focus a button on click — without this a cancel would drop the
@@ -2087,6 +2383,12 @@
       done(confirmed);
     }
 
+    var copy = confirmCopy(elt);
+    titleEl.textContent = copy.title;
+    okBtn.textContent = copy.label;
+    if (copy.danger) {
+      okBtn.classList.add("wp-confirm-danger");
+    }
     textEl.textContent = question;
     okBtn.addEventListener("click", onOk);
     cancelBtn.addEventListener("click", onCancel);
@@ -2165,6 +2467,184 @@
     evt.preventDefault();
     save.click();
   });
+
+  // -------------------------------------------------------------------------
+  // Repo page: row disclosure and switcher
+  // -------------------------------------------------------------------------
+
+  /*
+   * Long tables open on their first rows. The server renders every row, marks
+   * the ones past the cut `wp-more-row`, and gives the table `data-more` plus a
+   * toggle that ships `hidden`. Collapsing is a class on the table, set here,
+   * so with JavaScript off nothing collapses and nothing offers to. It is a
+   * class rather than `hidden` on the rows because the events table's
+   * `row.hidden` belongs to `applyFilter`.
+   *
+   * Which tables the reader opened is kept by id. A sort swaps the whole
+   * table, and the fresh one would otherwise close again under the pointer. A
+   * Set rather than a flag on the element, because the element is what the
+   * swap throws away.
+   *
+   * The events table is the exception, on purpose. A mutation re-renders the
+   * section and the list closes again, unless the row just saved is one of the
+   * older ones (closing would hide what the reader just changed) or a kind
+   * filter is on (a filtered view must never be silently partial).
+   */
+  var EVENTS_TABLE = "wp-events-table";
+  var openTables = new Set();
+
+  /*
+   * The row a Save is about to re-render, by id. Recorded at request start,
+   * because the section swap that answers it replaces the button that knew.
+   */
+  var savedRowId = null;
+
+  function setMore(table, open) {
+    table.classList.toggle("wp-collapsed", !open);
+    if (open) {
+      openTables.add(table.id);
+    } else {
+      openTables.delete(table.id);
+    }
+    var toggle = table.querySelector("[data-more-toggle]");
+    if (toggle) {
+      toggle.hidden = false;
+      toggle.setAttribute("aria-expanded", String(open));
+      // Attribute text the server wrote; `textContent` keeps it text.
+      toggle.textContent = toggle.getAttribute(
+        open ? "data-more-hide" : "data-more-show",
+      );
+    }
+  }
+
+  /* Collapse every disclosure table in `root`, or `root` itself, unless the reader opened it. */
+  function initMore(root) {
+    var tables =
+      root.matches && root.matches("table[data-more]")
+        ? [root]
+        : root.querySelectorAll("table[data-more]");
+    for (var i = 0; i < tables.length; i++) {
+      setMore(tables[i], openTables.has(tables[i].id));
+    }
+  }
+
+  /* Open the events list, if it has older rows to show. */
+  function showAllEvents() {
+    var table = document.getElementById(EVENTS_TABLE);
+    if (table && table.hasAttribute("data-more")) {
+      setMore(table, true);
+    }
+  }
+
+  /*
+   * Open the table holding `row` when the row is one it collapsed. For code
+   * that jumps to a row from outside the table: a chart marker's click has to
+   * reveal an older event before it can scroll to it.
+   */
+  function revealRow(row) {
+    var table = row && row.closest ? row.closest("table[data-more]") : null;
+    if (
+      table &&
+      row.classList.contains("wp-more-row") &&
+      table.classList.contains("wp-collapsed")
+    ) {
+      setMore(table, true);
+    }
+  }
+
+  /*
+   * The repo switcher is a Pico `details.dropdown`. Pico closes it on an
+   * outside click with a full-screen overlay under the menu, but anything
+   * stacked above that overlay still takes the click itself. Closing every
+   * open menu the click was not inside covers those.
+   */
+  function closeMenus(except) {
+    var menus = document.querySelectorAll("details.dropdown[open]");
+    for (var i = 0; i < menus.length; i++) {
+      if (menus[i] !== except) {
+        menus[i].open = false;
+      }
+    }
+  }
+
+  document.addEventListener("click", function (evt) {
+    var target = evt.target;
+    if (!target || !target.closest) {
+      return;
+    }
+    closeMenus(target.closest("details.dropdown"));
+    var toggle = target.closest("[data-more-toggle]");
+    var table = toggle ? toggle.closest("table[data-more]") : null;
+    if (table) {
+      setMore(table, table.classList.contains("wp-collapsed"));
+    }
+  });
+
+  /*
+   * Escape closes an open switcher; Pico does nothing with it. Focus goes back
+   * to the summary when it was inside the menu, so the keyboard is not left on
+   * a link that just disappeared.
+   */
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Escape") {
+      return;
+    }
+    var menu = document.querySelector("details.dropdown[open]");
+    if (!menu) {
+      return;
+    }
+    var hadFocus = menu.contains(document.activeElement);
+    menu.open = false;
+    var summary = menu.querySelector("summary");
+    if (hadFocus && summary) {
+      summary.focus();
+    }
+  });
+
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    var elt = evt.detail ? evt.detail.elt : null;
+    var row =
+      elt && elt.hasAttribute && elt.hasAttribute("data-save") && elt.closest
+        ? elt.closest("tr")
+        : null;
+    savedRowId = row ? row.id : null;
+  });
+
+  /*
+   * After settle, not after swap: for the swap htmx dresses the new element in
+   * the old one's `class` and puts the server's back at settle, so a class set
+   * any earlier would be wiped. The settled element is the event's target.
+   * This listener is registered before the focus-continuity one, so a list
+   * that has to open is open before focus is put back into it.
+   */
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    var target = evt.target;
+    if (!target) {
+      return;
+    }
+    if (target.id === "refs-table" || target.id === "paths-table") {
+      initMore(target);
+    } else if (target.id === "events-section") {
+      var saved = savedRowId ? document.getElementById(savedRowId) : null;
+      savedRowId = null;
+      openTables.delete(EVENTS_TABLE);
+      if (
+        (saved && saved.classList.contains("wp-more-row")) ||
+        hiddenKinds.size > 0
+      ) {
+        openTables.add(EVENTS_TABLE);
+      }
+      initMore(target);
+    }
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      initMore(document);
+    });
+  } else {
+    initMore(document);
+  }
 
   // -------------------------------------------------------------------------
   // Focus continuity
@@ -2301,8 +2781,24 @@
       }
     }
     // So the control is gone (a deleted row took its Delete button with it) or
-    // cannot hold focus where it now is. The section it acted on is the nearest
-    // thing to where the reader was, and carries `tabindex="-1"` to take this.
+    // cannot hold focus where it now is. The nearest container the swap
+    // settled into that takes parked focus (`tabindex="-1"`: the events
+    // section, a sync status panel) is the closest thing to where the reader
+    // was. `#main` carries one too, for the skip link, and is skipped: landing
+    // there is the same as being dropped at the top.
+    var settled = evt.target;
+    var holder =
+      settled && settled.closest
+        ? settled.closest('[tabindex="-1"]:not(#main)')
+        : null;
+    if (holder && holder.isConnected) {
+      holder.focus();
+      if (document.activeElement === holder) {
+        return;
+      }
+    }
+    // The events section is the last resort for a swap that settled outside
+    // any such container, as a row swap inside it does not.
     var section = document.getElementById("events-section");
     if (section) {
       section.focus();
@@ -2310,10 +2806,63 @@
   });
 
   // -------------------------------------------------------------------------
+  // Announcements
+  // -------------------------------------------------------------------------
+
+  /*
+   * Speak a confirmation that arrived inside a swap.
+   *
+   * `#wp-live` (rendered by `base`, outside every swap target) is the page's
+   * one polite live region. Text marked `data-announce` in a settled swap is
+   * copied into it, because a status node inserted together with its text is
+   * the one thing a live region cannot announce reliably.
+   *
+   * Only a change is written: a poll re-renders "Syncing…" every 2s, and
+   * writing it each time would read it out every 2s. A request the reader
+   * started clears the region and the memory first, so a second "Event
+   * added." in a row is still a change and is still heard. `boot` seeds the
+   * memory with the text the page loaded with, so a page load says nothing.
+   */
+  var lastAnnounced = null;
+
+  function announcement(root) {
+    if (!root || !root.querySelector) {
+      return "";
+    }
+    var el =
+      root.matches && root.matches("[data-announce]")
+        ? root
+        : root.querySelector("[data-announce]");
+    return el ? el.textContent.replace(/\s+/g, " ").trim() : "";
+  }
+
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    if (!readerStarted(evt.detail)) {
+      return;
+    }
+    lastAnnounced = null;
+    var live = document.getElementById("wp-live");
+    if (live) {
+      live.textContent = "";
+    }
+  });
+
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    var live = document.getElementById("wp-live");
+    var text = announcement(evt.target);
+    if (!live || !text || text === lastAnnounced) {
+      return;
+    }
+    lastAnnounced = text;
+    live.textContent = text;
+  });
+
+  // -------------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------------
 
   function boot() {
+    lastAnnounced = announcement(document);
     applyTheme();
     initSparklines(document);
     // Charts filter the page themselves as the last step of rendering, so the

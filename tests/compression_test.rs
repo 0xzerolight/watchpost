@@ -135,7 +135,7 @@ async fn a_client_that_asks_for_nothing_gets_the_bytes() {
     assert!(
         String::from_utf8(body_bytes(resp).await)
             .unwrap()
-            .contains(".chart-box")
+            .contains("--wp-border")
     );
 }
 

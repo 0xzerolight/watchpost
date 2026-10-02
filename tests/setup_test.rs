@@ -207,6 +207,28 @@ async fn the_setup_page_itself_renders_without_a_token() {
     assert!(body.contains("Pull requests: read"), "{body}");
 }
 
+/// Before a token exists every nav link only redirects back here, so the shell
+/// shows the brand alone. The page says what comes after it.
+#[tokio::test]
+async fn the_setup_page_shows_the_next_step_and_no_dead_links() {
+    let h = unconfigured_offline();
+    let body = body_string(h.get("/setup").await).await;
+
+    assert!(body.contains(r#"class="wp-brand""#), "{body}");
+    for href in [
+        r#"href="/repos""#,
+        r#"href="/analytics""#,
+        r#"href="/settings""#,
+    ] {
+        assert!(!body.contains(href), "{href} in {body}");
+    }
+    assert!(
+        body.contains("Step 1 of 2 — next you pick which repositories to track."),
+        "{body}"
+    );
+    assert!(body.contains(r#"<div class="wp-narrow">"#), "{body}");
+}
+
 /// A bookmark or a back button must not land on a form that would silently
 /// rotate a working token.
 #[tokio::test]
@@ -238,7 +260,8 @@ async fn a_token_github_accepts_is_saved_and_the_client_starts_working() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     // htmx follows this rather than swapping: the whole page changes.
-    assert_eq!(resp.headers()["hx-redirect"], "/");
+    // Step two is picking repositories, so the browser goes straight there.
+    assert_eq!(resp.headers()["hx-redirect"], "/settings#wp-repos");
     assert!(h.state.gh().is_some());
     assert_eq!(h.stored_token().await.as_deref(), Some("ghp_wizard1234"));
 
@@ -264,6 +287,36 @@ async fn a_token_github_rejects_is_not_saved() {
     assert_eq!(h.stored_token().await, None);
 }
 
+/// A rejected token used to answer with the whole page, which the form
+/// (`hx-target="this"`, `outerHTML`) swapped into itself: a second nav, a
+/// second heading and the field at the bottom, once more per attempt. The
+/// answer is the form alone, with the error tied to the field and the caret
+/// put back in it.
+#[tokio::test]
+async fn a_rejected_token_answers_with_the_form_alone() {
+    let server = mock_rate_limit(401, json!({"message": "Bad credentials"})).await;
+    let h = unconfigured(server.uri().parse().unwrap());
+
+    let resp = h.post_form("/setup", "token=ghp_bad").await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.starts_with(r#"<form id="setup-form""#), "{body}");
+    assert!(!body.contains("<!DOCTYPE"), "{body}");
+    assert!(!body.contains("<nav"), "{body}");
+    assert!(!body.contains("<h1"), "{body}");
+    assert_eq!(body.matches(r#"role="alert""#).count(), 1, "{body}");
+    assert!(body.contains(r#"<div id="wp-setup-error">"#), "{body}");
+    assert!(body.contains(r#"aria-invalid="true""#), "{body}");
+    assert!(
+        body.contains(r#"aria-describedby="wp-setup-error""#),
+        "{body}"
+    );
+    assert!(body.contains(" autofocus"), "{body}");
+    // The rejected value is never echoed back into the field.
+    assert!(!body.contains("ghp_bad"), "{body}");
+}
+
 /// A token with no repository permissions still authenticates, and that is the
 /// right outcome: a missing permission costs one endpoint, not the install.
 #[tokio::test]
@@ -273,7 +326,7 @@ async fn a_token_with_no_permissions_is_still_accepted() {
 
     let resp = h.post_form("/setup", "token=ghp_scopeless").await;
 
-    assert_eq!(resp.headers()["hx-redirect"], "/");
+    assert_eq!(resp.headers()["hx-redirect"], "/settings#wp-repos");
     assert_eq!(h.stored_token().await.as_deref(), Some("ghp_scopeless"));
 }
 

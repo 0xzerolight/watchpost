@@ -205,7 +205,7 @@ async fn lists_tracked_repos_with_counts() {
     let body = body_string(resp).await;
 
     assert!(body.starts_with("<!DOCTYPE html>"), "body was {body}");
-    assert!(body.contains(REPO_A), "body was {body}");
+    assert!(body.contains("octo/<wbr>aaa"), "body was {body}");
     // Name links through to the repo page.
     assert!(body.contains(r#"href="/repos/1""#), "body was {body}");
     // Latest-row stats, each rendered as its own value cell.
@@ -272,11 +272,20 @@ async fn untracked_or_hidden_absent() {
 
     assert!(!body.contains(REPO_A), "untracked repo leaked: {body}");
     assert!(!body.contains(REPO_B), "hidden repo leaked: {body}");
+    // Card titles break after the slash; check that form too.
+    assert!(
+        !body.contains("octo/<wbr>aaa"),
+        "untracked repo leaked: {body}"
+    );
+    assert!(
+        !body.contains("octo/<wbr>bbb"),
+        "hidden repo leaked: {body}"
+    );
     // The hidden repo's stats must not leak either, card or no card.
     assert!(spark_payloads(&body).is_empty(), "body was {body}");
     // With nothing left to show, the page falls back to the empty state.
     assert!(
-        body.contains("No repos tracked yet — stats start collecting on the next sync."),
+        body.contains("No repositories tracked yet — watchpost only collects the ones you pick."),
         "body was {body}"
     );
 }
@@ -290,16 +299,46 @@ async fn empty_state_links_settings() {
     let body = body_string(resp).await;
 
     assert!(
-        body.contains("No repos tracked yet — stats start collecting on the next sync."),
+        body.contains("No repositories tracked yet — watchpost only collects the ones you pick."),
         "body was {body}"
     );
     assert!(
-        body.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+        body.contains(
+            r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+        ),
         "body was {body}"
     );
     // Nothing chart-shaped is rendered when there is nothing to chart.
     assert!(!body.contains("spark-data"), "body was {body}");
     assert!(!body.contains("<canvas"), "body was {body}");
+}
+
+/// A repo ticked a moment ago has nothing to draw. Its card says it is waiting
+/// rather than showing a blank sparkline over dashes and "0 events".
+#[tokio::test]
+async fn a_repo_that_has_never_synced_waits_instead_of_showing_zeros() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/repos").await).await;
+
+    assert!(body.contains("Waiting for first sync"), "{body}");
+    assert!(!body.contains("spark-data"), "{body}");
+    assert!(!body.contains("<strong>—</strong>"), "{body}");
+    assert!(!body.contains("<strong>0</strong>"), "{body}");
+    assert!(!body.contains("0 events"), "{body}");
+    assert!(!body.contains("synced never"), "{body}");
+    // This harness runs no scheduler, so there is no countdown to show.
+    assert!(!body.contains("not scheduled"), "{body}");
+
+    // The line's class is a hook into app.css; renaming either side alone
+    // silently drops the rule.
+    assert!(
+        body.contains(r#"class="wp-card-waiting wp-muted""#),
+        "{body}"
+    );
+    let css = body_string(h.get("/assets/app.css").await).await;
+    assert!(css.contains(".wp-card-waiting {"), "no waiting-card rule");
 }
 
 #[tokio::test]
@@ -316,6 +355,71 @@ async fn last_error_renders_a_badge_with_the_message() {
 
     assert!(body.contains("data-tooltip=\"github 502\""), "{body}");
     assert!(body.contains("wp-danger"), "body was {body}");
+}
+
+#[tokio::test]
+async fn a_failed_sync_is_announced_above_the_cards() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    h.state
+        .db
+        .call(|c| queries::record_sync_err(c, ID_A, "github 502", None))
+        .await
+        .unwrap();
+
+    let body = body_string(h.get("/repos").await).await;
+
+    let line = body
+        .find("1 repository failed its last sync")
+        .unwrap_or_else(|| panic!("no failure line in {body}"));
+    assert!(line < body.find(r#"class="wp-cards""#).unwrap(), "{body}");
+}
+
+#[tokio::test]
+async fn healthy_repos_draw_no_failure_line() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+
+    let body = body_string(h.get("/repos").await).await;
+
+    assert!(!body.contains("failed its last sync"), "{body}");
+}
+
+#[tokio::test]
+async fn the_leaderboard_glyph_wraps_a_long_category_instead_of_clipping_it() {
+    // Pico's tooltip is one unbroken line. The leaderboard glyph sits in a
+    // table that scrolls inside its wrapper, and a stored category runs to a
+    // hundred characters, so without this rule most of it was cut off.
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+    let rule = css
+        .split_once("\n.wp-leaders [data-tooltip]::before {")
+        .unwrap_or_else(|| panic!("no leaderboard tooltip rule in app.css"))
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(rule.contains("white-space: normal;"), "{rule}");
+    assert!(rule.contains("max-width:"), "{rule}");
+}
+
+#[tokio::test]
+async fn a_card_time_sits_above_the_stretched_link_so_its_exact_instant_shows() {
+    // The title link's ::after covers the whole card. A footer <time> under
+    // it never receives the hover, so its title, the exact instant, was lost.
+    // `last_synced_at_renders_as_relative_time` pins the <time> itself.
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+    let rule = css
+        .split_once("\n.wp-card time {")
+        .unwrap_or_else(|| panic!("no card time rule in app.css"))
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(rule.contains("position: relative;"), "{rule}");
+    assert!(rule.contains("z-index: 2;"), "{rule}");
 }
 
 #[tokio::test]
@@ -400,10 +504,12 @@ async fn the_dashboard_is_cards_only() {
 
     assert!(!body.contains("Recent changes"), "body was {body}");
     assert!(!body.contains("wp-changes"), "body was {body}");
-    assert!(!body.contains("+3 stars"), "body was {body}");
+    // The feed's chip, not the words: the card's own caption says
+    // "+3 stars · 30 days" about the same movement.
+    assert!(!body.contains(">+3 stars</span>"), "body was {body}");
     // The cards it was burying are still there.
     assert!(body.contains(r#"class="wp-cards""#), "body was {body}");
-    assert!(body.contains(REPO_A), "body was {body}");
+    assert!(body.contains("octo/<wbr>aaa"), "body was {body}");
 }
 
 // ---------------------------------------------------------------------------
@@ -471,4 +577,27 @@ async fn the_root_never_redirects_to_itself() {
         let resp = h.get("/").await;
         assert_ne!(resp.headers()["location"], "/", "stored was {stored}");
     }
+}
+
+/// A repo read once draws a dot on its sparkline, by the same rule as the big
+/// charts (`strandedPointRadius`), where a point radius of 0 left a 1px speck.
+/// The rule lives only in app.js, which every page fetches from the router, so
+/// this reads it there: no zero point radius anywhere, and the stranded-point
+/// rule used twice, by the repo charts and by the sparkline.
+#[tokio::test]
+async fn a_lone_reading_draws_a_dot_on_its_sparkline() {
+    let h = harness();
+    let js = body_string(h.get("/assets/app.js").await).await;
+    assert!(
+        !js.contains("pointRadius: 0,"),
+        "a sparkline still hides its points"
+    );
+    assert!(
+        !js.contains("point: { radius: 0 }"),
+        "a chart default still hides sparkline points"
+    );
+    assert!(
+        js.matches("pointRadius: strandedPointRadius").count() >= 2,
+        "the sparkline does not use the stranded-point rule"
+    );
 }

@@ -3,12 +3,15 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::{FromRequestParts, Path};
+use axum::http::request::Parts;
 use axum::routing::{get, post};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::csrf::csrf_middleware;
+use crate::errors::AppError;
 use crate::state::AppState;
 
 pub mod analytics;
@@ -38,6 +41,12 @@ pub mod setup;
 ///
 /// Security headers sit just outside CSRF, so a request rejected there is
 /// decorated with the policy rather than answered bare.
+///
+/// The two fallbacks are registered with the routes, before any layer, for
+/// the same reason the routes are: `Router::layer` only wraps what already
+/// exists. A miss therefore goes through the setup gate, CSRF and the
+/// security headers like any page, and renders the styled shell instead of
+/// axum's empty 404 or 405, which a browser shows as a blank white page.
 ///
 /// Compression sits outside the headers, so it compresses a response that is
 /// already fully decorated and the `Vary` it depends on is in place before it
@@ -88,6 +97,10 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .route("/sync/status", get(settings::sync_status))
         .route("/assets/{file}", get(assets::serve_asset))
         .route("/setup", get(setup::setup_page).post(setup::setup_submit))
+        .fallback(not_found)
+        // After the last route: this sets the fallback on the method routers
+        // that already exist, and a route added later would not get it.
+        .method_not_allowed_fallback(method_not_allowed)
         // Inside CSRF, so a POST to /setup is validated before it arrives and
         // the page render still finds a token in the request extensions.
         .layer(axum::middleware::from_fn_with_state(
@@ -105,6 +118,45 @@ fn router_with(extra: Router<Arc<AppState>>, state: Arc<AppState>) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new());
     router.with_state(state)
+}
+
+/// Every path no route claims.
+async fn not_found() -> AppError {
+    AppError::NotFound
+}
+
+/// A path that exists, asked with a method it does not take: a typed or
+/// bookmarked `GET /sync`, say.
+async fn method_not_allowed() -> AppError {
+    AppError::MethodNotAllowed
+}
+
+/// `Path<T>` whose rejection is the styled Not found page.
+///
+/// axum's own rejection for `/repos/abc` is a text/plain 400 reading
+/// "Cannot parse `abc` to a `i64`". That puts a type name on screen and
+/// leaves no way back. An id that does not parse names nothing, which is
+/// exactly what a missing id means, so it answers the same 404 as
+/// `/repos/999`. The alternative was `Result<Path<T>, PathRejection>` in every
+/// handler. That repeats the same `map_err` in nine signatures, and a new
+/// route that forgot it would regress silently.
+///
+/// Usage: `PathId(id): PathId<i64>`, or `PathId((id, eid)): PathId<(i64, i64)>`.
+pub struct PathId<T>(pub T);
+
+impl<S, T> FromRequestParts<S> for PathId<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Path(value)| Self(value))
+            .map_err(|_| AppError::NotFound)
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +222,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    async fn echo_id(PathId(id): PathId<i64>) -> String {
+        id.to_string()
+    }
+
+    async fn echo_pair(PathId((id, eid)): PathId<(i64, i64)>) -> String {
+        format!("{id}/{eid}")
+    }
+
+    async fn text(resp: axum::response::Response) -> String {
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    /// axum's own rejection is a text/plain 400 reading "Cannot parse `abc`
+    /// to a `i64`": a type name on screen and no way back. A malformed id is
+    /// just an address that does not exist.
+    #[tokio::test]
+    async fn a_malformed_path_id_is_the_styled_not_found_page() {
+        let app = router_with(
+            Router::new()
+                .route("/x/{id}", get(echo_id))
+                .route("/y/{id}/{eid}", get(echo_pair)),
+            state(),
+        );
+
+        for uri in ["/x/abc", "/y/1/x", "/y/abc/2"] {
+            let resp = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+            let body = text(resp).await;
+            assert!(body.starts_with("<!DOCTYPE html>"), "{uri}: {body}");
+            assert!(
+                body.contains("That page or item does not exist."),
+                "{uri}: {body}"
+            );
+            assert!(!body.contains("i64"), "{uri}: {body}");
+            assert!(!body.contains("Cannot parse"), "{uri}: {body}");
+        }
+
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/x/7").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(text(resp).await, "7");
+
+        let resp = app
+            .oneshot(Request::get("/y/3/4").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(text(resp).await, "3/4");
     }
 }

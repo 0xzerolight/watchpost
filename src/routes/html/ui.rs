@@ -20,6 +20,11 @@ pub enum NavItem {
     Home,
     Analytics,
     Settings,
+    /// A repo page: inside the Repositories section without being its page.
+    Repo,
+    /// First-run setup: the shell shows the brand and no links, because
+    /// every link would only redirect back to `/setup`.
+    Setup,
     None,
 }
 
@@ -38,6 +43,23 @@ impl NavItem {
             LandingPage::Settings => Self::Settings,
         }
     }
+
+    /// The `aria-current` value this page gives `page`'s nav link, if any.
+    ///
+    /// `"page"` when the link is this page. A repo page is not one of the nav's
+    /// destinations, but it lives under Repositories, so that link says
+    /// `"true"`: the current item in a set, a section rather than this page.
+    /// Marking nothing, as repo pages used to with [`NavItem::None`], left a
+    /// reader inside a repo with no sign of where they were.
+    pub fn aria_current(self, page: LandingPage) -> Option<&'static str> {
+        if Self::of(page) == self {
+            Some("page")
+        } else if self == Self::Repo && page == LandingPage::Repos {
+            Some("true")
+        } else {
+            None
+        }
+    }
 }
 
 /// Which of the three notice tones a message carries.
@@ -51,12 +73,14 @@ pub enum Notice {
 /// A page's title block: heading, optional subtitle, optional action buttons.
 ///
 /// The heading and subtitle share an `hgroup` so the subtitle is announced as
-/// part of the title rather than as a stray paragraph.
+/// part of the title rather than as a stray paragraph. The title goes through
+/// [`slash_breaks`], so an `owner/repo` heading wraps after the owner on a
+/// phone instead of pushing the page wider.
 pub fn page_header(title: &str, subtitle: Option<Markup>, actions: Option<Markup>) -> Markup {
     html! {
         header class="wp-page-header" {
             hgroup {
-                h1 { (title) }
+                h1 { (slash_breaks(title)) }
                 @if let Some(subtitle) = subtitle {
                     p { (subtitle) }
                 }
@@ -64,6 +88,23 @@ pub fn page_header(title: &str, subtitle: Option<Markup>, actions: Option<Markup
             @if let Some(actions) = actions {
                 div class="wp-actions" { (actions) }
             }
+        }
+    }
+}
+
+/// `text` with a line-break opportunity (`<wbr>`) after every `/`, each part
+/// escaped as usual.
+///
+/// `owner/repo` is one unbreakable word to a browser, and at phone width
+/// `0xzerolight/anki_miner_note` ran past the viewport. `overflow-wrap:
+/// anywhere` alone would break it mid-name; the slash is where a reader
+/// expects the break. Markup rather than a string with a zero-width space, so
+/// a copied name pastes back exactly as it was.
+pub fn slash_breaks(text: &str) -> Markup {
+    html! {
+        @for (i, part) in text.split('/').enumerate() {
+            @if i > 0 { "/" wbr; }
+            (part)
         }
     }
 }
@@ -104,33 +145,64 @@ pub fn empty_row(colspan: u8, message: &str) -> Markup {
 /// polite `status`. Getting that mapping wrong either shouts routine
 /// confirmations or silently swallows failures.
 pub fn notice(kind: Notice, body: Markup) -> Markup {
-    let (class, role) = match kind {
-        Notice::Success => ("wp-notice wp-notice-success", "status"),
-        Notice::Error => ("wp-notice wp-notice-error", "alert"),
-        Notice::Info => ("wp-notice wp-notice-info", "status"),
+    let role = match kind {
+        Notice::Error => "alert",
+        Notice::Success | Notice::Info => "status",
     };
     html! {
-        p class=(class) role=(role) { (body) }
+        p class=(notice_class(kind)) role=(role) { (body) }
+    }
+}
+
+/// A notice whose text a screenreader hears through the page's one live
+/// region (`#wp-live`, rendered by `base`) instead of through a role of its
+/// own.
+///
+/// [`notice`]'s role suits a message that is in the page when it loads. A
+/// message that arrives inside an htmx swap is a node inserted together with
+/// its text, which some screenreaders announce and others skip, and the ones
+/// that announce it would then hear the live region say it again. So this
+/// carries `data-announce`, which app.js copies into the region, and no role.
+pub fn announced(kind: Notice, body: Markup) -> Markup {
+    html! {
+        p class=(notice_class(kind)) data-announce { (body) }
+    }
+}
+
+fn notice_class(kind: Notice) -> &'static str {
+    match kind {
+        Notice::Success => "wp-notice wp-notice-success",
+        Notice::Error => "wp-notice wp-notice-error",
+        Notice::Info => "wp-notice wp-notice-info",
     }
 }
 
 /// The page every failed request renders: what went wrong, in the words the
 /// user is allowed to have, plus one link out of the dead end.
 ///
+/// The tone follows whose problem it is. A 5xx is ours, and it is an alert. A
+/// 4xx is a stale bookmark, a mistyped id or an expired form, so it gets the
+/// polite status tone. A red alert for a missing page shouted at a reader who
+/// had done nothing wrong. The status code goes in the tab title rather than in
+/// a subtitle, which only repeated the heading in HTTP's words.
+///
 /// The CSRF token is deliberately empty. Nothing here mutates, and an error
 /// response has no business minting a token — a page rendered from a request
 /// that never reached a handler would otherwise carry a token whose cookie the
 /// response may not even set.
 pub fn error_page(status: StatusCode, headline: &str, detail: &str) -> Markup {
-    let code = status.as_u16();
-    let reason = status.canonical_reason().unwrap_or("Error");
+    let tone = if status.is_server_error() {
+        Notice::Error
+    } else {
+        Notice::Info
+    };
     super::base(
-        "Error",
+        &format!("{} {headline}", status.as_u16()),
         NavItem::None,
         &CsrfToken(String::new()),
         html! {
-            (page_header(headline, Some(html! { (code) " " (reason) }), None))
-            (notice(Notice::Error, html! { (detail) }))
+            (page_header(headline, None, None))
+            (notice(tone, html! { (detail) }))
             p { a href="/repos" { "Back to repos" } }
         },
     )
@@ -157,15 +229,45 @@ pub fn spinner(id: &str) -> Markup {
     }
 }
 
+/// Which side of the glyph its tooltip opens on.
+///
+/// Pico also offers centred placements. Centred, the tooltip's invisible box
+/// hung past the right edge of a card or a table and widened the page, even
+/// while it was not showing, so only the two sides are on offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Towards the content, for a glyph at the end of a line: a card title,
+    /// a page heading, a picker row.
+    Left,
+    /// For a glyph in the first column of a table that scrolls inside
+    /// `.wp-table-wrap`. A box hung left of the name was cut at the wrapper's
+    /// edge ("ync will retry." on a phone), and to the right lie only the
+    /// figure columns, which it may cover while it is open. Pico's tooltip is
+    /// one unbroken line, so `app.css` lets the leaderboard's wrap at a
+    /// bounded width (`.wp-leaders [data-tooltip]::before`).
+    Right,
+}
+
+impl Placement {
+    fn attr(self) -> &'static str {
+        match self {
+            Placement::Left => "left",
+            Placement::Right => "right",
+        }
+    }
+}
+
 /// The warning glyph shown beside something whose last sync failed.
 ///
 /// Pico renders `data-tooltip` on hover/focus; `tabindex` makes the message
 /// reachable without a pointer, and the label keeps the bare glyph meaningful
-/// to a screenreader.
-pub fn error_glyph(error: &str) -> Markup {
+/// to a screenreader. Every caller goes through here, the leaderboard
+/// included, with only the [`Placement`] differing: a hand-rolled copy for
+/// one placement was rejected because it drifts out of step with this one.
+pub fn error_glyph(error: &str, placement: Placement) -> Markup {
     html! {
-        span class="wp-danger" data-tooltip=(error) tabindex="0"
-            role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
+        span class="wp-danger" data-tooltip=(error) data-placement=(placement.attr())
+            tabindex="0" role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
     }
 }
 
@@ -203,6 +305,24 @@ pub fn timestamp(at: Option<&str>, tz: Tz) -> Markup {
 /// that gets quietly reimplemented with a different rule for zero.
 pub fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
     if n == 1 { one } else { many }
+}
+
+/// A change with its sign spelled out: "+6", "−2" or "±0".
+///
+/// The sign carries direction ahead of any colour, so it survives a
+/// monochrome screen and a reader who cannot separate the two hues. The minus
+/// is U+2212 MINUS SIGN, not a hyphen: at small sizes a hyphen next to a digit
+/// reads as punctuation. Zero is "±0", an observed "nothing moved". One
+/// function rather than a match arm per renderer: the delta badges, the
+/// leaderboard, the dashboard captions and the event impact line all print
+/// changes, and every copy of the rule was one more place for the minus to
+/// drift back to a hyphen.
+pub fn signed(n: i64) -> String {
+    match n.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("+{n}"),
+        std::cmp::Ordering::Less => format!("\u{2212}{}", n.unsigned_abs()),
+        std::cmp::Ordering::Equal => "\u{00b1}0".to_owned(),
+    }
 }
 
 /// A stored `YYYY-MM-DD` day, rendered short.
@@ -391,20 +511,39 @@ mod tests {
         let out = error_page(StatusCode::NOT_FOUND, "Not found", "No such thing.").into_string();
 
         assert!(out.starts_with("<!DOCTYPE html>"), "{out}");
-        assert!(out.contains("<h1>Not found</h1>"), "{out}");
-        assert!(out.contains("404"), "{out}");
+        // The code lives in the tab title. A subtitle saying "404 Not Found"
+        // under an h1 saying "Not found" said the same thing twice.
         assert!(
-            out.contains(r#"class="wp-notice wp-notice-error" role="alert">No such thing."#),
+            out.contains("<title>404 Not found · watchpost</title>"),
             "{out}"
         );
+        assert!(out.contains("<hgroup><h1>Not found</h1></hgroup>"), "{out}");
+        // A stale bookmark is not an emergency: a client error gets the polite
+        // status tone, not the alert a screenreader interrupts for.
+        assert!(
+            out.contains(r#"<p class="wp-notice wp-notice-info" role="status">No such thing.</p>"#),
+            "{out}"
+        );
+        assert!(!out.contains("wp-notice-error"), "{out}");
         // A dead end without a link back is the whole complaint about error
         // pages, so the link is part of the contract.
         assert!(
             out.contains(r#"<a href="/repos">Back to repos</a>"#),
             "{out}"
         );
-        // Outside the nav: neither entry may claim to be the current page.
+        // The nav stays, and no entry claims to be the current page.
+        assert!(out.contains(r#"href="/analytics""#), "{out}");
         assert!(!out.contains("aria-current"), "{out}");
+    }
+
+    #[test]
+    fn a_server_error_page_still_alerts() {
+        let out = error_page(StatusCode::INTERNAL_SERVER_ERROR, "Boom", "Logged.").into_string();
+        assert!(out.contains("<title>500 Boom · watchpost</title>"), "{out}");
+        assert!(
+            out.contains(r#"<p class="wp-notice wp-notice-error" role="alert">Logged.</p>"#),
+            "{out}"
+        );
     }
 
     #[test]
@@ -514,6 +653,27 @@ mod tests {
         );
     }
 
+    /// `owner/repo` has no break opportunity, so a long name pushed the h1
+    /// past a phone's edge and the whole page scrolled sideways.
+    #[test]
+    fn page_header_breaks_a_repo_name_after_its_slash() {
+        let out = page_header("octo/aaa", None, None).into_string();
+        assert_eq!(
+            out,
+            r#"<header class="wp-page-header"><hgroup><h1>octo/<wbr>aaa</h1></hgroup></header>"#
+        );
+    }
+
+    #[test]
+    fn slash_breaks_offers_a_break_after_each_slash_and_escapes_the_rest() {
+        assert_eq!(slash_breaks("Repos").into_string(), "Repos");
+        assert_eq!(slash_breaks("a/b/c").into_string(), "a/<wbr>b/<wbr>c");
+        assert_eq!(
+            slash_breaks("<x>/&y").into_string(),
+            "&lt;x&gt;/<wbr>&amp;y"
+        );
+    }
+
     #[test]
     fn timestamp_carries_both_the_exact_and_the_relative_form() {
         let at = "2026-08-17T09:05:00Z";
@@ -620,7 +780,7 @@ mod tests {
 
     #[test]
     fn error_glyph_is_reachable_and_labelled() {
-        let out = error_glyph("boom \"x\"").into_string();
+        let out = error_glyph("boom \"x\"", Placement::Left).into_string();
         assert!(out.contains(r#"tabindex="0""#), "{out}");
         assert!(out.contains(r#"role="img""#), "{out}");
         assert!(
@@ -631,5 +791,49 @@ mod tests {
             out.contains(r#"data-tooltip="boom &quot;x&quot;""#),
             "{out}"
         );
+        // Opens towards the content: centred, the hidden tooltip box hung past
+        // the right edge and widened the page on a phone.
+        assert!(out.contains(r#"data-placement="left""#), "{out}");
+    }
+
+    #[test]
+    fn the_error_glyph_differs_by_its_placement_alone() {
+        let left = error_glyph("network error", Placement::Left).into_string();
+        let right = error_glyph("network error", Placement::Right).into_string();
+        assert!(right.contains(r#"data-placement="right""#), "{right}");
+        assert_eq!(
+            left.replace(r#"data-placement="left""#, r#"data-placement="right""#),
+            right
+        );
+    }
+
+    #[test]
+    fn signed_spells_out_the_direction_with_a_true_minus() {
+        assert_eq!(signed(6), "+6");
+        // U+2212 MINUS SIGN, not a hyphen.
+        assert_eq!(signed(-2), "\u{2212}2");
+        // An observed "nothing moved", never a bare 0 that reads as a level.
+        assert_eq!(signed(0), "\u{00b1}0");
+        assert_eq!(
+            signed(i64::MIN),
+            format!("\u{2212}{}", i64::MIN.unsigned_abs())
+        );
+    }
+
+    /// A notice that arrives in a swap carries no role of its own: the page's
+    /// one live region speaks it, and a role here would say it twice.
+    #[test]
+    fn an_announced_notice_looks_like_a_notice_and_carries_no_role() {
+        let out = announced(Notice::Success, html! { "Event added." }).into_string();
+        assert_eq!(
+            out,
+            r#"<p class="wp-notice wp-notice-success" data-announce>Event added.</p>"#
+        );
+        let out = announced(Notice::Error, html! { "boom" }).into_string();
+        assert!(
+            out.contains(r#"class="wp-notice wp-notice-error""#),
+            "{out}"
+        );
+        assert!(!out.contains("role="), "{out}");
     }
 }

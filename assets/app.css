@@ -5,10 +5,11 @@
  * The app's own classes take a `wp-` prefix and its custom properties `--wp-`,
  * which keeps them apart from Pico's.
  *
- * The marker palette is eight categorical slots. `kind_class()` in
- * src/routes/html/mod.rs hashes an event kind into one of them server-side and
+ * The marker palette is eight categorical slots. Slot 0 is the accent every
+ * repo chart draws its series in; `kind_class()` in src/routes/html/mod.rs
+ * hashes an event kind into one of the other seven server-side and
  * assets/app.js repeats that hash for client-drawn markers, so a kind keeps the
- * same colour in a badge and on a chart.
+ * same colour in a badge and on a chart, and never the series colour.
  */
 
 /*
@@ -26,6 +27,24 @@
   --wp-space-6: 2rem;
   --wp-text-sm: 0.8125rem;
   --wp-text-xs: 0.75rem;
+  /*
+   * Section labels. Pico sets h2 at 1.75rem/700, 4px under the 2rem/700 h1,
+   * so a page title and its first section read as two titles. One step down
+   * and a lighter weight make the h2 a label for what follows.
+   */
+  --wp-text-h2: 1.25rem;
+  /* The gap between a page's top-level sections, and under its header. */
+  --wp-section-gap: var(--wp-space-6);
+  /*
+   * Headline figures: a KPI tile, a portfolio total, a dashboard card stat.
+   * One size pair and one digit style for all three, so a number looks the
+   * same wherever it appears. Tabular rather than proportional: these figures
+   * flip between periods in place (`data-period-value`), and equal-width
+   * digits keep a tile from changing width under the reader when they do.
+   */
+  --wp-text-figure: 1.5rem;
+  --wp-text-figure-sm: 1rem;
+  --wp-figure-numeric: tabular-nums;
   /* Larger than any element is tall, so a pill stays a pill at any height. */
   --wp-radius-pill: 999px;
 
@@ -52,12 +71,12 @@
    * protanopia/deuteranopia, and the primary series slots clear 3:1 against
    * the card surface.
    *
-   * The repo charts pin their series to the strong slots: stars = 0 (blue),
-   * views = 1 + 2 (orange/aqua), clones = 5 + 6 (green/violet),
-   * downloads = 7 (red), container pulls = 4 (magenta). Slot 3 (yellow) sits
-   * below 3:1 on white and is reached only through the event-kind hash, where
-   * the chip label and marker tip carry the identity; magenta is also shy of
-   * 3:1 in light mode, which the axis ticks and tooltip relieve.
+   * Every primary chart series wears one accent, `--wp-marker-0`, whatever it
+   * measures, and the secondary line (uniques) wears `--wp-chart-tick`; slot 0
+   * belongs to data, and the kind hash spreads event kinds over slots 1 to 7.
+   * Slot 3 (yellow) sits below 3:1 on white and magenta (4) is shy of it in
+   * light mode; as kind colours only, the chip label and the tooltip line
+   * carry the identity.
    */
   --wp-l-0: #2a78d6;
   --wp-l-1: #eb6834;
@@ -74,23 +93,46 @@
    * as a drawn chart box.
    */
   --wp-l-grid: #eff1f4;
+  /*
+   * Form-control borders. Pico's #cfd5e2 (light) and #2a3140 (dark) sit at
+   * about 1.4:1 against the page, so an unticked checkbox all but vanishes.
+   * These measure 3.3:1 on #fff and 3.2:1 on #13171f (WCAG 1.4.11).
+   */
+  --wp-l-control-border: #858fa1;
 
   /*
    * Dark: the same eight hues re-stepped for the dark card surface, not a
    * separate palette — tuned to the dark lightness band and 3:1 against
-   * `#181c25`.
+   * `#181c25`. Slot 5 has its own dark step (#3a9a3a, 4.8:1 on `#181c25`)
+   * instead of repeating the light green. Under the same simulated
+   * protanopia/deuteranopia the palette's worst adjacent pair does not involve
+   * slot 5, so the figures above still hold.
    */
   --wp-d-0: #3987e5;
   --wp-d-1: #d95926;
   --wp-d-2: #199e70;
   --wp-d-3: #c98500;
   --wp-d-4: #d55181;
-  --wp-d-5: #008300;
+  --wp-d-5: #3a9a3a;
   --wp-d-6: #9085e9;
   --wp-d-7: #e66767;
   --wp-d-flash: #4a4020;
   /* One step off the `#181c25` card surface, as above. */
   --wp-d-grid: #1f2430;
+  /*
+   * Hairline border for floating surfaces and tiles. Pico's card-border token
+   * is the card surface itself in dark, about 1.1:1 on the page, so a tip or a
+   * tile drawn with it has no edge at all. One step off the page, as the light
+   * scheme's `--pico-muted-border-color` is.
+   */
+  --wp-d-border: #2a3140;
+  /*
+   * Pico's dark muted ink, #7b8495, sits just under AA on the `#181c25` card
+   * surface, where the card footers, KPI labels and chart ticks use it.
+   * #8891a1 measures 5.4:1 there and 5.6:1 on the page.
+   */
+  --wp-d-muted: #8891a1;
+  --wp-d-control-border: #5d687e;
 
   /*
    * The slots that the rules below and app.js read. `getComputedStyle`
@@ -109,6 +151,33 @@
   --wp-flash-bg: var(--wp-l-flash);
   --wp-chart-grid: var(--wp-l-grid);
   --wp-chart-tick: var(--pico-muted-color, #6b7280);
+
+  /*
+   * The hairline the tips, the toast, the skip link and the KPI tiles are
+   * drawn with. The dark blocks below point it at `--wp-d-border`.
+   */
+  --wp-border: var(--pico-muted-border-color);
+
+  /*
+   * Delta text. Text needs 4.5:1, which the green and red marker slots do
+   * not reach in every scheme, so deltas read Pico's own ins/del text colours,
+   * the ones the success and error notices already use. Pico defines both per
+   * scheme on this same element, so these follow the theme without a dark
+   * remap of their own.
+   */
+  --wp-delta-up: var(--pico-ins-color);
+  --wp-delta-down: var(--pico-del-color);
+}
+
+/*
+ * Light-scheme overrides of Pico's own tokens. A plain `:root` rule loses to
+ * Pico's light theme block, `:root:not([data-theme=dark])`, which carries two
+ * selectors' weight to its one, so this repeats that selector. It sits before
+ * the dark blocks: in a dark OS both match the same element, and the dark one
+ * has to win.
+ */
+:root:not([data-theme="dark"]) {
+  --pico-form-element-border-color: var(--wp-l-control-border);
 }
 
 /*
@@ -119,6 +188,8 @@
  * toggle, if one is ever added) needs in order to force a scheme against the
  * OS. The `:not([data-theme=light])` guard is the other half of that: forcing
  * light has to survive a dark OS.
+ * `--pico-muted-color` is Pico's own token: these selectors match Pico's dark
+ * blocks at equal weight and come later, so the override wins in both.
  */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -132,6 +203,9 @@
     --wp-marker-7: var(--wp-d-7);
     --wp-flash-bg: var(--wp-d-flash);
     --wp-chart-grid: var(--wp-d-grid);
+    --wp-border: var(--wp-d-border);
+    --pico-muted-color: var(--wp-d-muted);
+    --pico-form-element-border-color: var(--wp-d-control-border);
   }
 }
 
@@ -146,20 +220,16 @@
   --wp-marker-7: var(--wp-d-7);
   --wp-flash-bg: var(--wp-d-flash);
   --wp-chart-grid: var(--wp-d-grid);
-}
-
-/*
- * Chart.js sizes its canvas to the parent, so the parent must have a height of
- * its own — a bare canvas in a flow container grows on every resize.
- */
-.chart-box {
-  position: relative;
-  height: 240px;
+  --wp-border: var(--wp-d-border);
+  --pico-muted-color: var(--wp-d-muted);
+  --pico-form-element-border-color: var(--wp-d-control-border);
 }
 
 /*
  * The repo page's single large chart panel — one metric at a time, switched
- * by the KPI tiles. Needs its own height for the reason `.chart-box` does.
+ * by the KPI tiles. Chart.js sizes its canvas to its container, so the
+ * container needs a height of its own; a bare canvas in a flow container
+ * grows on every resize.
  */
 .wp-hero-chart {
   position: relative;
@@ -172,12 +242,30 @@
   }
 }
 
-/* KPI tiles. The grid wraps like the card grid, one tile per metric. */
+/*
+ * KPI tiles. The grid wraps like the card grid, one tile per metric.
+ *
+ * The row is a `role="group"` for screenreaders, and Pico dresses that as a
+ * segmented button bar: a ring around the whole row on any click, squared
+ * inner corners and borders collapsed into seams. Tiles are separate cards,
+ * so the row opts out of all three, as the chip row does.
+ */
 .wp-kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
   gap: var(--wp-space-3);
   margin-bottom: var(--wp-space-4);
+  --pico-group-box-shadow-focus-with-button: none;
+  box-shadow: none;
+}
+
+/*
+ * (0,3,1), to beat Pico's `[role=group] [type=button]:not(:first-child)`
+ * margin collapse at (0,3,0) and its squared-corner rules at (0,2,0).
+ */
+.wp-kpis[role="group"] > button.wp-kpi {
+  margin-left: 0;
+  border-radius: var(--pico-border-radius, 0.25rem);
 }
 
 /*
@@ -193,7 +281,7 @@
   width: auto;
   margin: 0;
   padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: transparent;
   color: inherit;
@@ -203,7 +291,13 @@
   cursor: pointer;
 }
 
-.wp-kpi:is(:hover, :focus-visible) {
+/*
+ * Hover tints the border. Keyboard focus is a different state with its own
+ * cue, the shared outline ring further down, drawn outside the tile. The
+ * pressed tile already wears the primary border, so a focus that only changed
+ * the border was invisible on exactly the tile the page opens on.
+ */
+.wp-kpi:hover {
   border-color: var(--pico-primary, #2a78d6);
   background: transparent;
   color: inherit;
@@ -217,18 +311,55 @@
 }
 
 /*
- * Proportional figures, deliberately not the tables' `tabular-nums`: a big
- * standalone number set in equal-width digits reads loose, and a tile's value
- * aligns with nothing vertically.
+ * The headline figure. Size and digit style come from the shared figure
+ * tokens, so a tile's number looks like every other headline number. The
+ * digits are tabular because they flip between periods in place, and
+ * equal-width digits keep the tile from changing width under the reader.
  */
 .wp-kpi-value {
-  font-size: 1.4rem;
+  font-size: var(--wp-text-figure);
   line-height: 1.3;
-  font-variant-numeric: normal;
+  font-variant-numeric: var(--wp-figure-numeric);
 }
 
 .wp-kpi-delta {
   min-height: 1.2em;
+}
+
+/*
+ * The tile's last line: the delta, then what the figure covers ("in 30
+ * days", "since Feb 12"). It wraps rather than widening the tile. The space
+ * after the delta is the badge's own margin, not a flex `gap`: at All every
+ * badge is hidden, and a gap beside the empty delta would indent the caption.
+ */
+.wp-kpi-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  min-height: 1.2em;
+  font-size: var(--wp-text-sm);
+}
+
+.wp-kpi-foot .wp-delta {
+  margin-inline-end: var(--wp-space-1);
+}
+
+.wp-kpi-caption {
+  color: var(--pico-muted-color, #6b7280);
+}
+
+/*
+ * Two columns on a phone, with an odd last tile taking the whole row. Three
+ * tiles used to read as a pair plus an orphan with a hole beside it.
+ */
+@media (max-width: 40rem) {
+  .wp-kpis {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .wp-kpis > .wp-kpi:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
 }
 
 /*
@@ -243,39 +374,86 @@
 }
 
 /*
- * A single wide card, for a chart that is the whole section rather than one of
- * several. The 18rem track above would leave it sitting in a column with empty
- * space beside it on a desktop.
+ * A dashboard card: a flex column whose footer is pushed to the bottom, so
+ * footers line up along a grid row whatever a long name does to one header.
+ * A hairline instead of Pico's card shadow, whose 96px blur drew a grey halo
+ * round the whole grid in light mode. `position: relative` anchors the
+ * stretched link below; the margin is Pico's article margin, which the grid's
+ * gap already replaces.
  */
-.wp-cards-wide {
-  grid-template-columns: 1fr;
-}
-
-/* A full-width chart is the section, so it gets the hero height too. */
-.wp-cards-wide .chart-box {
-  height: 360px;
-}
-
-/* Pico gives articles a generous default margin, which a grid already spaces. */
 .wp-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   margin: 0;
+  border: 1px solid var(--wp-border);
+  box-shadow: none;
+}
+
+.wp-card:has(.wp-card-title a:hover) {
+  border-color: var(--pico-muted-color);
+}
+
+/* The title row never wraps, so the error glyph stays beside the name. */
+.wp-card > header {
+  flex-wrap: nowrap;
+  align-items: baseline;
+}
+
+.wp-card > footer {
+  margin-top: auto;
+}
+
+/* What sits above the footer keeps the gap the footer's own margin gave. */
+.wp-card > :is(.wp-stats, .wp-card-waiting) {
+  margin-bottom: var(--pico-block-spacing-vertical);
 }
 
 /*
  * A card's title is a heading for the document outline, not for Pico's heading
- * scale — left at its default the repo name (or a chart's) would be set larger
- * than the page's own `h1` block and dwarf what it labels. The row owns the
- * spacing, so the heading keeps none of its own.
+ * scale — left at its default the repo name would be set larger than the
+ * page's own `h1` block and dwarf what it labels. It takes the row's spare
+ * width from a zero basis and wraps anywhere, after the slash first, so a
+ * 60-character name stays inside its card and the glyph stays beside it.
  */
 .wp-card-title {
+  flex: 1 1 0;
+  min-width: 0;
   margin: 0;
   font-size: 1rem;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 /*
- * The sparkline canvas needs a height from its parent for the same reason
- * `.chart-box` does — Chart.js measures the container, not the canvas.
+ * The stretched link: the title link's box covers the whole card, so a click
+ * on the sparkline or the stats opens the repo, while the tab order keeps one
+ * link per card and a screenreader still hears the repo name as its text.
+ * The sparkline box is positioned too, so the overlay needs its own layer, and
+ * the error glyph a higher one so its tooltip still opens on hover and focus.
+ * A <time> goes above it as well: its title is the exact instant, which the
+ * overlay would otherwise swallow, at the cost of a click on the time itself
+ * not opening the repo.
+ */
+.wp-card-title a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.wp-card .wp-danger {
+  z-index: 2;
+}
+
+.wp-card time {
+  position: relative;
+  z-index: 2;
+}
+
+/*
+ * Chart.js sizes its canvas to its container, not the other way round, so the
+ * sparkline's container needs a height of its own.
  */
 .wp-spark {
   position: relative;
@@ -320,34 +498,26 @@
 }
 
 /*
- * Tabular figures so the four totals line up on their digits. Large enough to
- * be the section's headline number, not so large it competes with the h1.
+ * The four totals on the shared figure scale, in tabular digits so they line
+ * up on their units. The headline number of the section, smaller than the h1.
  */
 .wp-total-value {
-  font-size: 1.5rem;
-  font-variant-numeric: tabular-nums;
+  font-size: var(--wp-text-figure);
+  font-variant-numeric: var(--wp-figure-numeric);
   line-height: 1.2;
 }
 
 /*
- * The leaderboard's figures. Right-aligned and tabular so a column reads as a
- * ranking down its digits rather than as ragged words; the repo name keeps the
- * default alignment because it is the row's label, not one of its numbers.
- */
-.wp-leaders td:not(:first-child),
-.wp-leaders th:not(:first-child) {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/*
- * Recent-changes feed. One row per repo per day, each row a date, a repo link
- * and however many deltas moved that day. `flex-wrap` on the row rather than a
- * grid: the delta count varies from one to seven, and a grid would either
- * reserve seven columns of empty space or clip the seventh.
+ * Recent-changes feed, grouped by UTC day: a small muted day heading, then
+ * that day's rows, each a repo link with its deltas right after it. The deltas
+ * sit beside the name rather than pushed to the far edge, and the list is
+ * capped at 44rem, so a name and what moved stay in one eye span. Rows are
+ * set at the small step with no padding or rule between them, which halves
+ * the section (943px to about 520px on the stress data). `flex-wrap` on a
+ * row rather than a grid: a row carries one to seven deltas.
  */
 .wp-changes {
-  margin-bottom: var(--wp-space-5);
+  max-width: 44rem;
 }
 
 .wp-changes ul {
@@ -356,48 +526,193 @@
   list-style: none;
 }
 
+/* Pico's h3 scale and top margin would make each day a section of its own. */
+.wp-change-day {
+  margin: var(--wp-space-3) 0 var(--wp-space-1);
+  font-size: var(--wp-text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
 .wp-changes li {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--wp-space-1) var(--wp-space-3);
-  padding: var(--wp-space-2) 0;
-  /*
-   * Pico's own separator token, not `--wp-chart-grid`: the chart grid is tuned
-   * to sit one step off the card surface — too faint to divide list rows on
-   * the page background.
-   */
-  border-bottom: 1px solid var(--pico-muted-border-color, #e5e7eb);
-}
-
-.wp-changes li:last-child {
-  border-bottom: 0;
-}
-
-/*
- * The date column is fixed-width so the repo names line up down the list; it
- * still grows past the basis if a non-current year pushes it wider.
- */
-.wp-change-day {
-  flex: 0 0 auto;
-  min-width: 4.5rem;
+  gap: 0 var(--wp-space-3);
+  margin: 0;
+  padding: 0;
+  font-size: var(--wp-text-sm);
+  line-height: 1.5;
 }
 
 .wp-change-repo {
-  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .wp-change-deltas {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--wp-space-1) var(--wp-space-3);
+  gap: 0 var(--wp-space-3);
+}
+
+.wp-changes-more {
+  margin: var(--wp-space-3) 0 0;
+}
+
+/*
+ * On a phone a row is the name, then its deltas on the line under it, always
+ * at the same x. Wrapped flex put the deltas in one of three places depending
+ * on how long the name was.
+ */
+@media (max-width: 40rem) {
+  .wp-changes li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    padding-block: var(--wp-space-1);
+  }
+}
+
+/* Touch: rows 20px tall and touching would put two link targets under a finger. */
+@media (pointer: coarse) {
+  .wp-changes li {
+    padding-block: var(--wp-space-1);
+  }
+}
+
+/*
+ * Row labels. A repo name in the leaderboard, the feed or a card title is
+ * plainly a link from where it sits, and Pico's underline on every one made
+ * those lists a wall of underlines. The underline returns on hover and on
+ * keyboard focus, where the shared focus ring also draws.
+ */
+.wp-leaders td a,
+.wp-change-repo,
+.wp-card-title a {
+  text-decoration: none;
+}
+
+.wp-leaders td a:is(:hover, :focus-visible),
+.wp-change-repo:is(:hover, :focus-visible),
+.wp-card-title a:is(:hover, :focus-visible) {
+  text-decoration: underline;
+}
+
+/*
+ * Leaderboard. The figure columns come from `.wp-num-table`. A heading's
+ * scope ("· 30 days", "· total") is small and muted; on a wide screen it sits
+ * after the label, and below 64rem it drops under it, which is what lets all
+ * six columns fit at 768px. The separator is generated so the narrow layout
+ * can drop it; the real space before the span keeps the accessible name
+ * "Growth 30 days" in both layouts.
+ */
+.wp-th-scope {
+  font-size: var(--wp-text-sm);
+  font-weight: 400;
+}
+
+.wp-th-scope::before {
+  content: "· ";
+}
+
+@media (max-width: 64rem) {
+  .wp-th-scope {
+    display: block;
+  }
+
+  .wp-th-scope::before {
+    content: none;
+  }
+}
+
+/* A tablet fits all six columns once the cells give up some padding. */
+@media (max-width: 48rem) {
+  .wp-leaders :is(th, td) {
+    padding-inline: var(--wp-space-2);
+  }
+}
+
+/*
+ * On a phone six columns cannot fit, so the table scrolls inside its wrapper
+ * and the repo name stays pinned at the left while the figures slide under
+ * it. The `.wp-table-wrap` cells are transparent for the scroll cue; this
+ * cell takes the opaque page colour back, or the figures would show through
+ * it. `.wp-num-table`'s `overflow-wrap: anywhere` lets a name cell shrink to
+ * almost nothing, and inside a scrolling table the pinned cell then sat at
+ * its 9rem floor and split "anki_miner_android" mid-word. `break-word` keeps
+ * the escape hatch for a segment wider than the cell but leaves it out of
+ * the minimum width, so the cell grows to its longest segment and names
+ * break at the slash. A wider fixed floor was rejected: it guesses at name
+ * lengths and still splits the next longer one. The selector names both
+ * classes because the `.wp-num-table` rule sits later in the file at the same
+ * specificity and would otherwise win.
+ */
+@media (max-width: 40rem) {
+  .wp-leaders.wp-num-table :is(th, td):first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    min-width: 9rem;
+    overflow-wrap: break-word;
+    background-color: var(--pico-background-color);
+  }
+}
+
+/*
+ * A card for a repo nothing has been collected for yet: one muted line saying
+ * when the first numbers arrive, in place of a blank sparkline and dashes.
+ */
+.wp-card-waiting {
+  margin: 0;
+}
+
+/* The views change follows the views figure in the same cell, a step apart. */
+.wp-views-change {
+  margin-left: var(--wp-space-2);
+}
+
+/*
+ * A failed sync's category on the leaderboard glyph. The glyph opens to the
+ * right, over the figures (`leader_error_glyph`), but Pico draws a tooltip as
+ * one unbroken line, and a stored category runs to a hundred characters,
+ * wider than a phone's table. `max-content` keeps a short one on one line;
+ * past the cap it wraps instead of being cut at the scrolling wrapper's edge.
+ */
+.wp-leaders [data-tooltip]::before {
+  width: max-content;
+  max-width: min(18rem, 50vw);
+  white-space: normal;
+}
+
+/*
+ * On a phone every name cell is pinned at `z-index: 1`, so the next row's
+ * cell painted over the lower lines of an open tooltip. The cell holding it
+ * steps above its neighbours while hovered or focused.
+ */
+@media (max-width: 40rem) {
+  .wp-leaders.wp-num-table td:first-child:is(:hover, :focus-within) {
+    z-index: 2;
+  }
+}
+
+/* The card's figures, on the shared figure scale in tabular digits. */
+.wp-stats strong {
+  font-size: var(--wp-text-figure-sm);
+  font-variant-numeric: var(--wp-figure-numeric);
+}
+
+/* The sparkline's caption sits tight under the line it describes. */
+.wp-card-caption {
+  margin: calc(var(--wp-space-2) * -1) 0 var(--wp-space-3);
 }
 
 /*
  * Direction is carried by the sign character first and the colour second, so
  * the row still reads on a monochrome screen and for a reader who cannot
- * separate the two hues. Slots 5 and 7 are the palette's green and red, both
- * already validated at 3:1 against the page surface in either scheme.
+ * separate the two hues. The colour is on text, so it has to reach 4.5:1, not
+ * the 3:1 that is enough for a chart mark. The green and red marker slots do
+ * not reach it in every scheme; `--wp-delta-*` (Pico's ins/del text colours)
+ * measure at least 5.6:1 on the page and on a card in either scheme.
  */
 .wp-delta {
   font-size: var(--wp-text-sm);
@@ -406,15 +721,17 @@
 }
 
 .wp-delta-up {
-  color: var(--wp-marker-5);
+  color: var(--wp-delta-up);
 }
 
 .wp-delta-down {
-  color: var(--wp-marker-7);
+  color: var(--wp-delta-down);
 }
 
-/* Kind slots: set the colour, let `.wp-chip` and friends read it. */
-.wp-kind-0 { --wp-kind-color: var(--wp-marker-0); }
+/*
+ * Kind slots: set the colour, let `.wp-chip` and friends read it. There is no
+ * `.wp-kind-0`; slot 0 is the series accent and the kind hash never returns it.
+ */
 .wp-kind-1 { --wp-kind-color: var(--wp-marker-1); }
 .wp-kind-2 { --wp-kind-color: var(--wp-marker-2); }
 .wp-kind-3 { --wp-kind-color: var(--wp-marker-3); }
@@ -484,15 +801,11 @@
  * Pico treats a `role="group"` as one composite widget: focus anywhere inside
  * draws the focus ring around the whole (full-width) group and suppresses the
  * child button's own ring. For a row of independent pill toggles that reads as
- * a page-wide bar lighting up, so the group ring moves back onto the focused
- * chip itself.
+ * a page-wide bar lighting up, so the group ring is switched off. The focused
+ * chip wears the shared focus outline (the ring rule after the skip link).
  */
 .wp-row[role="group"] {
   box-shadow: none;
-}
-
-[role="group"] > .wp-chip:focus {
-  box-shadow: 0 0 0 var(--pico-outline-width, 0.125rem) var(--pico-primary-focus);
 }
 
 /* Pressed state for the kind filter toggles (`toggleKind()`): a tint of the
@@ -501,6 +814,22 @@
   background: color-mix(in srgb, var(--wp-kind-color, var(--pico-muted-border-color)) 16%, transparent);
   border-color: var(--wp-kind-color, var(--pico-muted-border-color));
   color: inherit;
+}
+
+/*
+ * A chip switched off. A paler tint is a difference of colour alone (WCAG
+ * 1.4.1), and in dark mode barely one. So the dot empties to a ring, the
+ * label drops to muted ink and the border to the neutral hairline. A chip that
+ * is on keeps its filled dot and tint.
+ */
+.wp-chip[aria-pressed="false"] {
+  border-color: var(--wp-border);
+  color: var(--pico-muted-color, #6b7280);
+}
+
+.wp-chip[aria-pressed="false"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--wp-kind-color, var(--pico-muted-color, #6b7280));
 }
 
 /*
@@ -516,29 +845,10 @@
   to { background-color: transparent; }
 }
 
-/* Floating tip shown next to a hovered chart marker; positioned by app.js. */
-#marker-tip {
-  display: none;
-  position: absolute;
-  z-index: 10;
-  max-width: 22rem;
-  padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
-  border-radius: var(--pico-border-radius, 0.25rem);
-  background: var(--pico-card-background-color, #fff);
-  box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
-  font-size: 0.85rem;
-  pointer-events: none;
-}
-
-#marker-tip.wp-visible {
-  display: block;
-}
-
 /*
- * The chart tooltip — the HTML replacement for Chart.js's canvas-drawn one
- * (`externalTooltip` in app.js). Same face as the marker tip; the shared
- * rule keeps the two indistinguishable at a glance.
+ * The chart tooltip (`externalTooltip` in app.js), the HTML replacement for
+ * Chart.js's canvas-drawn one. It carries a column's figures and, under them,
+ * the column's events; app.js positions it.
  */
 #chart-tip {
   display: none;
@@ -546,16 +856,54 @@
   z-index: 10;
   max-width: 22rem;
   padding: var(--wp-space-2) var(--wp-space-3);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
-  font-size: 0.85rem;
+  font-size: var(--wp-text-sm);
   pointer-events: none;
 }
 
 #chart-tip.wp-visible {
   display: block;
+}
+
+/*
+ * A column's events, under its figures in the chart tooltip: a hairline, then
+ * one line per event (`eventLine` in app.js), with the kind chip before the
+ * title. The chip is a label here, not a button, so it opts out of the touch
+ * height the coarse-pointer block gives chips; the higher weight wins over
+ * that block although it comes later.
+ */
+.wp-tip-sep {
+  margin-block: var(--wp-space-2);
+  border-top: 1px solid var(--wp-border);
+}
+
+.wp-tip-event {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wp-space-2);
+}
+
+.wp-tip-event + .wp-tip-event {
+  margin-top: var(--wp-space-1);
+}
+
+.wp-tip-event > .wp-chip {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/* The date leading a wider bucket's line; only the title may wrap. */
+.wp-tip-event > .wp-small {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.wp-tip-event-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .wp-tip-title {
@@ -585,24 +933,45 @@
 }
 
 /*
- * The kind chip inside a tip, beside the date. `.wp-chip` zeroes its own
- * margins, so the gap is put back here rather than from JavaScript — the rule
- * has to sit after `.wp-chip` to win, both being a single class.
- */
-.wp-tip-kind {
-  margin-left: var(--wp-space-2);
-}
-
-/*
- * Per-row edit/delete controls. Pico sizes buttons for forms, which makes a
- * pair of them in a table cell as tall as the row they belong to; these stay
- * out of the way until they are wanted.
+ * Per-row edit and delete controls: quiet ghost buttons. Pico fills every
+ * button in the primary colour, which put two saturated blocks on every event
+ * row, the loudest ink on the page and louder than the titles they act on.
+ * These are transparent with a hairline, in body ink, and take the primary
+ * colour only on hover and keyboard focus. Delete keeps the danger ink at
+ * rest, so the destructive one never looks like Edit. The edit row's Save
+ * keeps Pico's fill, being the one action on the row that commits.
  */
 .wp-action {
   width: auto;
   margin: 0 var(--wp-space-1) 0 0;
   padding: 0.15rem 0.6rem;
-  font-size: 0.8rem;
+  border-color: var(--wp-border);
+  background-color: transparent;
+  color: inherit;
+  font-size: var(--wp-text-sm);
+}
+
+.wp-action:is(:hover, :focus-visible) {
+  border-color: var(--pico-primary);
+  background-color: transparent;
+  color: inherit;
+}
+
+.wp-action-danger,
+.wp-action-danger:is(:hover, :focus-visible) {
+  color: var(--pico-del-color);
+}
+
+.wp-action-danger:is(:hover, :focus-visible) {
+  border-color: var(--pico-del-color);
+}
+
+/* Pico's own button variables, which its hover and focus rules restyle. */
+.wp-action-primary,
+.wp-action-primary:is(:hover, :focus-visible) {
+  border-color: var(--pico-border-color);
+  background-color: var(--pico-background-color);
+  color: var(--pico-color);
 }
 
 /*
@@ -640,6 +1009,438 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * Repo page: traffic sources. The two tables sit side by side once there is
+ * room for both, so a referrer and the page it led to read as a pair instead
+ * of two page-width lists, each count next to its label. `minmax(0, 1fr)`
+ * lets a long path wrap inside its column rather than widen the grid. Below
+ * 64rem they stack.
+ */
+.wp-split {
+  display: grid;
+  gap: var(--wp-space-4) var(--wp-space-6);
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .wp-split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+/* Ten rows of each table is the reading unit; Pico pads a row for one. */
+.wp-split .wp-num-table :is(th, td) {
+  padding-block: var(--wp-space-1);
+}
+
+/* One sentence under a section heading, saying what the section covers. */
+.wp-section-note {
+  margin-top: calc(var(--wp-space-2) * -1);
+}
+
+/*
+ * Row disclosure. The server renders every row and marks the ones past the
+ * cut; app.js puts `wp-collapsed` on the table, so with JavaScript off
+ * nothing is hidden. A class rather than `hidden` on the rows, because the
+ * events table's `row.hidden` belongs to the kind filter.
+ */
+.wp-collapsed .wp-more-row {
+  display: none;
+}
+
+/* Pico rules a heavy line above a footer; the toggle row is not a total. */
+.wp-more-foot td {
+  padding-block: var(--wp-space-2) 0;
+  border-top: 0;
+}
+
+.wp-more-toggle {
+  width: auto;
+  margin: 0;
+  padding: var(--wp-space-1) var(--wp-space-3);
+  font-size: var(--wp-text-sm);
+}
+
+/*
+ * The events table: Date, Kind, Event, Actions. Date, Kind and Actions shrink
+ * to their content and never wrap. A date broken at its hyphen, and Edit
+ * stacked over Delete, each doubled a row's height. The Event column takes
+ * the rest and is the one that wraps, anywhere, so a long title or a pasted
+ * URL cannot widen the table.
+ *
+ * Only from 40rem up. On a phone the three unbreakable columns alone fill the
+ * width, and `anywhere` let the title column give way to about 45px, so titles
+ * broke every few letters and rows grew several times taller. Below 40rem
+ * the table keeps the browser's own sizing, readable titles in a sideways
+ * scroll, until the phone grid further down replaces it.
+ */
+@media (min-width: 40rem) {
+  table.wp-events :is(thead, tbody) :is(th, td):is(:nth-child(1), :nth-child(2), :nth-child(4)) {
+    width: 1%;
+    white-space: nowrap;
+  }
+
+  table.wp-events td:nth-child(3) {
+    overflow-wrap: anywhere;
+  }
+}
+
+/*
+ * A note under its event's title. Pico dresses a `<details>` as an accordion,
+ * with a page-spacing margin and a chevron floated to the cell's far edge.
+ * Here it is a small muted toggle on its own line. `:not([role])` matches
+ * Pico's summary colour rule, whose weight this has to beat.
+ */
+.wp-notes {
+  margin: 0;
+}
+
+.wp-notes > summary:not([role]) {
+  display: inline-block;
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+  line-height: 1.5;
+}
+
+.wp-notes > summary::after {
+  display: none;
+}
+
+.wp-notes[open] > summary {
+  margin-bottom: var(--wp-space-1);
+}
+
+.wp-notes > :last-child {
+  margin-bottom: 0;
+}
+
+/*
+ * The events table on a phone. Four columns of nowrap content are about
+ * 570px wide, so Edit and Delete sat off-screen behind a sideways scroll.
+ * Below 40rem each row is a small grid instead. Date, kind and the actions
+ * share the first line; the title, with its notes, runs under them; a
+ * hairline separates rows. The header row names columns that no longer line
+ * up, so it leaves the screen but stays in the accessibility tree. The edit
+ * row uses the same grid: date and kind side by side, then title, link and
+ * notes full width, then Save and Cancel. DOM order is unchanged, so
+ * `hx-include="closest tr"` and the kind filter's `row.hidden` work as
+ * before, and `.wp-collapsed .wp-more-row` (two classes) still outranks
+ * `display: grid` here.
+ */
+@media (max-width: 40rem) {
+  table.wp-events,
+  table.wp-events > tbody,
+  table.wp-events > tfoot,
+  table.wp-events > tfoot > tr,
+  table.wp-events > tfoot > tr > td {
+    display: block;
+  }
+
+  table.wp-events > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  table.wp-events > tbody > tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "date kind actions"
+      "event event event";
+    align-items: center;
+    gap: var(--wp-space-1) var(--wp-space-2);
+    padding-block: var(--wp-space-2);
+    border-bottom: 1px solid var(--wp-border);
+  }
+
+  /* `:nth-child(n)` lifts this over the desktop column rule's `width: 1%`. */
+  table.wp-events > tbody > tr > td:nth-child(n) {
+    display: block;
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(1) {
+    grid-area: date;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(2) {
+    grid-area: kind;
+  }
+
+  /*
+   * The kind cell is the flexible track between the date and the actions,
+   * and a chip never wraps, so a long kind (up to forty characters) ran under
+   * Edit. Here the chip stops at its cell's edge with an ellipsis; its title
+   * (`event_row`) and the filter chips above the table still spell every kind
+   * in full. Wrapping inside the pill was rejected: a two-line pill reads as
+   * a blob, not a label. `inline-block` because an ellipsis needs a block
+   * container, which the chip's own `inline-flex` is not.
+   */
+  table.wp-events > tbody > tr > td:nth-child(2) > .wp-chip {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(2) > .wp-chip::before {
+    display: inline-block;
+    margin-right: 0.3rem;
+    vertical-align: 0.05em;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(3) {
+    grid-area: event;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(4) {
+    grid-area: actions;
+    justify-self: end;
+  }
+
+  table.wp-events > tbody > tr.wp-edit-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "date kind"
+      "event event"
+      "actions actions";
+    align-items: start;
+  }
+
+  table.wp-events > tbody > tr.wp-edit-row :is([name="date"], [name="kind"]) {
+    width: 100%;
+  }
+}
+
+/*
+ * The events section's toolbar: the kind chips on the left and the add
+ * button on the same line. The chip row is a `role="group"`, which Pico
+ * stretches to the full width; here it takes the space left over.
+ */
+.wp-events-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wp-space-2) var(--wp-space-4);
+  margin-block-end: var(--wp-space-4);
+}
+
+.wp-events-bar > [role="group"] {
+  flex: 1 1 16rem;
+  width: auto;
+  margin-bottom: 0;
+}
+
+/*
+ * "+ Add event": a compact secondary button rather than Pico's accordion row,
+ * whose label sat at the far left with its chevron 1200px away. Opened, it
+ * takes the whole line below the chips.
+ */
+.wp-add-event {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.wp-add-event[open] {
+  flex-basis: 100%;
+}
+
+/* `inline-block`, not `inline-flex`: as a flex item the "+ " span drops its
+ * trailing space and the label reads "+Add event". */
+.wp-add-event > summary:not([role]) {
+  display: inline-block;
+  padding: var(--wp-space-1) var(--wp-space-3);
+  border: 1px solid var(--wp-border);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  color: inherit;
+  font-size: var(--wp-text-sm);
+  line-height: 1.5;
+}
+
+.wp-add-event > summary:not([role]):hover {
+  border-color: var(--pico-primary);
+}
+
+.wp-add-event > summary::after {
+  display: none;
+}
+
+.wp-add-event[open] > summary {
+  margin-bottom: var(--wp-space-3);
+}
+
+/*
+ * The add form: Date, Title and Kind on one line, then Link, Notes and the
+ * submit button full width; one column on a phone. Controls are compact by
+ * the same Pico variable overrides the edit row uses. Inputs drop Pico's
+ * fixed height, which assumes 1rem text, so at `--wp-text-sm` they come out
+ * the height of the toolbar buttons.
+ */
+.wp-event-form {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-2);
+  --pico-spacing: var(--wp-space-2);
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr) 10rem;
+  gap: var(--wp-space-1) var(--wp-space-3);
+  align-items: start;
+}
+
+.wp-event-wide {
+  grid-column: 1 / -1;
+}
+
+.wp-event-form label {
+  margin-bottom: var(--wp-space-1);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-event-form :is(input, textarea) {
+  height: auto;
+  font-size: var(--wp-text-sm);
+}
+
+@media (max-width: 40rem) {
+  .wp-event-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/*
+ * The crumb above a repo's title: where the page sits, and the way up. Small
+ * and muted so the title still leads. Pico lays every `nav` out as a
+ * space-between flex row, which a single link does not want.
+ */
+.wp-crumb {
+  display: block;
+  margin-block-end: var(--wp-space-1);
+  color: var(--pico-muted-color, #6b7280);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-crumb a {
+  color: inherit;
+}
+
+/* The sync-failure glyph beside a title, at text size rather than heading size. */
+.wp-title-glyph {
+  font-size: 0.5em;
+  vertical-align: middle;
+}
+
+/*
+ * Previous, switcher, next. Pico's form spacing variables bring the
+ * switcher's summary to the toolbar's box, as `.wp-field-inline` does for the
+ * period select. The group, not the `<details>`, is the menu's containing
+ * block. Anchored to the group's left edge the menu stays on screen when the
+ * actions wrap under the title on a phone; hung from the summary it ran off
+ * the right edge.
+ */
+.wp-repo-nav {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-3);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--wp-space-3);
+  font-size: var(--wp-text-sm);
+}
+
+.wp-repo-nav details.dropdown {
+  position: static;
+  margin: 0;
+}
+
+.wp-repo-nav details.dropdown > summary {
+  height: auto;
+  line-height: 1.5;
+}
+
+/*
+ * The menu: as wide as its longest name up to a phone's width, past which
+ * names wrap; past about a screen of repos it scrolls instead of running
+ * down the page.
+ */
+.wp-repo-nav details.dropdown > summary + ul {
+  right: auto;
+  left: 0;
+  width: max-content;
+  max-width: min(28rem, calc(100vw - 2 * var(--wp-space-4)));
+  max-height: 60vh;
+  overflow-y: auto;
+  white-space: normal;
+}
+
+.wp-repo-nav details.dropdown > summary + ul a {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The header's small-text links are still finger targets on a phone: on a
+ * coarse pointer, block padding lifts them to 24px tall without changing the
+ * text size the muted row wants. A mouse keeps them as drawn, as with the
+ * shared touch-target block further down, which already grows `.wp-export a`.
+ */
+@media (pointer: coarse) {
+  .wp-crumb a,
+  .wp-repo-nav > a {
+    display: inline-block;
+    padding-block: var(--wp-space-1);
+  }
+}
+
+/* The impact line under an event's title: tabular digits, a hair below the title. */
+.wp-impact {
+  margin-top: 0.125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Share bars: a faint bar behind a traffic-source name, as long as its count
+ * is against the largest shown, so the shape of the list (two sources, then a
+ * long tail) reads without reading every number. The length is a
+ * server-rendered class in 5% steps: the CSP allows no `style` attribute,
+ * and a class survives a sort swap and needs no JavaScript. The fill is a
+ * tint of the first palette slot, which both dark blocks remap, so it follows
+ * the scheme without a token of its own there. It is decoration only; the
+ * number in the next cell stays the value.
+ */
+.wp-bar-cell {
+  --wp-bar-fill: color-mix(in srgb, var(--wp-marker-0) 12%, transparent);
+  background-image: linear-gradient(to right, var(--wp-bar-fill) var(--wp-share, 0%), transparent 0);
+}
+
+.wp-share-0 { --wp-share: 0%; }
+.wp-share-1 { --wp-share: 5%; }
+.wp-share-2 { --wp-share: 10%; }
+.wp-share-3 { --wp-share: 15%; }
+.wp-share-4 { --wp-share: 20%; }
+.wp-share-5 { --wp-share: 25%; }
+.wp-share-6 { --wp-share: 30%; }
+.wp-share-7 { --wp-share: 35%; }
+.wp-share-8 { --wp-share: 40%; }
+.wp-share-9 { --wp-share: 45%; }
+.wp-share-10 { --wp-share: 50%; }
+.wp-share-11 { --wp-share: 55%; }
+.wp-share-12 { --wp-share: 60%; }
+.wp-share-13 { --wp-share: 65%; }
+.wp-share-14 { --wp-share: 70%; }
+.wp-share-15 { --wp-share: 75%; }
+.wp-share-16 { --wp-share: 80%; }
+.wp-share-17 { --wp-share: 85%; }
+.wp-share-18 { --wp-share: 90%; }
+.wp-share-19 { --wp-share: 95%; }
+.wp-share-20 { --wp-share: 100%; }
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab
@@ -651,7 +1452,7 @@ tr.wp-edit-row [name="kind"] {
   top: var(--wp-space-2);
   left: var(--wp-space-2);
   padding: var(--wp-space-2) var(--wp-space-4);
-  border: 1px solid var(--pico-primary, #2f6fd0);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   text-decoration: none;
@@ -660,6 +1461,65 @@ tr.wp-edit-row [name="kind"] {
 
 .wp-skip:focus {
   transform: none;
+}
+
+/*
+ * The focus ring: one rule for every focusable control. Pico draws focus as a
+ * box-shadow in `--pico-primary-focus`, a translucent tint that measures about
+ * 1.8:1 against the page and merges into a primary-filled button. An outline
+ * in the opaque primary, offset from the control, shows in both schemes and on
+ * any fill, and never changes the element's size. Pico's ring is switched off
+ * here so the two do not stack. It still shows on a mouse click, where
+ * `:focus-visible` does not match, which is why `--pico-primary-focus` is left
+ * translucent rather than made opaque.
+ *
+ * `:is()` weighs as its most specific argument, `[tabindex]:not(...)` at
+ * (0,2,0), for every element it matches. With `:root` and `:focus-visible`
+ * that puts this at (0,4,0), above every Pico focus rule, the dropdown
+ * summary's `outline: 0` at (0,3,2) included. `[tabindex="-1"]` is left out:
+ * those are containers that focus is parked on after a swap, not controls.
+ */
+:root :is(a, button, input, select, textarea, summary, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/*
+ * The nav. Pico marks `aria-current` only by switching to its hover shade of
+ * link blue, about 1.25:1 against the other links: a difference of colour
+ * alone. The current entry takes body ink, a heavier weight and an accent
+ * underline, so it reads at a glance in both schemes. `[aria-current]` rather
+ * than `="page"`, so the section-level `"true"` a repo page sets matches too.
+ * (0,2,3), above Pico's `nav li :where(a):not(:hover)` underline reset.
+ */
+body > nav a[aria-current]:not([aria-current="false"]) {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--pico-primary);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.35em;
+}
+
+/* The brand is a name, not one more link in the row. */
+.wp-brand {
+  color: inherit;
+}
+
+/*
+ * Below 40rem the two lists may wrap, so the links drop under the brand
+ * instead of running off a 320px screen. The spacing goes down through Pico's
+ * own token rather than a padding override: the same token sets the lists'
+ * compensating negative margins, and the two have to move together or the
+ * last link's edge drifts off the container's.
+ */
+@media (max-width: 40rem) {
+  body > nav {
+    --pico-nav-element-spacing-horizontal: 0.3rem;
+    flex-wrap: wrap;
+    row-gap: var(--wp-space-1);
+  }
 }
 
 /*
@@ -692,12 +1552,33 @@ tr.wp-edit-row [name="kind"] {
   justify-content: space-between;
   gap: var(--wp-space-4);
   flex-wrap: wrap;
-  margin-block-end: var(--wp-space-5);
+  margin-block-end: var(--wp-section-gap);
 }
 
-/* Pico's hgroup margin would push the actions off the title's baseline. */
+/*
+ * Pico's hgroup margin would push the actions off the title's baseline. The
+ * hgroup is a flex item, so without `min-width: 0` it cannot shrink below its
+ * longest word and a long repo name widens the page instead of wrapping.
+ */
 .wp-page-header hgroup {
+  min-width: 0;
+  max-width: 100%;
   margin-bottom: 0;
+}
+
+/*
+ * The last resort after `slash_breaks`' break after the owner: a name with no
+ * slash, or a repo part longer than the screen, still breaks rather than
+ * overflowing.
+ */
+.wp-page-header h1 {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 40rem) {
+  .wp-page-header h1 {
+    font-size: 1.75rem;
+  }
 }
 
 /*
@@ -745,11 +1626,32 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * Section rhythm. Pico's `section` margin is one `--pico-spacing`, so a chart's
+ * axis ran into the next heading 16px below; every top-level section ends on
+ * the same gap as the page header. `main` scopes the h2 size so the confirm
+ * dialog's own heading keeps Pico's.
+ */
+main > section {
+  margin-block-end: var(--wp-section-gap);
+}
+
+main h2 {
+  font-size: var(--wp-text-h2);
+  font-weight: 600;
+}
+
+/*
  * A label and its control on one line. Pico stretches a `<select>` to its
  * container's width and gives it a form-layout bottom margin, both of which
  * turn a one-control row into a full-width bar with a gap hanging under it.
+ * It also sizes the select for a page-width form, 50px tall beside a heading.
+ * Overriding Pico's own spacing variables, as the edit row does, brings it to
+ * the toolbar buttons' box: the same padding, `--wp-text-sm` and border, so the
+ * two are the same height.
  */
 .wp-field-inline {
+  --pico-form-element-spacing-vertical: var(--wp-space-1);
+  --pico-form-element-spacing-horizontal: var(--wp-space-3);
   display: flex;
   align-items: center;
   gap: var(--wp-space-2);
@@ -759,6 +1661,7 @@ tr.wp-edit-row [name="kind"] {
 .wp-field-inline > select {
   width: auto;
   margin-bottom: 0;
+  font-size: var(--wp-text-sm);
 }
 
 /* Trailing alignment, for dialog footers and anything else read right-to-left. */
@@ -820,10 +1723,99 @@ tr.wp-edit-row [name="kind"] {
   font-size: var(--wp-text-sm);
 }
 
+/*
+ * The table wrapper. It is the containing block for anything absolutely
+ * positioned inside it: the visually hidden labels of an edit row, which
+ * otherwise resolve against the page and widen it (scrollWidth 551 at 390px
+ * after pressing Edit). As the containing block, the scroller clips them.
+ *
+ * The background is a scroll-edge cue with no script. Two covers in the page
+ * colour scroll with the content (`local`), and two soft shades stay on the
+ * wrapper's edges (`scroll`). At rest a cover hides the shade; once a column
+ * is cut off, its side's cover has scrolled away and the shade shows. The
+ * shade is a tint of the ink, so it follows the scheme with no dark remap.
+ */
+.wp-table-wrap {
+  --wp-scroll-shade: color-mix(in srgb, var(--pico-color) 22%, transparent);
+  position: relative;
+  background-image:
+    linear-gradient(to right, var(--pico-background-color) 30%, transparent),
+    linear-gradient(to left, var(--pico-background-color) 30%, transparent),
+    radial-gradient(farthest-side at 0 50%, var(--wp-scroll-shade), transparent),
+    radial-gradient(farthest-side at 100% 50%, var(--wp-scroll-shade), transparent);
+  background-position: left center, right center, left center, right center;
+  background-size: 2.5rem 100%, 2.5rem 100%, 0.75rem 100%, 0.75rem 100%;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/*
+ * Pico paints every cell in the page colour, which would cover the cue above.
+ * Transparent cells look the same on the page and let the wrapper's background
+ * (and a `tr`'s `.wp-flash` highlight) show through.
+ */
+.wp-table-wrap > table :is(th, td) {
+  background-color: transparent;
+}
+
 /* The wrapper already scrolls (Pico's `.overflow-auto`); the table inside it
  * keeps its own bottom margin, which would stack with the wrapper's. */
 .wp-table-wrap > table {
   margin-bottom: 0;
+}
+
+/*
+ * The one numeric-table style: the leaderboard and the traffic-source tables.
+ * The first column is the row's label and takes the spare width, wrapping
+ * anywhere so a 90-character path stays inside it. Every other column is a
+ * figure, right-aligned in tabular digits so a column reads as a ranking down
+ * its units digit. `width: 1%` plus `nowrap` shrinks those columns to their
+ * widest number.
+ */
+.wp-num-table :is(th, td):not(:first-child) {
+  width: 1%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wp-num-table :is(th, td):first-child {
+  overflow-wrap: anywhere;
+}
+
+/* A caption is the table's sub-heading: above it, flush left, small. */
+.wp-num-table caption {
+  caption-side: top;
+  padding: 0 0 var(--wp-space-2);
+  font-size: var(--wp-text-sm);
+  font-weight: 600;
+  text-align: left;
+}
+
+.wp-num-table caption > :is(h2, h3, h4) {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+/*
+ * Sort links read as the column's label, not as blue body links. The
+ * chevron already says the column sorts; the underline comes back on hover
+ * and keyboard focus.
+ */
+.wp-num-table th a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.wp-num-table th a:is(:hover, :focus-visible) {
+  text-decoration: underline;
+}
+
+@media (max-width: 40rem) {
+  .wp-num-table :is(th, td) {
+    padding-inline: var(--wp-space-2);
+  }
 }
 
 /*
@@ -887,7 +1879,7 @@ tr.wp-edit-row [name="kind"] {
   gap: var(--wp-space-3);
   max-width: 28rem;
   padding: var(--wp-space-3) var(--wp-space-4);
-  border: 1px solid var(--pico-card-border-color, #d0d5dd);
+  border: 1px solid var(--wp-border);
   border-radius: var(--pico-border-radius, 0.25rem);
   background: var(--pico-card-background-color, #fff);
   box-shadow: var(--pico-card-box-shadow, 0 2px 8px rgb(0 0 0 / 0.15));
@@ -927,6 +1919,16 @@ tr.wp-edit-row [name="kind"] {
   line-height: 1;
 }
 
+/*
+ * The toast pins to the right; on a phone a two-line message reached the left
+ * edge with no gutter, so both sides get the same inset.
+ */
+@media (max-width: 40rem) {
+  .wp-toast {
+    left: var(--wp-space-4);
+  }
+}
+
 @keyframes wp-toast-in {
   from { opacity: 0; transform: translateY(var(--wp-space-2)); }
   to { opacity: 1; transform: none; }
@@ -941,6 +1943,116 @@ tr.wp-edit-row [name="kind"] {
   max-width: 26rem;
 }
 
+/*
+ * A destructive confirm (`data-confirm-danger` on the trigger): the OK button
+ * takes Pico's del colour, so the irreversible choice looks like one. The ink
+ * is Pico's contrast-inverse: white on the light scheme's deep red (7.8:1),
+ * black on the dark scheme's lighter one (6.9:1). The id keeps it above
+ * Pico's hover and focus recolouring, so it stays red while pressed.
+ */
+#wp-confirm .wp-confirm-danger {
+  --pico-background-color: var(--pico-del-color);
+  --pico-border-color: var(--pico-del-color);
+  --pico-color: var(--pico-contrast-inverse);
+}
+
+/*
+ * Settings and setup pages.
+ *
+ * Every rule that only these two pages use lives in this block, so the pages'
+ * look has one place to change.
+ */
+
+/*
+ * The repo picker. The checkbox and Last synced columns shrink to their
+ * content (`width: 1%` with `nowrap`), and the name column takes the rest and
+ * wraps anywhere, so a long name breaks inside its cell instead of pushing
+ * Last synced past a phone's edge. `anywhere` rather than `break-word`,
+ * because only `anywhere` lowers a cell's min-content width, which is what a
+ * table sizes its columns by.
+ */
+.wp-picker :is(th, td):first-child,
+.wp-picker :is(th, td):nth-child(3) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.wp-picker :is(th, td):nth-child(2) {
+  overflow-wrap: anywhere;
+}
+
+/* Pico spaces a checkbox for a label beside it; here the cell pads it. */
+.wp-picker input[type="checkbox"] {
+  margin: 0;
+}
+
+/*
+ * Pico makes a label a block with a bottom margin, which put the error glyph
+ * and the fork/archived marks on a line of their own under the name and added
+ * that margin to every row. Inline, they follow the name.
+ */
+.wp-picker label {
+  display: inline;
+  margin: 0;
+}
+
+/* At phone width Pico's 1rem cell inset alone is a quarter of the table. */
+@media (max-width: 40rem) {
+  .wp-picker :is(th, td) {
+    padding-inline: var(--wp-space-2);
+  }
+}
+
+/*
+ * A muted mark after a repo name ("fork", "archived"): what kind of repo this
+ * is, set apart from the name without competing with it.
+ */
+.wp-tag {
+  display: inline-block;
+  padding: 0 var(--wp-space-1);
+  border: 1px solid var(--wp-border);
+  border-radius: var(--pico-border-radius, 0.25rem);
+  color: var(--pico-muted-color);
+  font-size: var(--wp-text-sm);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* The untracked repos' disclosure: a quiet sub-heading that opens. */
+.wp-picker-more {
+  margin-block: var(--wp-space-4);
+}
+
+.wp-picker-more > summary {
+  color: var(--pico-muted-color);
+}
+
+/*
+ * One reading column for the settings and setup pages. Pico sizes every form
+ * control to its container, so at 1440px a three-option select ran 1200px
+ * wide, and the notices, the picker and the fields read as a stack of
+ * full-width bars. 48rem keeps a label, its control and its Save button within
+ * one glance; a phone is narrower than that, so nothing changes there.
+ */
+.wp-narrow {
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+/*
+ * The shared section rhythm is set on `main > section`. Inside the column the
+ * sections sit one level down, so the column repeats it.
+ */
+.wp-narrow > section {
+  margin-block-end: var(--wp-section-gap);
+}
+
+/* A start page or an interval needs about twenty characters, not a column. */
+.wp-narrow select,
+.wp-narrow input:not([type="checkbox"], [type="radio"]) {
+  max-width: 22rem;
+}
+
 /* Layout utilities — enough for a row of controls, not a grid system. */
 .wp-row {
   display: flex;
@@ -953,7 +2065,48 @@ tr.wp-edit-row [name="kind"] {
 .wp-grow { flex: 1 1 auto; }
 .wp-muted { color: var(--pico-muted-color, #6b7280); }
 .wp-danger { color: var(--pico-del-color, #b3261e); }
-.wp-small { font-size: 0.85rem; }
+.wp-small { font-size: var(--wp-text-sm); }
+
+/*
+ * Touch targets. On a coarse pointer the small controls grow their hit area
+ * to WCAG 2.5.8's 24px or more: Edit and Delete get 36px, being a destructive
+ * pair 4px apart. The type, colours and widths stay as drawn, and a mouse
+ * never sees any of this. It sits after every rule it adjusts, which share its
+ * weight.
+ */
+@media (pointer: coarse) {
+  th a[data-sort-link] {
+    display: inline-flex;
+    align-items: center;
+    padding-block: 0.6rem;
+  }
+
+  main summary {
+    padding-block: 0.6rem;
+  }
+
+  .wp-chip {
+    min-height: 2rem;
+  }
+
+  .wp-row[role="group"] {
+    row-gap: var(--wp-space-2);
+  }
+
+  .wp-action {
+    min-height: 2.25rem;
+    margin-right: var(--wp-space-2);
+  }
+
+  .wp-export a {
+    display: inline-block;
+    padding: 0.5rem 0.25rem;
+  }
+
+  .wp-toast-close {
+    padding: 0.5rem;
+  }
+}
 
 /*
  * htmx request indicators. These are htmx's own injected rules, moved here
