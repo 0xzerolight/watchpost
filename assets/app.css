@@ -435,53 +435,94 @@
 }
 
 /*
- * Recent-changes feed. One row per repo per day, each row a date, a repo link
- * and however many deltas moved that day. `flex-wrap` on the row rather than a
- * grid: the delta count varies from one to seven, and a grid would either
- * reserve seven columns of empty space or clip the seventh. The feed is a
- * top-level section, so its bottom margin is the section gap.
+ * Recent-changes feed, grouped by UTC day: a small muted day heading, then
+ * that day's rows, each a repo link with its deltas right after it. The deltas
+ * sit beside the name rather than pushed to the far edge, and the list is
+ * capped at 44rem, so a name and what moved stay in one eye span. Rows are
+ * set at the small step with no padding or rule between them, which halves
+ * the section (943px to about 520px on the stress data). `flex-wrap` on a
+ * row rather than a grid: a row carries one to seven deltas.
  */
+.wp-changes {
+  max-width: 44rem;
+}
+
 .wp-changes ul {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* Pico's h3 scale and top margin would make each day a section of its own. */
+.wp-change-day {
+  margin: var(--wp-space-3) 0 var(--wp-space-1);
+  font-size: var(--wp-text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
 .wp-changes li {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--wp-space-1) var(--wp-space-3);
-  padding: var(--wp-space-2) 0;
-  /*
-   * Pico's own separator token, not `--wp-chart-grid`: the chart grid is tuned
-   * to sit one step off the card surface — too faint to divide list rows on
-   * the page background.
-   */
-  border-bottom: 1px solid var(--pico-muted-border-color, #e5e7eb);
-}
-
-.wp-changes li:last-child {
-  border-bottom: 0;
-}
-
-/*
- * The date column is fixed-width so the repo names line up down the list; it
- * still grows past the basis if a non-current year pushes it wider.
- */
-.wp-change-day {
-  flex: 0 0 auto;
-  min-width: 4.5rem;
+  gap: 0 var(--wp-space-3);
+  margin: 0;
+  padding: 0;
+  font-size: var(--wp-text-sm);
+  line-height: 1.5;
 }
 
 .wp-change-repo {
-  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .wp-change-deltas {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--wp-space-1) var(--wp-space-3);
+  gap: 0 var(--wp-space-3);
+}
+
+.wp-changes-more {
+  margin: var(--wp-space-3) 0 0;
+}
+
+/*
+ * On a phone a row is the name, then its deltas on the line under it, always
+ * at the same x. Wrapped flex put the deltas in one of three places depending
+ * on how long the name was.
+ */
+@media (max-width: 40rem) {
+  .wp-changes li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    padding-block: var(--wp-space-1);
+  }
+}
+
+/* Touch: rows 20px tall and touching would put two link targets under a finger. */
+@media (pointer: coarse) {
+  .wp-changes li {
+    padding-block: var(--wp-space-1);
+  }
+}
+
+/*
+ * Row labels. A repo name in the leaderboard, the feed or a card title is
+ * plainly a link from where it sits, and Pico's underline on every one made
+ * those lists a wall of underlines. The underline returns on hover and on
+ * keyboard focus, where the shared focus ring also draws.
+ */
+.wp-leaders td a,
+.wp-change-repo,
+.wp-card-title a {
+  text-decoration: none;
+}
+
+.wp-leaders td a:is(:hover, :focus-visible),
+.wp-change-repo:is(:hover, :focus-visible),
+.wp-card-title a:is(:hover, :focus-visible) {
+  text-decoration: underline;
 }
 
 /*

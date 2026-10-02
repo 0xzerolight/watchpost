@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::routes::html::{
     PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script, page_header,
-    period_select, plural, table_wrap,
+    period_select, plural, slash_breaks, table_wrap,
 };
 use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
@@ -22,7 +22,8 @@ pub const CHANGES_DAYS: u32 = 14;
 
 /// How many days-with-movement the feed lists. A bound, not a page size: there
 /// is no "show more", because the repo pages are where the full history already
-/// lives.
+/// lives. The handler asks for one row more than this, so the page can say
+/// when rows were left out instead of implying it shows the whole fortnight.
 pub const CHANGES_MAX_ROWS: usize = 20;
 
 /// The `#chart-data` island, in the one shape `assets/app.js` reads.
@@ -137,6 +138,8 @@ pub struct AnalyticsView<'a> {
     pub payload: &'a PortfolioPayload,
     pub leaders: &'a [LeaderRow],
     pub changes: &'a [RepoChange],
+    /// Whether the feed had more rows than [`CHANGES_MAX_ROWS`].
+    pub changes_truncated: bool,
     pub days: i64,
 }
 
@@ -159,7 +162,7 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
         } @else {
             (portfolio_section(view))
             (leaders_section(view.leaders, view.days))
-            (changes_section(view.changes))
+            (changes_section(view.changes, view.changes_truncated))
         }
     }
 }
@@ -270,35 +273,58 @@ fn level(value: Option<i64>) -> Markup {
     html! { @match value { Some(n) => (n), None => "—" } }
 }
 
-/// What moved lately, newest day first.
+/// What moved lately, newest day first, grouped by day.
 ///
 /// Last on the page by design: the sections above answer how the portfolio is
 /// doing, and this answers what changed to get it there. Each row is one repo on
 /// one UTC day, and a day with nothing to report is simply absent — see
 /// [`crate::db::queries::recent_changes`] for what counts as a change.
-pub fn changes_section(changes: &[RepoChange]) -> Markup {
+///
+/// One muted label per day rather than a date on every row: with a dozen repos
+/// the same date was printed a dozen times in a column the eye had to scan to
+/// find where a day ended. The label is the stored UTC day through
+/// [`date_stamp`], never "Today" or "Yesterday" in `WATCHPOST_TZ`, because a UTC
+/// bucket cannot be re-cut into another zone. The heading names the window and
+/// a closing line says when the row cap cut it short, so the list never implies
+/// it is the whole fortnight.
+pub fn changes_section(changes: &[RepoChange], truncated: bool) -> Markup {
+    // Runs of one date. The query returns rows newest day first, so each day
+    // is one contiguous run and appears once.
+    let days: Vec<&[RepoChange]> = changes.chunk_by(|a, b| a.date == b.date).collect();
     html! {
         section class="wp-changes" {
-            h2 { "Recent changes" }
+            h2 {
+                "Recent changes "
+                span class="wp-muted" { "· last " (CHANGES_DAYS) " days" }
+            }
             @if changes.is_empty() {
                 (empty_state(
                     "Nothing changed in the last 14 days.",
                     None,
                 ))
             } @else {
-                ul {
-                    @for change in changes {
-                        li {
-                            span class="wp-change-day wp-muted wp-small" { (date_stamp(&change.date)) }
-                            a class="wp-change-repo" href=(format!("/repos/{}", change.repo_id)) {
-                                (change.name)
-                            }
-                            span class="wp-change-deltas" {
-                                @for (metric, delta) in &change.deltas {
-                                    (delta_chip(*metric, *delta))
+                @for day in &days {
+                    @if let Some(first) = day.first() {
+                        h3 class="wp-change-day wp-muted" { (date_stamp(&first.date)) }
+                    }
+                    ul {
+                        @for change in day.iter() {
+                            li {
+                                a class="wp-change-repo" href=(format!("/repos/{}", change.repo_id)) {
+                                    (slash_breaks(&change.name))
+                                }
+                                span class="wp-change-deltas" {
+                                    @for (metric, delta) in &change.deltas {
+                                        (delta_chip(*metric, *delta))
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+                @if truncated {
+                    p class="wp-muted wp-small wp-changes-more" {
+                        "Older changes are on each repository's page."
                     }
                 }
             }
@@ -436,6 +462,7 @@ mod tests {
             payload,
             leaders,
             changes: &[],
+            changes_truncated: false,
             days,
         }
     }
@@ -656,10 +683,13 @@ mod tests {
 
     #[test]
     fn a_delta_spells_out_its_direction_and_pluralises() {
-        let out = changes_section(&[change(vec![
-            (ChangeMetric::Stars, 3),
-            (ChangeMetric::Issues, -1),
-        ])])
+        let out = changes_section(
+            &[change(vec![
+                (ChangeMetric::Stars, 3),
+                (ChangeMetric::Issues, -1),
+            ])],
+            false,
+        )
         .into_string();
         assert!(
             out.contains(r#"<span class="wp-delta wp-delta-up">+3 stars</span>"#),
@@ -679,7 +709,7 @@ mod tests {
 
     #[test]
     fn a_quiet_fortnight_says_so_instead_of_rendering_an_empty_list() {
-        let out = changes_section(&[]).into_string();
+        let out = changes_section(&[], false).into_string();
         assert!(
             out.contains("<p>Nothing changed in the last 14 days.</p>"),
             "out was {out}"
@@ -700,6 +730,7 @@ mod tests {
             payload: &payload,
             leaders: &leaders,
             changes: &changes,
+            changes_truncated: false,
             days: ALL_DAYS,
         })
         .into_string();
@@ -709,5 +740,84 @@ mod tests {
         let changes_at = out.find("wp-changes").expect("feed rendered");
         assert!(totals_at < leaders_at, "out was {out}");
         assert!(leaders_at < changes_at, "out was {out}");
+    }
+
+    fn change_on(repo_id: i64, name: &str, date: &str) -> RepoChange {
+        RepoChange {
+            repo_id,
+            name: name.into(),
+            date: date.into(),
+            deltas: vec![(ChangeMetric::Stars, 1)],
+        }
+    }
+
+    #[test]
+    fn each_day_is_labelled_once_and_its_rows_follow_it() {
+        let rows = [
+            change_on(1, "octo/a", "2026-08-19"),
+            change_on(2, "octo/b", "2026-08-19"),
+            change_on(1, "octo/a", "2026-08-18"),
+        ];
+        let out = changes_section(&rows, false).into_string();
+        // The stored UTC day, once per day, as a sub-heading.
+        assert_eq!(
+            out.matches(r#"<time datetime="2026-08-19">"#).count(),
+            1,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<time datetime="2026-08-18">"#).count(),
+            1,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<h3 class="wp-change-day wp-muted">"#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        assert_eq!(out.matches("<li>").count(), 3, "out was {out}");
+        // Label, its rows, then the next label.
+        let first_day = out.find(r#"datetime="2026-08-19""#).unwrap();
+        let second_repo = out.find(r#"href="/repos/2""#).unwrap();
+        let second_day = out.find(r#"datetime="2026-08-18""#).unwrap();
+        assert!(
+            first_day < second_repo && second_repo < second_day,
+            "out was {out}"
+        );
+        // The repo name comes first in a row and breaks after the slash.
+        assert!(
+            out.contains(r#"<li><a class="wp-change-repo" href="/repos/1">octo/<wbr>a</a><span class="wp-change-deltas">"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn the_heading_says_what_the_feed_covers() {
+        let out = changes_section(&[], false).into_string();
+        assert!(
+            out.contains(r#"<h2>Recent changes <span class="wp-muted">· last 14 days</span></h2>"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn a_cut_feed_says_where_the_rest_is_and_a_whole_one_does_not() {
+        let rows = [change(vec![(ChangeMetric::Stars, 3)])];
+        let cut = changes_section(&rows, true).into_string();
+        assert!(
+            cut.contains(
+                r#"<p class="wp-muted wp-small wp-changes-more">Older changes are on each repository's page.</p>"#
+            ),
+            "out was {cut}"
+        );
+        let whole = changes_section(&rows, false).into_string();
+        assert!(!whole.contains("Older changes"), "out was {whole}");
+        // Nothing to cut, nothing to say: the empty state stands alone.
+        assert!(
+            !changes_section(&[], true)
+                .into_string()
+                .contains("Older changes")
+        );
     }
 }

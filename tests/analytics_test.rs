@@ -613,3 +613,42 @@ async fn a_freshly_synced_repo_reports_no_changes() {
     );
     assert!(!body.contains("+137"), "body was {body}");
 }
+
+/// Twenty-two changes in the window, twenty shown: the page says the rest
+/// exist rather than implying the fortnight is complete.
+#[tokio::test]
+async fn a_feed_cut_at_its_row_cap_says_so() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    // Twelve rising daily readings each: eleven changes per repo.
+    for day in 0..12_i64 {
+        h.seed_stars(ID_A, days_ago(day), 100 - day).await;
+        h.seed_stars(ID_B, days_ago(day), 50 - day).await;
+    }
+
+    let body = h.body("/analytics").await;
+
+    assert_eq!(
+        body.matches(r#"class="wp-change-repo""#).count(),
+        20,
+        "{body}"
+    );
+    assert!(
+        body.contains("Older changes are on each repository's page."),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_feed_with_room_to_spare_is_not_marked_cut() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stats(ID_A, days_ago(2), 137, 42, 7).await;
+    h.seed_stats(ID_A, days_ago(1), 140, 42, 6).await;
+
+    let body = h.body("/analytics").await;
+
+    assert!(body.contains("+3 stars"), "{body}");
+    assert!(!body.contains("Older changes"), "{body}");
+}

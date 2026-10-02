@@ -53,6 +53,7 @@ pub async fn analytics_page(
             payload: &page.payload,
             leaders: &page.leaders,
             changes: &page.changes,
+            changes_truncated: page.changes_truncated,
             days: selected,
         }),
     ))
@@ -64,6 +65,7 @@ struct PageData {
     payload: PortfolioPayload,
     leaders: Vec<LeaderRow>,
     changes: Vec<RepoChange>,
+    changes_truncated: bool,
 }
 
 /// The portfolio series is built from one [`queries::dense_series`] call per
@@ -141,6 +143,12 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
     // order is stable across renders.
     leaders.sort_by(|a, b| b.stars.cmp(&a.stars).then_with(|| a.name.cmp(&b.name)));
 
+    let (changes, changes_truncated) = capped(queries::recent_changes(
+        conn,
+        CHANGES_DAYS,
+        CHANGES_MAX_ROWS + 1,
+    )?);
+
     Ok(PageData {
         totals,
         payload: PortfolioPayload {
@@ -149,6 +157,46 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             series: PortfolioSeries { stars: stars_total },
         },
         leaders,
-        changes: queries::recent_changes(conn, CHANGES_DAYS, CHANGES_MAX_ROWS)?,
+        changes,
+        changes_truncated,
     })
+}
+
+/// The feed's rows cut to [`CHANGES_MAX_ROWS`], and whether anything was cut.
+///
+/// The query is asked for one row more than the page shows, so "there were
+/// more" is a fact rather than a guess from a full page: exactly twenty rows
+/// would otherwise read as cut when they were all there was.
+fn capped(mut changes: Vec<RepoChange>) -> (Vec<RepoChange>, bool) {
+    let truncated = changes.len() > CHANGES_MAX_ROWS;
+    changes.truncate(CHANGES_MAX_ROWS);
+    (changes, truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ChangeMetric;
+
+    fn change(day: usize) -> RepoChange {
+        RepoChange {
+            repo_id: 1,
+            name: "octo/a".into(),
+            date: format!("2026-08-{day:02}"),
+            deltas: vec![(ChangeMetric::Stars, 1)],
+        }
+    }
+
+    #[test]
+    fn a_full_page_is_not_marked_cut_and_one_row_more_is() {
+        let (rows, cut) = capped((1..=CHANGES_MAX_ROWS).map(change).collect());
+        assert_eq!(rows.len(), CHANGES_MAX_ROWS);
+        assert!(!cut);
+
+        let (rows, cut) = capped((1..=CHANGES_MAX_ROWS + 1).map(change).collect());
+        assert_eq!(rows.len(), CHANGES_MAX_ROWS);
+        assert!(cut);
+        // The kept rows are the newest ones the query returned first.
+        assert_eq!(rows[0].date, "2026-08-01");
+    }
 }
