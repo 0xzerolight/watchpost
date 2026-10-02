@@ -469,6 +469,15 @@ fn done_headline(
             Notice::Info,
             html! { "Nothing to sync yet — pick repositories below." },
         ),
+        // A partial sync counts in `failed` with its successful endpoints
+        // already written, so with failures present "nothing synced" may be
+        // false. Only a cycle that attempted nothing (every tracked repo in
+        // backoff) earns it. Carrying a separate partial count was rejected:
+        // the alert below already names each partial repo.
+        None if ok == 0 && failed > 0 => announced(
+            Notice::Info,
+            html! { "No repository fully synced · " (when) },
+        ),
         None if ok == 0 => announced(Notice::Info, html! { "Nothing synced · " (when) }),
         None => announced(
             Notice::Success,
@@ -975,6 +984,30 @@ mod tests {
         let some = done(4, 0, 2, 6, None);
         assert!(some.contains("Synced 4 repositories · "), "{some}");
         assert!(some.contains("2 skipped after recent errors"), "{some}");
+    }
+
+    /// A partial sync writes the endpoints that answered but counts in
+    /// `failed`, not `ok`. A cycle where every repo was partial used to read
+    /// "Nothing synced" above the alert, though rows had landed.
+    #[test]
+    fn a_cycle_where_every_repo_was_partial_does_not_claim_nothing_synced() {
+        let status = SyncStatus::Done {
+            finished: Utc::now(),
+            ok: 0,
+            failed: vec![
+                ("octo/a".to_owned(), "partial: releases".to_owned()),
+                ("octo/b".to_owned(), "partial: traffic".to_owned()),
+            ],
+            skipped: 0,
+            tracked: 2,
+            aborted: None,
+        };
+        let out = sync_status_fragment(&status, Tz::UTC).into_string();
+        assert!(out.contains("wp-notice-info"), "{out}");
+        assert!(out.contains("No repository fully synced · "), "{out}");
+        assert!(!out.contains("Nothing synced"), "{out}");
+        assert!(!out.contains("wp-notice-success"), "{out}");
+        assert!(out.contains("octo/a: partial: releases"), "{out}");
     }
 
     #[test]
