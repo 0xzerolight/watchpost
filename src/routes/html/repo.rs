@@ -20,7 +20,7 @@ use serde::Serialize;
 use crate::routes::html::{
     ALL_DAYS, Notice, PERIOD_COUNT, PERIODS, announced, date_stamp, delta_badge, empty_row,
     empty_state, error_glyph, field, field_compact, json_script, kind_class, period_select, plural,
-    render_markdown, slash_breaks, spinner, table_wrap,
+    render_markdown, signed, slash_breaks, spinner, table_wrap,
 };
 use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
@@ -219,6 +219,135 @@ impl KpiData {
 enum KpiValue<'a> {
     Level(Option<i64>),
     PerPeriod(&'a [Option<i64>; PERIOD_COUNT]),
+}
+
+/// How many days each side of an event its impact line compares.
+const IMPACT_DAYS: usize = 7;
+
+/// The fewest observed days a window needs before its rate means anything:
+/// one day is an anecdote.
+const IMPACT_MIN_OBSERVED: usize = 2;
+
+/// The two dense series an impact line reads, with their day keys.
+///
+/// Borrowed: the page lends its chart payload, and a mutation response lends
+/// the section data it already loaded. The last slot is today, which is where
+/// `dense_series` ends every series.
+#[derive(Debug, Clone, Copy)]
+pub struct ImpactSeries<'a> {
+    pub labels: &'a [String],
+    pub views: &'a [Option<i64>],
+    pub stars: &'a [Option<i64>],
+}
+
+/// Views and stars around one event: the week before it against the days
+/// from it to yesterday.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventImpact {
+    /// Views per observed day over the [`IMPACT_DAYS`] complete days before
+    /// the event.
+    pub views_before: f64,
+    /// Views per observed day from the event's own day to yesterday.
+    pub views_after: f64,
+    /// How far the star level moved across each window, when both ends were
+    /// read.
+    pub stars_before: Option<i64>,
+    pub stars_after: Option<i64>,
+    /// Calendar days the after-window spans so far; [`IMPACT_DAYS`] once it
+    /// is complete.
+    pub after_days: usize,
+    /// Another event falls inside either window, so the change is not this
+    /// event's alone.
+    pub overlaps: bool,
+}
+
+/// Did the event move views and stars?
+///
+/// The rate is views per *observed* day. A gap is unknown traffic, not zero
+/// traffic, so it shrinks the denominator rather than dragging the rate down.
+/// Today's bucket is still filling and is left out, so the after-window runs
+/// from the event's day to yesterday, at most [`IMPACT_DAYS`] days.
+/// Uniques are not used: a day's uniques cannot be added to the next day's.
+/// Stars are a carried-forward level, so their change is a difference of two
+/// readings, never a sum.
+///
+/// `None` when the event's day is not in the series or is today, or when
+/// either window has fewer than [`IMPACT_MIN_OBSERVED`] observed days. A rate
+/// off one reading would be presented as a trend.
+pub fn event_impact(series: ImpactSeries, event: &Event, events: &[Event]) -> Option<EventImpact> {
+    let labels = series.labels;
+    let yesterday = labels.len().checked_sub(2)?;
+    let day = labels.iter().position(|label| *label == event.date)?;
+    if day > yesterday {
+        return None;
+    }
+    let start = day.saturating_sub(IMPACT_DAYS);
+    let end = (day + IMPACT_DAYS - 1).min(yesterday);
+    let views_before = per_observed_day(series.views.get(start..day)?)?;
+    let views_after = per_observed_day(series.views.get(day..=end)?)?;
+    // Two observed days before the event mean `day >= 2`, so `day - 1` is safe.
+    let window = labels[start].as_str()..=labels[end].as_str();
+    Some(EventImpact {
+        views_before,
+        views_after,
+        stars_before: level_change(series.stars, start, day - 1),
+        stars_after: level_change(series.stars, day, end),
+        after_days: end - day + 1,
+        overlaps: events
+            .iter()
+            .any(|other| other.id != event.id && window.contains(&other.date.as_str())),
+    })
+}
+
+/// The sum over the observed days divided by how many there were. `None`
+/// under [`IMPACT_MIN_OBSERVED`].
+fn per_observed_day(window: &[Option<i64>]) -> Option<f64> {
+    let observed: Vec<i64> = window.iter().flatten().copied().collect();
+    if observed.len() < IMPACT_MIN_OBSERVED {
+        return None;
+    }
+    Some(observed.iter().sum::<i64>() as f64 / observed.len() as f64)
+}
+
+/// How far a carried-forward level moved across `start..=end`: its reading
+/// at the close minus the level that stood just before the window opened (the
+/// window's own first day when it opens the series). `None` when either end
+/// was never read.
+fn level_change(levels: &[Option<i64>], start: usize, end: usize) -> Option<i64> {
+    let open = levels.get(start.saturating_sub(1)).copied().flatten()?;
+    let close = levels.get(end).copied().flatten()?;
+    Some(close - open)
+}
+
+/// The impact as one muted line under the event's title, for example
+/// "Views/day 38 → 89 (+136%) · stars ±0 → +6 (2 days so far)".
+///
+/// The percentage is left out when the before-rate rounds to zero. A change
+/// from nothing has no ratio, and "+Infinity%", or four digits off a fraction
+/// of a view, would be noise rather than news.
+fn impact_line(impact: &EventImpact) -> Markup {
+    let percent = (impact.views_before >= 0.5)
+        .then(|| ((impact.views_after / impact.views_before - 1.0) * 100.0).round() as i64);
+    let stars = impact.stars_before.zip(impact.stars_after);
+    html! {
+        div class="wp-impact wp-muted wp-small" {
+            "Views/day " (impact.views_before.round() as i64)
+            " → " (impact.views_after.round() as i64)
+            @if let Some(percent) = percent {
+                " (" (signed(percent)) "%)"
+            }
+            @if let Some((before, after)) = stars {
+                " · stars " (signed(before)) " → " (signed(after))
+            }
+            @if impact.after_days < IMPACT_DAYS {
+                " (" (impact.after_days) " "
+                (plural(impact.after_days as i64, "day", "days")) " so far)"
+            }
+            @if impact.overlaps {
+                " (overlaps another event)"
+            }
+        }
+    }
 }
 
 /// One entry of the `#events-data` island — what the chart's marker plugin
@@ -534,6 +663,11 @@ pub fn repo_body(view: &RepoView) -> Markup {
             kinds: view.kinds,
             draft: None,
             flash: None,
+            impact: Some(ImpactSeries {
+                labels: &view.payload.labels,
+                views: &view.payload.series.views_count,
+                stars: &view.payload.series.stars,
+            }),
             tz: view.tz,
         }))
     }
@@ -1076,6 +1210,9 @@ pub struct EventsView<'a> {
     /// One success line for the mutation this render answers ("Event
     /// added."). `None` on the page itself and on a rejected create.
     pub flash: Option<&'a str>,
+    /// The series the rows' impact lines read. `None` renders no impact
+    /// lines; the unit tests' bare views use that.
+    pub impact: Option<ImpactSeries<'a>>,
     /// Display zone for the new-event date default.
     pub tz: Tz,
 }
@@ -1126,7 +1263,7 @@ pub fn events_section(view: &EventsView) -> Markup {
             } @else {
                 // The wrapper goes inside the section, around the table only:
                 // `#events-section` is itself the swap target.
-                (table_wrap(events_table(view.repo_id, view.events)))
+                (table_wrap(events_table(view.repo_id, view.events, view.impact)))
             }
             // Data only: app.js re-reads this island from its `htmx:afterSwap`
             // handler, which fires for the swap that delivered it.
@@ -1285,7 +1422,11 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>, tz: Tz) -> Markup {
 /// comes to edit, and 49 events made this section longer than the rest of the
 /// page together. The chart markers and `#events-data` keep every event. The
 /// id is the client's key for whether the reader opened the list.
-fn events_table(repo_id: i64, events: &[Event]) -> Markup {
+///
+/// Each row's impact line is worked out here from the series the view lends.
+/// The whole list goes in as well, because an event that shares a window with
+/// another says so instead of taking the credit alone.
+fn events_table(repo_id: i64, events: &[Event], impact: Option<ImpactSeries>) -> Markup {
     let more = events.len() > SHOWN_ROWS;
     let older = events.len().saturating_sub(SHOWN_ROWS);
     html! {
@@ -1301,7 +1442,12 @@ fn events_table(repo_id: i64, events: &[Event]) -> Markup {
             }
             tbody {
                 @for (i, event) in events.iter().enumerate() {
-                    (event_row(repo_id, event, i >= SHOWN_ROWS))
+                    (event_row(
+                        repo_id,
+                        event,
+                        i >= SHOWN_ROWS,
+                        impact.and_then(|series| event_impact(series, event, events)).as_ref(),
+                    ))
                 }
             }
             @if more {
@@ -1330,7 +1476,10 @@ fn events_table(repo_id: i64, events: &[Event]) -> Markup {
 /// `older` marks a row past [`SHOWN_ROWS`] for the client's disclosure. The
 /// class goes after `id` and `data-kind`, which the marker code and the kind
 /// filter key on.
-pub fn event_row(repo_id: i64, event: &Event, older: bool) -> Markup {
+///
+/// `impact` is the "did it work" line under the title. It is muted, because
+/// it annotates the event rather than being one.
+pub fn event_row(repo_id: i64, event: &Event, older: bool, impact: Option<&EventImpact>) -> Markup {
     let base = format!("/repos/{repo_id}/events/{}", event.id);
     html! {
         tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()]
@@ -1351,6 +1500,9 @@ pub fn event_row(repo_id: i64, event: &Event, older: bool) -> Markup {
                     a href=(url) rel="noopener noreferrer" { (event.title) }
                 } @else {
                     (event.title)
+                }
+                @if let Some(impact) = impact {
+                    (impact_line(impact))
                 }
                 @if !event.notes.trim().is_empty() {
                     details class="wp-notes" { summary { "Notes" } (render_markdown(&event.notes)) }
@@ -2235,6 +2387,7 @@ mod tests {
             kinds,
             draft: None,
             flash: None,
+            impact: None,
             tz: Tz::UTC,
         }
     }
@@ -2456,7 +2609,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let out = event_row(1, &event, false).into_string();
+        let out = event_row(1, &event, false, None).into_string();
         // Both actions: a second click during the first is a second request.
         assert_eq!(
             out.matches(r#"hx-disabled-elt="this""#).count(),
@@ -2501,7 +2654,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let row = event_row(1, &event, false).into_string();
+        let row = event_row(1, &event, false, None).into_string();
         assert!(row.contains(r#"id="event-edit-7""#), "row was {row}");
         assert!(row.contains(r#"id="event-del-7""#), "row was {row}");
 
@@ -2615,7 +2768,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let out = event_row(1, &event, false).into_string();
+        let out = event_row(1, &event, false, None).into_string();
         assert!(
             out.starts_with(r#"<tr id="event-row-7" data-kind="release""#),
             "{out}"
@@ -2687,7 +2840,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let out = event_row(1, &event, false).into_string();
+        let out = event_row(1, &event, false, None).into_string();
         assert!(
             out.contains(
                 r#">Edit<span class="wp-visually-hidden"> r/ajatt, 2026-09-01</span></button>"#
@@ -2852,6 +3005,166 @@ mod tests {
         assert!(
             out.contains(r#"data-more-show="Show 1 older event""#),
             "out was {out}"
+        );
+    }
+
+    /// Sep 1 to Sep `len`; the last day is "today".
+    fn september(len: u32) -> Vec<String> {
+        (1..=len).map(|day| format!("2026-09-{day:02}")).collect()
+    }
+
+    /// `len` slots, `None` except on the given days of September.
+    fn views_on(len: usize, days: &[(usize, i64)]) -> Vec<Option<i64>> {
+        let mut out = vec![None; len];
+        for &(day, count) in days {
+            out[day - 1] = Some(count);
+        }
+        out
+    }
+
+    fn dated(id: i64, date: &str) -> Event {
+        Event {
+            id,
+            repo_id: 1,
+            date: date.into(),
+            title: format!("e{id}"),
+            notes: String::new(),
+            url: None,
+            kind: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn impact_divides_by_observed_days_never_counting_a_gap_as_zero() {
+        let labels = september(20);
+        // Two readings in the week before Sep 10, two in the week from it.
+        let views = views_on(20, &[(4, 10), (7, 20), (10, 30), (12, 50)]);
+        // Stars flat at 5, then 9 from Sep 12.
+        let stars: Vec<Option<i64>> = (1..=20)
+            .map(|day| Some(if day >= 12 { 9 } else { 5 }))
+            .collect();
+        let event = dated(1, "2026-09-10");
+        let series = ImpactSeries {
+            labels: &labels,
+            views: &views,
+            stars: &stars,
+        };
+        let impact = event_impact(series, &event, std::slice::from_ref(&event))
+            .expect("both windows observed");
+        // 30 over two observed days, not over seven.
+        assert!(close(impact.views_before, 15.0), "{impact:?}");
+        assert!(close(impact.views_after, 40.0), "{impact:?}");
+        assert_eq!(impact.stars_before, Some(0));
+        assert_eq!(impact.stars_after, Some(4));
+        assert_eq!(impact.after_days, 7);
+        assert!(!impact.overlaps);
+    }
+
+    #[test]
+    fn fewer_than_two_observed_days_in_either_window_has_no_impact() {
+        let labels = september(20);
+        let stars = vec![Some(1); 20];
+        let event = dated(1, "2026-09-10");
+        let one_before = views_on(20, &[(4, 10), (10, 30), (12, 50)]);
+        let one_after = views_on(20, &[(4, 10), (7, 20), (10, 30)]);
+        for views in [one_before, one_after] {
+            let series = ImpactSeries {
+                labels: &labels,
+                views: &views,
+                stars: &stars,
+            };
+            assert_eq!(event_impact(series, &event, &[]), None);
+        }
+        // An event the series does not cover has none, and nor does one dated
+        // today, whose after-window has not started.
+        let views = views_on(20, &[(4, 10), (7, 20), (10, 30), (12, 50)]);
+        let series = ImpactSeries {
+            labels: &labels,
+            views: &views,
+            stars: &stars,
+        };
+        assert_eq!(event_impact(series, &dated(2, "2026-08-30"), &[]), None);
+        assert_eq!(event_impact(series, &dated(3, "2026-09-20"), &[]), None);
+    }
+
+    #[test]
+    fn today_is_left_out_of_the_after_window() {
+        let labels = september(20);
+        // Sep 20 is today, still filling: its count must not land anywhere.
+        let views = views_on(20, &[(13, 10), (15, 10), (18, 20), (19, 40), (20, 1000)]);
+        let stars = vec![Some(1); 20];
+        let series = ImpactSeries {
+            labels: &labels,
+            views: &views,
+            stars: &stars,
+        };
+        let impact = event_impact(series, &dated(1, "2026-09-18"), &[]).expect("observed");
+        assert!(close(impact.views_after, 30.0), "{impact:?}");
+        assert_eq!(impact.after_days, 2);
+    }
+
+    #[test]
+    fn an_event_inside_either_window_is_flagged_as_overlapping() {
+        let labels = september(20);
+        let views = views_on(20, &[(4, 10), (7, 20), (10, 30), (12, 50)]);
+        let stars = vec![Some(1); 20];
+        let series = ImpactSeries {
+            labels: &labels,
+            views: &views,
+            stars: &stars,
+        };
+        let event = dated(1, "2026-09-10");
+        for (other, overlaps) in [
+            ("2026-09-05", true),
+            ("2026-09-14", true),
+            ("2026-09-01", false),
+        ] {
+            let events = [event.clone(), dated(2, other)];
+            let impact = event_impact(series, &event, &events).expect("observed");
+            assert_eq!(impact.overlaps, overlaps, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_zero_before_rate_prints_no_ratio() {
+        let impact = EventImpact {
+            views_before: 0.0,
+            views_after: 30.0,
+            stars_before: None,
+            stars_after: None,
+            after_days: 7,
+            overlaps: false,
+        };
+        let out = impact_line(&impact).into_string();
+        assert!(out.contains("Views/day 0 → 30</div>"), "{out}");
+        assert!(!out.contains('%'), "{out}");
+        assert!(!out.contains("inf"), "{out}");
+        assert!(!out.contains("NaN"), "{out}");
+    }
+
+    #[test]
+    fn the_impact_line_reads_as_one_sentence() {
+        let impact = EventImpact {
+            views_before: 263.0 / 7.0,
+            views_after: 88.5,
+            stars_before: Some(0),
+            stars_after: Some(6),
+            after_days: 2,
+            overlaps: true,
+        };
+        assert_eq!(
+            impact_line(&impact).into_string(),
+            concat!(
+                r#"<div class="wp-impact wp-muted wp-small">"#,
+                "Views/day 38 → 89 (+136%) · stars ±0 → +6 (2 days so far) (overlaps another event)",
+                "</div>"
+            )
         );
     }
 }

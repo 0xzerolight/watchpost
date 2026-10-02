@@ -30,7 +30,7 @@ use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
 use watchpost::routes::router;
 use watchpost::state::AppState;
-use watchpost::types::{Event, GhRepo};
+use watchpost::types::{Event, GhRepo, TrafficDay, TrafficKind};
 
 const REPO_A: &str = "octo/aaa";
 const ID_A: i64 = 1;
@@ -174,6 +174,26 @@ impl Harness {
             .call(move |c| queries::events_for_repo(c, repo_id, None))
             .await
             .unwrap()
+    }
+
+    /// One day of views, written the way the collector writes them.
+    async fn seed_views(&self, repo_id: i64, date: String, count: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                queries::upsert_traffic_days(
+                    c,
+                    repo_id,
+                    TrafficKind::Views,
+                    &[TrafficDay {
+                        timestamp: format!("{date}T00:00:00Z"),
+                        count,
+                        uniques: 1,
+                    }],
+                )
+            })
+            .await
+            .unwrap();
     }
 
     /// Create one event through the handler and hand back its row id.
@@ -331,6 +351,45 @@ async fn create_lands_row_and_markers() {
         Some("https://news.ycombinator.com/item?id=1")
     );
     assert_eq!(events[0].repo_id, ID_A);
+}
+
+/// The impact line comes from series the mutation response loads itself, so
+/// a swapped section keeps it, and so does the row Cancel swaps back.
+#[tokio::test]
+async fn a_mutation_response_keeps_the_impact_lines() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    // Two observed days in the week before the event, two after it.
+    for (ago, count) in [(10, 10), (8, 20), (4, 30), (2, 50)] {
+        h.seed_views(ID_A, days_ago(ago), count).await;
+    }
+    let date = days_ago(5);
+    let resp = h
+        .send(
+            "POST",
+            "/repos/1/events",
+            &[
+                ("date", date.as_str()),
+                ("title", "Posted"),
+                ("notes", ""),
+                ("url", ""),
+                ("kind", ""),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(
+        body.contains(concat!(
+            r#"<div class="wp-impact wp-muted wp-small">"#,
+            "Views/day 15 → 40 (+167%) (5 days so far)</div>"
+        )),
+        "{body}"
+    );
+
+    let id = h.events(ID_A).await[0].id;
+    let row = body_string(h.get(&format!("/repos/1/events/{id}")).await).await;
+    assert!(row.contains("Views/day 15 → 40"), "{row}");
 }
 
 #[tokio::test]

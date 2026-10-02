@@ -37,11 +37,11 @@ use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::routes::PathId;
 use crate::routes::html::repo::{
-    EventDraft, EventErrors, EventsView, KIND_MAX_CHARS, SHOWN_ROWS, event_form_row, event_row,
-    events_section,
+    EventDraft, EventErrors, EventsView, ImpactSeries, KIND_MAX_CHARS, SHOWN_ROWS, event_form_row,
+    event_impact, event_row, events_section,
 };
 use crate::state::AppState;
-use crate::types::{Event, NewEvent};
+use crate::types::{Event, Metric, NewEvent};
 
 /// The add and edit forms, which post the same field set.
 ///
@@ -179,7 +179,13 @@ pub async fn event_row_get(
         .iter()
         .position(|event| event.id == event_id)
         .ok_or(AppError::NotFound)?;
-    Ok(event_row(repo_id, &data.events[index], index >= SHOWN_ROWS))
+    let event = &data.events[index];
+    Ok(event_row(
+        repo_id,
+        event,
+        index >= SHOWN_ROWS,
+        event_impact(data.impact(), event, &data.events).as_ref(),
+    ))
 }
 
 /// GET /repos/{id}/events/{eid}/edit — the same row as inputs.
@@ -199,12 +205,37 @@ pub async fn event_edit_form(
 struct SectionData {
     events: Vec<Event>,
     kinds: Vec<String>,
+    /// Day keys and the two dense series the impact lines read, over the
+    /// repo's whole history.
+    labels: Vec<String>,
+    views: Vec<Option<i64>>,
+    stars: Vec<Option<i64>>,
 }
 
+impl SectionData {
+    fn impact(&self) -> ImpactSeries<'_> {
+        ImpactSeries {
+            labels: &self.labels,
+            views: &self.views,
+            stars: &self.stars,
+        }
+    }
+}
+
+/// The section's data, impact series included. These come from the same
+/// dense readers the page's chart payload does, so a re-rendered row's impact
+/// line agrees with the one the page load drew. Without them a mutation's
+/// swap would drop every impact line until the next reload.
 fn section_data(conn: &Connection, repo_id: i64) -> Result<SectionData, DbError> {
+    let window = queries::history_span(conn, repo_id)?;
+    let stars = queries::dense_series(conn, repo_id, Metric::Stars, window)?;
+    let views = queries::dense_series(conn, repo_id, Metric::ViewsCount, window)?;
     Ok(SectionData {
         events: queries::events_for_repo(conn, repo_id, None)?,
         kinds: queries::event_kinds(conn, repo_id)?,
+        labels: stars.iter().map(|(date, _)| date.clone()).collect(),
+        stars: stars.into_iter().map(|(_, value)| value).collect(),
+        views: views.into_iter().map(|(_, value)| value).collect(),
     })
 }
 
@@ -245,6 +276,7 @@ fn respond(
         kinds: &data.kinds,
         draft: draft.as_deref(),
         flash,
+        impact: Some(data.impact()),
         tz,
     });
     match draft {

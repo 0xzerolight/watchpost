@@ -1175,6 +1175,12 @@ tr.wp-edit-row [name="kind"] {
   }
 }
 
+/* The impact line under an event's title: tabular digits, a hair below the title. */
+.wp-impact {
+  margin-top: 0.125rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
