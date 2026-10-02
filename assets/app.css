@@ -1162,15 +1162,17 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
- * The header's small-text links are still finger targets on a phone: block
- * padding lifts them to 24px tall without changing the text size the muted
- * row wants.
+ * The header's small-text links are still finger targets on a phone: on a
+ * coarse pointer, block padding lifts them to 24px tall without changing the
+ * text size the muted row wants. A mouse keeps them as drawn, as with the
+ * shared touch-target block further down, which already grows `.wp-export a`.
  */
-.wp-crumb a,
-.wp-repo-nav > a,
-.wp-export a {
-  display: inline-block;
-  padding-block: var(--wp-space-1);
+@media (pointer: coarse) {
+  .wp-crumb a,
+  .wp-repo-nav > a {
+    display: inline-block;
+    padding-block: var(--wp-space-1);
+  }
 }
 
 /*
