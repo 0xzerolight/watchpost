@@ -1344,6 +1344,13 @@
           tooltip: {
             enabled: false,
             external: externalTooltip,
+            // Rows in declaration order, as the legend reads them (see
+            // `solidLegendLabels`). Chart.js otherwise orders tooltip items by
+            // dataset `order`, the paint order that puts the bars behind the
+            // uniques line, and the tip read "Unique" above "Views".
+            itemSort: function (a, b) {
+              return a.datasetIndex - b.datasetIndex;
+            },
           },
         },
       },
