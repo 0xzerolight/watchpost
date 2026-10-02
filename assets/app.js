@@ -1447,8 +1447,8 @@
       },
       options: {
         responsive: true,
-        // `.chart-box` supplies the height; without this the canvas grows on
-        // every resize.
+        // The chart's container supplies the height; without this the canvas
+        // grows on every resize.
         maintainAspectRatio: false,
         // Animation off: the markers are painted at the axis' final pixel
         // positions, so a tweening axis would leave every dashed line standing

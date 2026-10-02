@@ -70,12 +70,13 @@
    * protanopia/deuteranopia, and the primary series slots clear 3:1 against
    * the card surface.
    *
-   * The repo charts pin their series to the strong slots: stars = 0 (blue),
-   * views = 1 + 2 (orange/aqua), clones = 5 + 6 (green/violet),
-   * downloads = 7 (red), container pulls = 4 (magenta). Slot 3 (yellow) sits
-   * below 3:1 on white and is reached only through the event-kind hash, where
-   * the chip label and marker tip carry the identity; magenta is also shy of
-   * 3:1 in light mode, which the axis ticks and tooltip relieve.
+   * Every primary chart series wears one accent, `--wp-marker-0`, whatever it
+   * measures, and the secondary line (uniques) wears `--wp-chart-tick`; the
+   * eight slots are otherwise for event kinds, through the kind hash. That
+   * hash still runs over all eight, so a kind on slot 0 shares the series
+   * blue, kept apart by its own marker lane above the plot. Slot 3 (yellow)
+   * sits below 3:1 on white and magenta (4) is shy of it in light mode; as
+   * kind colours only, the chip label and the tooltip line carry the identity.
    */
   --wp-l-0: #2a78d6;
   --wp-l-1: #eb6834;
@@ -225,25 +226,10 @@
 }
 
 /*
- * Chart.js sizes its canvas to the parent, so the parent must have a height of
- * its own — a bare canvas in a flow container grows on every resize.
- *
- * The width has the same loop. Until Chart.js runs, the canvas is its default
- * 300px, and a content-sized grid track (the portfolio card's `1fr`) took that
- * as its minimum, so Chart.js measured 300px back and the card ran past a
- * 320px phone. `contain: inline-size` gives the box no width from its content,
- * so the layout sets it and the canvas follows. `min-width: 0` here changes
- * nothing: the card around the box still sizes to the canvas.
- */
-.chart-box {
-  position: relative;
-  height: 240px;
-  contain: inline-size;
-}
-
-/*
  * The repo page's single large chart panel — one metric at a time, switched
- * by the KPI tiles. Needs its own height for the reason `.chart-box` does.
+ * by the KPI tiles. Chart.js sizes its canvas to its container, so the
+ * container needs a height of its own; a bare canvas in a flow container
+ * grows on every resize.
  */
 .wp-hero-chart {
   position: relative;
@@ -458,8 +444,8 @@
 }
 
 /*
- * The sparkline canvas needs a height from its parent for the same reason
- * `.chart-box` does — Chart.js measures the container, not the canvas.
+ * Chart.js sizes its canvas to its container, not the other way round, so the
+ * sparkline's container needs a height of its own.
  */
 .wp-spark {
   position: relative;
@@ -850,12 +836,10 @@
 }
 
 /*
- * The two floating tips: the marker tip beside a hovered event marker, and the
- * chart tooltip (`externalTooltip` in app.js), the HTML replacement for
- * Chart.js's canvas-drawn one. One rule for both, so they cannot drift apart;
- * app.js positions them.
+ * The chart tooltip (`externalTooltip` in app.js), the HTML replacement for
+ * Chart.js's canvas-drawn one. It carries a column's figures and, under them,
+ * the column's events; app.js positions it.
  */
-#marker-tip,
 #chart-tip {
   display: none;
   position: absolute;
@@ -870,7 +854,6 @@
   pointer-events: none;
 }
 
-#marker-tip.wp-visible,
 #chart-tip.wp-visible {
   display: block;
 }
@@ -937,15 +920,6 @@
 .wp-tip-label {
   color: var(--pico-muted-color, #6b7280);
   font-size: var(--wp-text-sm);
-}
-
-/*
- * The kind chip inside a tip, beside the date. `.wp-chip` zeroes its own
- * margins, so the gap is put back here rather than from JavaScript — the rule
- * has to sit after `.wp-chip` to win, both being a single class.
- */
-.wp-tip-kind {
-  margin-left: var(--wp-space-2);
 }
 
 /*

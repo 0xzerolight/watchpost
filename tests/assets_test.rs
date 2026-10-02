@@ -89,7 +89,7 @@ async fn app_css_is_served_as_css() {
     );
     let body = body_string(resp).await;
     assert!(body.contains("--wp-marker-0"), "body was {body}");
-    assert!(body.contains(".chart-box"), "body was {body}");
+    assert!(body.contains("--wp-border"), "body was {body}");
     // The shared components ui.rs emits are styled here and nowhere else.
     assert!(body.contains(".wp-notice"), "body was {body}");
 }
@@ -491,7 +491,7 @@ async fn a_stale_etag_is_answered_with_the_asset() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(body_string(resp).await.contains(".chart-box"));
+    assert!(body_string(resp).await.contains("--wp-border"));
 }
 
 // ---------------------------------------------------------------------------
@@ -691,16 +691,6 @@ async fn the_shell_marks_its_section_and_keeps_to_the_viewport() {
     assert!(rule(&css, ".wp-page-header hgroup").contains("min-width: 0;"));
     assert!(rule(&css, ".wp-page-header h1").contains("overflow-wrap: anywhere;"));
     assert!(rule(&css, ".wp-table-wrap").contains("position: relative;"));
-}
-
-/// Until Chart.js runs, a canvas is 300px wide by default. The portfolio
-/// card's content-sized grid track took that as its minimum, Chart.js then
-/// measured the 300px back from the box, and the card ended 28px past a 320px
-/// phone. The box takes its width from the layout, never from its canvas.
-#[tokio::test]
-async fn a_chart_box_takes_its_width_from_the_layout_not_its_canvas() {
-    let css = body_string(get("/assets/app.css").await).await;
-    assert!(rule(&css, ".chart-box").contains("contain: inline-size;"));
 }
 
 /// The leaderboard right-aligned its figures in tabular digits; the traffic

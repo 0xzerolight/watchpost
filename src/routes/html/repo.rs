@@ -907,24 +907,6 @@ fn hero_charts(series: &ChartSeries, default_id: &str) -> Markup {
     }
 }
 
-/// One chart panel.
-///
-/// The canvas is labelled as one graphic: a bare `<canvas>` has no role, so a
-/// screenreader walks into an element with nothing inside it and announces
-/// nothing at all. `role="img"` plus the label makes it a single object with a
-/// name, which is the honest description — the plotted values themselves are
-/// not exposed here, and no `aria-label` could carry them.
-pub fn chart_card(title: &str, canvas_id: &str) -> Markup {
-    html! {
-        article class="wp-card" {
-            h3 class="wp-card-title" { (title) }
-            div class="chart-box" {
-                canvas id=(canvas_id) role="img" aria-label=(format!("{title} over time")) {}
-            }
-        }
-    }
-}
-
 /// The traffic-source tables: where views came from, and which pages they
 /// landed on.
 ///
@@ -2110,20 +2092,6 @@ mod tests {
             out.contains(r#"<option value="7" selected>"#),
             "out was {out}"
         );
-    }
-
-    #[test]
-    fn a_chart_card_titles_itself() {
-        // The card form is the analytics page's now — the repo page moved to
-        // KPI tiles over hero panels — but it still titles itself.
-        let out = chart_card("Stars", "chart_stars").into_string();
-        assert!(
-            out.contains(r#"<h3 class="wp-card-title">Stars</h3>"#),
-            "out was {out}"
-        );
-        // No annotation slot: the bucket note it carried explained an x-axis
-        // that the period selector above it already names.
-        assert!(!out.contains("wp-card-note"), "out was {out}");
     }
 
     /// One tile per observed metric, none for an unobserved one, and the
