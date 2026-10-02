@@ -1209,10 +1209,14 @@
    *   - `cssVar` is one accent, `--wp-marker-0`, for every primary series
    *     whatever it measures: the pressed tile already names the metric. A hue
    *     per metric made the page change colour on every tile click, borrowed
-   *     the slots the event-kind hash colours markers with (reddit dots and
-   *     the Downloads line were the same red), and spent red and green, which
-   *     mean down and up in the deltas. Markers keep the eight kind slots, in
-   *     their own lane above the plot.
+   *     seven of the eight slots the event-kind hash colours markers with
+   *     (reddit dots and the Downloads line were the same red), and spent red
+   *     and green, which mean down and up in the deltas. One borrowed slot is
+   *     left: `kindSlot` still hashes over all eight, so a kind that lands on
+   *     slot 0 (youtube, twitter, launch) wears the series blue. Its dots
+   *     stay apart by place rather than hue, in their own lane above the
+   *     plot. Freeing slot 0 needs a ninth token or a seven-slot hash, and
+   *     the hash would have to change in `kind_class` too.
    *   - `secondary` marks the companion line (uniques beside its count). It
    *     is muted ink and thinner, so the legend tells the two apart by weight
    *     and tone rather than by a second hue.

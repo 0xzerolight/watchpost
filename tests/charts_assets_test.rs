@@ -121,9 +121,11 @@ async fn partly_observed_buckets_say_so_and_fade() {
 }
 
 /// One accent: every primary series reads `--wp-marker-0` and every companion
-/// line the muted tick ink, thinner. Another marker slot in `CHART_SPECS`
-/// would dress a series in an event kind's colour again (the Downloads line
-/// and the reddit dots were the same red).
+/// line the muted tick ink, thinner. The series used to spread over seven
+/// marker slots, so the Downloads line and the reddit dots were the same red.
+/// Pinning them to slot 0 shrinks that clash to the kinds that hash to slot 0
+/// (youtube, twitter, launch). It does not remove it. Another marker slot in
+/// `CHART_SPECS` would spread the clash to more kinds again.
 #[tokio::test]
 async fn every_series_wears_the_one_accent() {
     let js = asset("/assets/app.js").await;
