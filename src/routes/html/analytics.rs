@@ -12,8 +12,8 @@ use maud::{Markup, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script, page_header,
-    period_select, plural, slash_breaks, table_wrap,
+    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script,
+    page_header, period_select, plural, signed, slash_breaks, table_wrap,
 };
 use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
@@ -176,28 +176,35 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
 /// destroy — that the repo with the most stars gets the fewest views. Past
 /// roughly fifty repos a full table stops being scannable, and the fix then is a
 /// row cap plus a sort control rather than more tables.
+///
+/// The table mixes figures that follow the period (Growth, Views) with levels
+/// to date (Stars, Downloads, Container pulls), so each period heading names
+/// its window and each level heading says "total". Bare words left a reader to
+/// guess that 1188 views was thirty days and 2487 downloads was all time.
 fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
     let cols = Columns::of(leaders);
     html! {
         section {
             h2 { "Repos" }
             (table_wrap(html! {
-                table class="wp-leaders" {
+                table class="wp-leaders wp-num-table" aria-label="Repositories by stars" {
                     thead {
                         tr {
                             th scope="col" { "Repo" }
                             th scope="col" { "Stars" }
-                            th scope="col" { "Growth" }
-                            @if cols.views { th scope="col" { "Views" } }
-                            @if cols.downloads { th scope="col" { "Downloads" } }
-                            @if cols.pulls { th scope="col" { "Container pulls" } }
+                            th scope="col" { "Growth " (period_scope(days)) }
+                            @if cols.views { th scope="col" { "Views " (period_scope(days)) } }
+                            @if cols.downloads { th scope="col" { "Downloads " (total_scope()) } }
+                            @if cols.pulls { th scope="col" { "Container pulls " (total_scope()) } }
                         }
                     }
                     tbody {
                         @for row in leaders {
                             tr {
                                 td {
-                                    a href=(format!("/repos/{}", row.repo_id)) { (row.name) }
+                                    a href=(format!("/repos/{}", row.repo_id)) {
+                                        (slash_breaks(&row.name))
+                                    }
                                 }
                                 td { (level(row.stars)) }
                                 (period_cell(&row.star_growth, days, true))
@@ -248,17 +255,15 @@ impl Columns {
 /// — would multiply the page's payload by the number of repos in order to move
 /// one column. `updatePeriodValues` in assets/app.js is the entire client-side
 /// half: a `hidden` flip, no text written and nothing parsed.
-fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, signed: bool) -> Markup {
+fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, with_sign: bool) -> Markup {
     html! {
         td {
             @for ((period, _), value) in PERIODS.iter().zip(values) {
                 span data-period-value=(period) hidden[*period != days] {
                     @match value {
-                        // U+2212 MINUS SIGN, not a hyphen: at this size a
-                        // hyphen next to a digit reads as punctuation. Same
-                        // choice the changes feed's delta chips make.
-                        Some(n) if signed && *n > 0 => { "+" (n) }
-                        Some(n) if signed && *n < 0 => { "\u{2212}" (n.abs()) }
+                        // "+N", "−N" or "±0" (an observed "nothing moved"),
+                        // the way `delta_badge` says it on the totals above.
+                        Some(n) if with_sign => (signed(*n)),
                         Some(n) => (n),
                         None => "—",
                     }
@@ -266,6 +271,28 @@ fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, signed: bool) ->
             }
         }
     }
+}
+
+/// What a period column covers, once per entry of [`PERIODS`] with all but the
+/// selected one `hidden`: the `data-period-value` contract the cells under it
+/// keep, so `updatePeriodValues` flips the heading with its figures and a
+/// period change still writes no text. "All" reads "all time", the window
+/// that entry sums over. With JS off the selected period's scope is the
+/// visible one, as the figures are.
+fn period_scope(days: i64) -> Markup {
+    html! {
+        @for (period, label) in PERIODS {
+            span class="wp-th-scope wp-muted" data-period-value=(period) hidden[period != days] {
+                @if period == ALL_DAYS { "all time" } @else { (label) }
+            }
+        }
+    }
+}
+
+/// The level columns' counterpart to [`period_scope`]: a figure to date,
+/// whatever the period selector says.
+fn total_scope() -> Markup {
+    html! { span class="wp-th-scope wp-muted" { "total" } }
 }
 
 /// A level, or an em dash for one that was never observed.
@@ -336,8 +363,8 @@ pub fn changes_section(changes: &[RepoChange], truncated: bool) -> Markup {
 ///
 /// The sign is spelled out rather than left to colour alone, so the direction
 /// survives a monochrome screen and a reader who cannot separate the two hues.
-/// It is U+2212 MINUS SIGN, not a hyphen: at this size a hyphen next to a
-/// digit reads as punctuation.
+/// The figure goes through [`signed`], the one formatter every signed number
+/// on these pages shares.
 fn delta_chip(metric: ChangeMetric, delta: i64) -> Markup {
     let (one, many) = metric.labels();
     let class = if delta > 0 {
@@ -347,8 +374,7 @@ fn delta_chip(metric: ChangeMetric, delta: i64) -> Markup {
     };
     html! {
         span class=(class) {
-            (if delta > 0 { "+" } else { "\u{2212}" })
-            (delta.abs())
+            (signed(delta))
             " "
             (plural(delta.abs(), one, many))
         }
@@ -608,14 +634,15 @@ mod tests {
         // Every period's number is server-rendered and all but one hidden, so
         // the table works with JS off and a zoom costs no request.
         let out = leaders_section(&[leader("octo/a", Some(3))], 30).into_string();
+        let body = out.split("<tbody>").nth(1).expect("tbody rendered");
         assert_eq!(
-            out.matches("data-period-value").count(),
+            body.matches("data-period-value").count(),
             10,
             "out was {out}"
         );
-        assert_eq!(out.matches(" hidden>").count(), 8, "out was {out}");
+        assert_eq!(body.matches(" hidden>").count(), 8, "out was {out}");
         assert!(
-            out.contains(r#"<span data-period-value="30">+12</span>"#),
+            body.contains(r#"<span data-period-value="30">+12</span>"#),
             "out was {out}"
         );
     }
@@ -653,10 +680,13 @@ mod tests {
         row.downloads = None;
         let out = leaders_section(&[row], 7).into_string();
         assert!(
-            out.contains(r#"<th scope="col">Container pulls</th>"#),
+            out.contains(r#"<th scope="col">Container pulls <span class="wp-th-scope wp-muted">total</span></th>"#),
             "out was {out}"
         );
-        assert!(!out.contains(">Downloads<"), "out was {out}");
+        assert!(
+            !out.contains(r#"<th scope="col">Downloads "#),
+            "out was {out}"
+        );
         assert!(out.contains("<td>70</td>"), "out was {out}");
     }
 
@@ -667,8 +697,77 @@ mod tests {
         let out = leaders_section(&[leader("octo/b", Some(90)), leader("octo/a", Some(3))], 7)
             .into_string();
         assert!(
-            out.find("octo/b").unwrap() < out.find("octo/a").unwrap(),
+            out.find("octo/<wbr>b").unwrap() < out.find("octo/<wbr>a").unwrap(),
             "out was {out}"
+        );
+    }
+
+    #[test]
+    fn the_leaderboard_is_a_labelled_numeric_table_with_breakable_names() {
+        let out = leaders_section(&[leader("octo/a", Some(3))], 30).into_string();
+        assert!(
+            out.contains(
+                r#"<table class="wp-leaders wp-num-table" aria-label="Repositories by stars">"#
+            ),
+            "out was {out}"
+        );
+        // The name breaks after the slash, not mid-word.
+        assert!(
+            out.contains(r#"<a href="/repos/7">octo/<wbr>a</a>"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn period_columns_say_which_window_they_cover_and_levels_say_total() {
+        let out = leaders_section(&[leader("octo/a", Some(3))], 30).into_string();
+        let head = out.split("<tbody>").next().expect("thead rendered");
+        // Growth and Views each carry every period's scope, one visible: the
+        // same `data-period-value` flip as the cells under them.
+        assert_eq!(head.matches("data-period-value").count(), 10, "{head}");
+        assert_eq!(
+            head.matches(
+                r#"<span class="wp-th-scope wp-muted" data-period-value="30">30 days</span>"#
+            )
+            .count(),
+            2,
+            "{head}"
+        );
+        assert!(
+            head.contains(r#"<span class="wp-th-scope wp-muted" data-period-value="-1" hidden>all time</span>"#),
+            "{head}"
+        );
+        assert!(
+            head.contains(
+                r#"<span class="wp-th-scope wp-muted" data-period-value="365" hidden>1 year</span>"#
+            ),
+            "{head}"
+        );
+        assert!(
+            head.contains(
+                r#"<th scope="col">Downloads <span class="wp-th-scope wp-muted">total</span></th>"#
+            ),
+            "{head}"
+        );
+        // Stars is a level the row is ranked by; it needs no scope.
+        assert!(head.contains(r#"<th scope="col">Stars</th>"#), "{head}");
+    }
+
+    #[test]
+    fn zero_growth_reads_as_nothing_moved() {
+        let mut row = leader("octo/a", Some(3));
+        row.star_growth = [Some(0); PERIOD_COUNT];
+        row.views = [Some(0); PERIOD_COUNT];
+        let out = leaders_section(&[row], 7).into_string();
+        let body = out.split("<tbody>").nth(1).expect("tbody rendered");
+        // Signed like `delta_badge`; a views count of zero stays a plain 0.
+        assert!(
+            body.contains("<span data-period-value=\"7\">\u{00b1}0</span>"),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"<span data-period-value="7">0</span>"#),
+            "{body}"
         );
     }
 

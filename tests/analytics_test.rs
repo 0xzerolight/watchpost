@@ -326,6 +326,10 @@ async fn untracked_and_hidden_repos_are_absent_from_every_figure() {
 
     assert!(!body.contains(REPO_B), "{body}");
     assert!(!body.contains("octo/ccc"), "{body}");
+    // Names render with a break opportunity after the slash; check that form
+    // too, or the two lines above pass whatever the page shows.
+    assert!(!body.contains("octo/<wbr>bbb"), "{body}");
+    assert!(!body.contains("octo/<wbr>ccc"), "{body}");
     assert_eq!(series[series.len() - 1], Some(3), "{body}");
 }
 
@@ -464,7 +468,7 @@ async fn a_repo_first_seen_inside_the_window_reports_no_growth_not_its_whole_cou
     let body = h.body("/analytics?days=7").await;
 
     assert!(
-        body.contains(r#"<span data-period-value="7">0</span>"#),
+        body.contains("<span data-period-value=\"7\">\u{00b1}0</span>"),
         "{body}"
     );
     assert!(!body.contains("+400"), "{body}");
@@ -487,7 +491,7 @@ async fn the_leaderboard_is_ranked_by_stars() {
         .expect("leaderboard rendered");
 
     assert!(
-        table.find(REPO_B).unwrap() < table.find(REPO_A).unwrap(),
+        table.find("octo/<wbr>bbb").unwrap() < table.find("octo/<wbr>aaa").unwrap(),
         "{body}"
     );
 }
@@ -501,7 +505,7 @@ async fn a_repo_with_no_releases_gets_no_downloads_column() {
     let body = h.body("/analytics").await;
 
     // A column that is an em dash in every row is furniture.
-    assert!(!body.contains("<th scope=\"col\">Downloads</th>"), "{body}");
+    assert!(!body.contains(r#"<th scope="col">Downloads "#), "{body}");
 }
 
 #[tokio::test]
@@ -515,7 +519,7 @@ async fn a_repo_name_cannot_break_out_of_the_leaderboard() {
 
     assert!(!body.contains("<script>alert(1)</script>"), "{body}");
     assert!(
-        body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        body.contains("&lt;script&gt;alert(1)&lt;/<wbr>script&gt;"),
         "{body}"
     );
 }
@@ -554,12 +558,12 @@ async fn a_repo_that_ships_images_but_no_releases_still_gets_a_distribution_colu
     let body = h.body("/analytics").await;
 
     assert!(
-        body.contains("<th scope=\"col\">Container pulls</th>"),
+        body.contains(r#"<th scope="col">Container pulls <span class="wp-th-scope wp-muted">total</span></th>"#),
         "{body}"
     );
     // The newest reading, not the 110 a sum over two cumulative snapshots gives.
     assert!(body.contains("<td>70</td>"), "{body}");
-    assert!(!body.contains("<th scope=\"col\">Downloads</th>"), "{body}");
+    assert!(!body.contains(r#"<th scope="col">Downloads "#), "{body}");
 }
 
 #[tokio::test]
@@ -572,7 +576,7 @@ async fn a_repo_with_no_image_gets_no_container_pulls_column() {
 
     // A column that is an em dash in every row is furniture.
     assert!(
-        !body.contains("<th scope=\"col\">Container pulls</th>"),
+        !body.contains(r#"<th scope="col">Container pulls "#),
         "{body}"
     );
 }

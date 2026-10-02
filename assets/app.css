@@ -424,17 +424,6 @@
 }
 
 /*
- * The leaderboard's figures. Right-aligned and tabular so a column reads as a
- * ranking down its digits rather than as ragged words; the repo name keeps the
- * default alignment because it is the row's label, not one of its numbers.
- */
-.wp-leaders td:not(:first-child),
-.wp-leaders th:not(:first-child) {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/*
  * Recent-changes feed, grouped by UTC day: a small muted day heading, then
  * that day's rows, each a repo link with its deltas right after it. The deltas
  * sit beside the name rather than pushed to the far edge, and the list is
@@ -523,6 +512,56 @@
 .wp-change-repo:is(:hover, :focus-visible),
 .wp-card-title a:is(:hover, :focus-visible) {
   text-decoration: underline;
+}
+
+/*
+ * Leaderboard. The figure columns come from `.wp-num-table`. A heading's
+ * scope ("· 30 days", "· total") is small and muted; on a wide screen it sits
+ * after the label, and below 64rem it drops under it, which is what lets all
+ * six columns fit at 768px. The separator is generated so the narrow layout
+ * can drop it; the real space before the span keeps the accessible name
+ * "Growth 30 days" in both layouts.
+ */
+.wp-th-scope {
+  font-size: var(--wp-text-sm);
+  font-weight: 400;
+}
+
+.wp-th-scope::before {
+  content: "· ";
+}
+
+@media (max-width: 64rem) {
+  .wp-th-scope {
+    display: block;
+  }
+
+  .wp-th-scope::before {
+    content: none;
+  }
+}
+
+/* A tablet fits all six columns once the cells give up some padding. */
+@media (max-width: 48rem) {
+  .wp-leaders :is(th, td) {
+    padding-inline: var(--wp-space-2);
+  }
+}
+
+/*
+ * On a phone six columns cannot fit, so the table scrolls inside its wrapper
+ * and the repo name stays pinned at the left while the figures slide under
+ * it. FND-05 made wrapped cells transparent for the scroll cue; this cell
+ * takes the opaque page colour back, or the figures would show through it.
+ */
+@media (max-width: 40rem) {
+  .wp-leaders :is(th, td):first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    min-width: 9rem;
+    background-color: var(--pico-background-color);
+  }
 }
 
 /*
