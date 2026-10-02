@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-02
+
 ### Added
 
 - **Event impact lines (repo page, Events).** Each event row carries one muted line under its title
@@ -577,6 +579,7 @@ never tagged.
 - `compose.yml` publishes to `127.0.0.1:8080` rather than every interface, so the default deployment
   is not reachable from the network.
 
+[1.4.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.4.0
 [1.3.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.3.0
 [1.2.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.2.0
 [1.1.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.1.0
