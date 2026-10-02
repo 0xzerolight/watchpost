@@ -22,7 +22,7 @@ use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
 use watchpost::routes::router;
 use watchpost::state::AppState;
-use watchpost::types::{AssetSnapshot, GhRepo, StatSnapshot};
+use watchpost::types::{AssetSnapshot, GhRepo, StatSnapshot, TrafficDay, TrafficKind};
 
 const REPO_A: &str = "octo/aaa";
 const REPO_B: &str = "octo/bbb";
@@ -161,6 +161,25 @@ impl Harness {
         self.state
             .db
             .call(move |c| queries::upsert_container_pulls(c, id, &date, pulls))
+            .await
+            .unwrap();
+    }
+
+    async fn seed_views(&self, id: i64, date: String, count: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                queries::upsert_traffic_days(
+                    c,
+                    id,
+                    TrafficKind::Views,
+                    &[TrafficDay {
+                        timestamp: format!("{date}T00:00:00Z"),
+                        count,
+                        uniques: 1,
+                    }],
+                )
+            })
             .await
             .unwrap();
     }
@@ -686,4 +705,56 @@ async fn a_feed_with_room_to_spare_is_not_marked_cut() {
 
     assert!(body.contains("+3 stars"), "{body}");
     assert!(!body.contains("Older changes"), "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// Views against the period before
+// ---------------------------------------------------------------------------
+
+/// The last seven complete days against the seven before them; today's
+/// half-filled bucket is in neither.
+#[tokio::test]
+async fn views_change_compares_the_last_complete_week_with_the_one_before() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    for day in 8..=14 {
+        h.seed_views(ID_A, days_ago(day), 10).await;
+    }
+    for day in 1..=7 {
+        h.seed_views(ID_A, days_ago(day), 20).await;
+    }
+    h.seed_views(ID_A, days_ago(0), 1).await;
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(
+        body.contains(
+            r#"<span data-period-value="7" class="wp-delta wp-delta-up wp-views-change">+100%"#
+        ),
+        "{body}"
+    );
+    // Thirty days would need sixty of history: no span for it, not "0%".
+    // One change span on the whole page, the 7-day one.
+    assert_eq!(body.matches("wp-views-change").count(), 1, "{body}");
+
+    // The class is a hook into app.css; renaming either side alone silently
+    // drops the gap between the figure and its change.
+    let css = body_string(h.get("/assets/app.css").await).await;
+    assert!(css.contains(".wp-views-change {"), "no views-change rule");
+}
+
+#[tokio::test]
+async fn a_gap_in_either_week_shows_no_change() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    // Day 10 was never observed.
+    for day in (1..=14).filter(|day| *day != 10) {
+        h.seed_views(ID_A, days_ago(day), 10).await;
+    }
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(!body.contains("wp-views-change"), "{body}");
 }

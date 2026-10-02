@@ -20,7 +20,7 @@ use crate::routes::html::analytics::{
     Totals, analytics_body,
 };
 use crate::routes::html::{ALL_MIN_DAYS, NavItem, base, parse_days};
-use crate::series::{add_into, growth, per_period, sum_observed};
+use crate::series::{add_into, growth, per_period, per_period_vs_previous, sum_observed};
 use crate::state::AppState;
 use crate::types::{Metric, RepoChange};
 
@@ -132,6 +132,7 @@ fn load(conn: &Connection, selected: i64) -> Result<PageData, DbError> {
             stars: repo.stars,
             star_growth,
             views: per_period(&views, sum_observed),
+            views_change: per_period_vs_previous(&views),
             downloads: queries::latest_downloads_total(conn, repo.repo_id)?,
             pulls: queries::latest_container_pulls(conn, repo.repo_id)?,
         });

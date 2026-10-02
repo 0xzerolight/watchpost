@@ -582,6 +582,11 @@
   margin: 0;
 }
 
+/* The views change follows the views figure in the same cell, a step apart. */
+.wp-views-change {
+  margin-left: var(--wp-space-2);
+}
+
 /*
  * Direction is carried by the sign character first and the colour second, so
  * the row still reads on a monochrome screen and for a reader who cannot

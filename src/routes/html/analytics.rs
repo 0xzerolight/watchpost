@@ -122,6 +122,10 @@ pub struct LeaderRow {
     pub star_growth: [Option<i64>; PERIOD_COUNT],
     /// Views summed over each entry of [`PERIODS`], in that order.
     pub views: [Option<i64>; PERIOD_COUNT],
+    /// How the period's views moved against the period before it, in whole
+    /// percent, per entry of [`PERIODS`]: see
+    /// [`crate::series::per_period_vs_previous`] for when it is `None`.
+    pub views_change: [Option<i64>; PERIOD_COUNT],
     /// Release downloads to date. Period-independent: a cumulative total is a
     /// level, like the star count beside it, not a rate.
     pub downloads: Option<i64>,
@@ -206,7 +210,12 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                                 }
                                 td { (level(row.stars)) }
                                 (period_cell(&row.star_growth, days, true))
-                                @if cols.views { (period_cell(&row.views, days, false)) }
+                                @if cols.views {
+                                    td {
+                                        (period_spans(&row.views, days, false))
+                                        (views_change_spans(&row.views_change, days))
+                                    }
+                                }
                                 @if cols.downloads { td { (level(row.downloads)) } }
                                 @if cols.pulls { td { (level(row.pulls)) } }
                             }
@@ -243,6 +252,11 @@ impl Columns {
     }
 }
 
+/// One period-scoped figure in its own cell. See [`period_spans`].
+fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, with_sign: bool) -> Markup {
+    html! { td { (period_spans(values, days, with_sign)) } }
+}
+
 /// One period-scoped figure, rendered once per entry of [`PERIODS`] with all but
 /// the selected one `hidden`.
 ///
@@ -253,18 +267,41 @@ impl Columns {
 /// — would multiply the page's payload by the number of repos in order to move
 /// one column. `updatePeriodValues` in assets/app.js is the entire client-side
 /// half: a `hidden` flip, no text written and nothing parsed.
-fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, with_sign: bool) -> Markup {
+fn period_spans(values: &[Option<i64>; PERIOD_COUNT], days: i64, with_sign: bool) -> Markup {
     html! {
-        td {
-            @for ((period, _), value) in PERIODS.iter().zip(values) {
-                span data-period-value=(period) hidden[*period != days] {
-                    @match value {
-                        // "+N", "−N" or "±0" (an observed "nothing moved"),
-                        // the way `delta_badge` says it on the totals above.
-                        Some(n) if with_sign => (signed(*n)),
-                        Some(n) => (n),
-                        None => "—",
-                    }
+        @for ((period, _), value) in PERIODS.iter().zip(values) {
+            span data-period-value=(period) hidden[*period != days] {
+                @match value {
+                    // "+N", "−N" or "±0" (an observed "nothing moved"),
+                    // the way `delta_badge` says it on the totals above.
+                    Some(n) if with_sign => (signed(*n)),
+                    Some(n) => (n),
+                    None => "—",
+                }
+            }
+        }
+    }
+}
+
+/// How the views moved against the period before, after the Views figure:
+/// one span per entry of [`PERIODS`] with all but the selected one `hidden`,
+/// the [`period_spans`] contract, coloured like the delta badges with the sign
+/// spelled out. A change that cannot be measured (a gap in either window, a
+/// zero base, "All") has no span at all, so the cell never shows "0%" or a fall
+/// that did not happen. The hidden phrase gives a screenreader the comparison
+/// the colour and position give a sighted reader.
+fn views_change_spans(changes: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
+    html! {
+        @for ((period, _), change) in PERIODS.iter().zip(changes) {
+            @if let Some(pct) = change {
+                span data-period-value=(period) hidden[*period != days]
+                    class=(match *pct {
+                        n if n > 0 => "wp-delta wp-delta-up wp-views-change",
+                        n if n < 0 => "wp-delta wp-delta-down wp-views-change",
+                        _ => "wp-delta wp-muted wp-views-change",
+                    }) {
+                    (signed(*pct)) "%"
+                    span class="wp-visually-hidden" { " against the period before" }
                 }
             }
         }
@@ -457,6 +494,7 @@ mod tests {
             stars,
             star_growth: [Some(1), Some(12), Some(30), Some(90), Some(120)],
             views: [Some(2), Some(20), Some(60), Some(200), Some(400)],
+            views_change: [None; PERIOD_COUNT],
             downloads: Some(155),
             pulls: Some(70),
         }
@@ -774,6 +812,34 @@ mod tests {
             body.contains(r#"<span data-period-value="7">0</span>"#),
             "{body}"
         );
+    }
+
+    #[test]
+    fn views_change_ships_per_period_and_shows_the_selected_one() {
+        let mut row = leader("octo/a", Some(3));
+        row.views_change = [Some(96), Some(-42), Some(0), None, None];
+        let out = leaders_section(&[row], 7).into_string();
+        assert!(
+            out.contains(
+                r#"<span data-period-value="7" class="wp-delta wp-delta-up wp-views-change">+96%<span class="wp-visually-hidden"> against the period before</span></span>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains("<span data-period-value=\"30\" hidden class=\"wp-delta wp-delta-down wp-views-change\">\u{2212}42%"),
+            "out was {out}"
+        );
+        assert!(
+            out.contains("<span data-period-value=\"90\" hidden class=\"wp-delta wp-muted wp-views-change\">\u{00b1}0%"),
+            "out was {out}"
+        );
+        // A change that cannot be measured has no span at all, never "0%".
+        assert_eq!(out.matches("wp-views-change").count(), 3, "out was {out}");
+        // The change sits in the Views cell, after that cell's figures.
+        let cell = out
+            .find(r#"<span data-period-value="-1" hidden>400</span>"#)
+            .unwrap();
+        assert!(cell < out.find("wp-views-change").unwrap(), "out was {out}");
     }
 
     fn change(deltas: Vec<(ChangeMetric, i64)>) -> RepoChange {
