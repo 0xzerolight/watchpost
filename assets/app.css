@@ -350,20 +350,6 @@
   gap: var(--wp-space-4);
 }
 
-/*
- * A single wide card, for a chart that is the whole section rather than one of
- * several. The 18rem track above would leave it sitting in a column with empty
- * space beside it on a desktop.
- */
-.wp-cards-wide {
-  grid-template-columns: 1fr;
-}
-
-/* A full-width chart is the section, so it gets the hero height too. */
-.wp-cards-wide .chart-box {
-  height: 360px;
-}
-
 /* Pico gives articles a generous default margin, which a grid already spaces. */
 .wp-card {
   margin: 0;
@@ -428,12 +414,12 @@
 }
 
 /*
- * Tabular figures so the four totals line up on their digits. Large enough to
- * be the section's headline number, not so large it competes with the h1.
+ * The four totals on the shared figure scale, in tabular digits so they line
+ * up on their units. The headline number of the section, smaller than the h1.
  */
 .wp-total-value {
-  font-size: 1.5rem;
-  font-variant-numeric: tabular-nums;
+  font-size: var(--wp-text-figure);
+  font-variant-numeric: var(--wp-figure-numeric);
   line-height: 1.2;
 }
 

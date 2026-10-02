@@ -11,7 +11,6 @@
 use maud::{Markup, html};
 use serde::Serialize;
 
-use crate::routes::html::repo::chart_card;
 use crate::routes::html::{
     PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script, page_header,
     period_select, plural, table_wrap,
@@ -336,11 +335,13 @@ fn portfolio_section(view: &AnalyticsView) -> Markup {
             h2 { "Portfolio" }
             (totals_list(view.totals, view.days))
             @if view.payload.any_observed() {
-                // One card, full width: this chart is the section rather than
-                // one of several, so it does not want the card grid's 18rem
-                // track leaving it in a column with empty space beside it.
-                div class="wp-cards wp-cards-wide" {
-                    (chart_card("Stars", "chart_stars"))
+                // Frameless, like the repo page's hero chart, so the app draws
+                // one kind of chart one way. A card box around it drew Pico's
+                // wide shadow halo in light and a lighter slab in dark. No
+                // heading: the Stars total directly above names the series.
+                // The canvas id is the `CHART_SPECS` wire contract.
+                div class="wp-hero-chart" {
+                    canvas id="chart_stars" role="img" aria-label="Stars over time" {}
                 }
                 // Data only — the chart is built by app.js on
                 // `DOMContentLoaded` from this island.
@@ -460,6 +461,23 @@ mod tests {
         let rows = [leader("octo/a", Some(3))];
         let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
         assert!(out.contains(r#"id="chart_stars""#), "out was {out}");
+    }
+
+    #[test]
+    fn the_portfolio_chart_is_frameless_like_the_repo_hero() {
+        let payload = payload(vec![Some(12)]);
+        let rows = [leader("octo/a", Some(3))];
+        let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
+        assert!(
+            out.contains(
+                r#"<div class="wp-hero-chart"><canvas id="chart_stars" role="img" aria-label="Stars over time"></canvas></div>"#
+            ),
+            "out was {out}"
+        );
+        // No card box, no grid track and no heading of its own: the Stars
+        // total directly above already names the series.
+        assert!(!out.contains("wp-card"), "out was {out}");
+        assert!(!out.contains("<h3"), "out was {out}");
     }
 
     #[test]
