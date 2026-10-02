@@ -11,8 +11,8 @@ use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use crate::routes::html::{
-    Notice, empty_state, error_glyph, future_timestamp, json_script_class, notice, page_header,
-    plural, signed, slash_breaks, timestamp,
+    Notice, Placement, empty_state, error_glyph, future_timestamp, json_script_class, notice,
+    page_header, plural, signed, slash_breaks, timestamp,
 };
 use crate::series::growth;
 use crate::types::RepoOverview;
@@ -120,7 +120,7 @@ pub fn repo_card(
                     a href=(format!("/repos/{}", repo.repo_id)) { (slash_breaks(&repo.name)) }
                 }
                 @if let Some(error) = &repo.last_error {
-                    (error_glyph(error))
+                    (error_glyph(error, Placement::Left))
                 }
             }
             @if awaiting_first_sync(repo) {
@@ -255,7 +255,7 @@ mod tests {
         };
         let out = repo_card(&repo, &[], None, Tz::UTC).into_string();
         assert!(
-            out.contains(&error_glyph("github 502").into_string()),
+            out.contains(&error_glyph("github 502", Placement::Left).into_string()),
             "out was {out}"
         );
     }

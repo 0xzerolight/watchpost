@@ -8,8 +8,8 @@ use chrono_tz::Tz;
 use maud::{Markup, html};
 
 use super::ui::{
-    Notice, announced, empty_state, error_glyph, field, future_timestamp, notice, plural, spinner,
-    table_wrap, timestamp,
+    Notice, Placement, announced, empty_state, error_glyph, field, future_timestamp, notice,
+    plural, spinner, table_wrap, timestamp,
 };
 use crate::config::TokenSource;
 use crate::landing::{LANDING_PAGES, LandingPage};
@@ -401,7 +401,7 @@ fn picker_table(label: &str, rows: &[&RepoRow], tracked: bool, tz: Tz) -> Markup
                             }
                             @if tracked {
                                 @if let Some(error) = &repo.last_error {
-                                    " " (error_glyph(error))
+                                    " " (error_glyph(error, Placement::Left))
                                 }
                             }
                         }

@@ -229,17 +229,45 @@ pub fn spinner(id: &str) -> Markup {
     }
 }
 
+/// Which side of the glyph its tooltip opens on.
+///
+/// Pico also offers centred placements. Centred, the tooltip's invisible box
+/// hung past the right edge of a card or a table and widened the page, even
+/// while it was not showing, so only the two sides are on offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Towards the content, for a glyph at the end of a line: a card title,
+    /// a page heading, a picker row.
+    Left,
+    /// For a glyph in the first column of a table that scrolls inside
+    /// `.wp-table-wrap`. A box hung left of the name was cut at the wrapper's
+    /// edge ("ync will retry." on a phone), and to the right lie only the
+    /// figure columns, which it may cover while it is open. Pico's tooltip is
+    /// one unbroken line, so `app.css` lets the leaderboard's wrap at a
+    /// bounded width (`.wp-leaders [data-tooltip]::before`).
+    Right,
+}
+
+impl Placement {
+    fn attr(self) -> &'static str {
+        match self {
+            Placement::Left => "left",
+            Placement::Right => "right",
+        }
+    }
+}
+
 /// The warning glyph shown beside something whose last sync failed.
 ///
 /// Pico renders `data-tooltip` on hover/focus; `tabindex` makes the message
 /// reachable without a pointer, and the label keeps the bare glyph meaningful
-/// to a screenreader. `data-placement="left"` opens the tooltip towards the
-/// content. Centred, its invisible box hung past the right edge of a card or a
-/// table and widened the page, even while it was not showing.
-pub fn error_glyph(error: &str) -> Markup {
+/// to a screenreader. Every caller goes through here, the leaderboard
+/// included, with only the [`Placement`] differing: a hand-rolled copy for
+/// one placement was rejected because it drifts out of step with this one.
+pub fn error_glyph(error: &str, placement: Placement) -> Markup {
     html! {
-        span class="wp-danger" data-tooltip=(error) data-placement="left" tabindex="0"
-            role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
+        span class="wp-danger" data-tooltip=(error) data-placement=(placement.attr())
+            tabindex="0" role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
     }
 }
 
@@ -752,7 +780,7 @@ mod tests {
 
     #[test]
     fn error_glyph_is_reachable_and_labelled() {
-        let out = error_glyph("boom \"x\"").into_string();
+        let out = error_glyph("boom \"x\"", Placement::Left).into_string();
         assert!(out.contains(r#"tabindex="0""#), "{out}");
         assert!(out.contains(r#"role="img""#), "{out}");
         assert!(
@@ -766,6 +794,17 @@ mod tests {
         // Opens towards the content: centred, the hidden tooltip box hung past
         // the right edge and widened the page on a phone.
         assert!(out.contains(r#"data-placement="left""#), "{out}");
+    }
+
+    #[test]
+    fn the_error_glyph_differs_by_its_placement_alone() {
+        let left = error_glyph("network error", Placement::Left).into_string();
+        let right = error_glyph("network error", Placement::Right).into_string();
+        assert!(right.contains(r#"data-placement="right""#), "{right}");
+        assert_eq!(
+            left.replace(r#"data-placement="left""#, r#"data-placement="right""#),
+            right
+        );
     }
 
     #[test]

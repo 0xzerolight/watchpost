@@ -13,8 +13,8 @@ use serde::Serialize;
 
 use crate::routes::html::index::{nothing_tracked, sync_failures_notice};
 use crate::routes::html::{
-    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script,
-    page_header, period_select, plural, signed, slash_breaks, table_wrap,
+    ALL_DAYS, PERIOD_COUNT, PERIODS, Placement, date_stamp, delta_badge, empty_state, error_glyph,
+    json_script, page_header, period_select, plural, signed, slash_breaks, table_wrap,
 };
 use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
@@ -218,7 +218,7 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                                         (slash_breaks(&row.name))
                                     }
                                     @if let Some(error) = &row.last_error {
-                                        " " (leader_error_glyph(error))
+                                        " " (error_glyph(error, Placement::Right))
                                     }
                                 }
                                 td { (level(row.stars)) }
@@ -237,27 +237,6 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                 }
             }))
         }
-    }
-}
-
-/// The leaderboard's ⚠ beside a repo whose last sync failed: the same glyph
-/// as [`error_glyph`](crate::routes::html::error_glyph), opening to the right
-/// with its text allowed to wrap.
-///
-/// The shared glyph opens to the left, which suits a card. Here it sits in the
-/// first column of a table that scrolls inside `.wp-table-wrap`, and a box
-/// hung left of the name was cut at the wrapper's edge: "GitHub's rate limit
-/// is exhausted; the next sync will retry." read as "ync will retry." on a
-/// phone. To the right lie the figure columns, which the box may cover while
-/// it is open. Pico's tooltip is one unbroken line, and the categories the
-/// collector stores run to a hundred characters, so `app.css` lets this one
-/// wrap at a bounded width (`.wp-leaders [data-tooltip]::before`). Bottom
-/// placement was rejected: it is still centred on the glyph, so it clips on
-/// the left as well, and under the last row it overflows the wrapper.
-fn leader_error_glyph(error: &str) -> Markup {
-    html! {
-        span class="wp-danger" data-tooltip=(error) data-placement="right" tabindex="0"
-            role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
     }
 }
 
@@ -898,7 +877,7 @@ mod tests {
         assert!(
             out.contains(&format!(
                 r#"<a href="/repos/7">octo/<wbr>b</a> {}"#,
-                leader_error_glyph("network error").into_string()
+                error_glyph("network error", Placement::Right).into_string()
             )),
             "out was {out}"
         );

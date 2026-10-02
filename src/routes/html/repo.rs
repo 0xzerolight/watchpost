@@ -18,9 +18,9 @@ use maud::{Markup, PreEscaped, html};
 use serde::Serialize;
 
 use crate::routes::html::{
-    ALL_DAYS, Notice, PERIOD_COUNT, PERIODS, announced, date_stamp, delta_badge, empty_row,
-    empty_state, error_glyph, field, field_compact, json_script, kind_class, period_select, plural,
-    render_markdown, signed, slash_breaks, spinner, table_wrap,
+    ALL_DAYS, Notice, PERIOD_COUNT, PERIODS, Placement, announced, date_stamp, delta_badge,
+    empty_row, empty_state, error_glyph, field, field_compact, json_script, kind_class,
+    period_select, plural, render_markdown, signed, slash_breaks, spinner, table_wrap,
 };
 use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
@@ -648,7 +648,7 @@ pub fn repo_body(view: &RepoView) -> Markup {
                     (slash_breaks(&repo.name))
                     @if let Some(error) = &repo.last_error {
                         " "
-                        span class="wp-title-glyph" { (error_glyph(error)) }
+                        span class="wp-title-glyph" { (error_glyph(error, Placement::Left)) }
                     }
                 }
                 @if let Some(description) = &repo.description {
