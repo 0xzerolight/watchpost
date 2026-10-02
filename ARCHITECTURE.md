@@ -89,7 +89,9 @@ watching yet contributes nothing to the days before its first reading rather tha
 curve on those days is the other repos alone; the day that repo is first read is a genuine step up
 in the total. The same rule makes the growth column honest: it measures from a repo's first
 *observed* value inside the window, not from the window's edge, so a repo first seen halfway
-through reports the movement between two real readings instead of its entire star count.
+through reports the movement between two real readings instead of its entire star count. The
+portfolio badges are the sum of those per-repo growth figures, so a repo's first reading steps the
+curve up without counting as growth, and a badge always equals its Growth column added up.
 
 **Gaps mean "not observed".** If the app was down for a day, that day has no row, and rate metrics
 (views, clones) render as a gap rather than as zero — an honest hole beats an invented zero.

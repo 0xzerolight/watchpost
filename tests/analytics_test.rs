@@ -22,7 +22,7 @@ use watchpost::db::{Db, queries};
 use watchpost::gh_client::GhClient;
 use watchpost::routes::router;
 use watchpost::state::AppState;
-use watchpost::types::{AssetSnapshot, GhRepo, StatSnapshot};
+use watchpost::types::{AssetSnapshot, GhRepo, StatSnapshot, TrafficDay, TrafficKind};
 
 const REPO_A: &str = "octo/aaa";
 const REPO_B: &str = "octo/bbb";
@@ -161,6 +161,25 @@ impl Harness {
         self.state
             .db
             .call(move |c| queries::upsert_container_pulls(c, id, &date, pulls))
+            .await
+            .unwrap();
+    }
+
+    async fn seed_views(&self, id: i64, date: String, count: i64) {
+        self.state
+            .db
+            .call(move |c| {
+                queries::upsert_traffic_days(
+                    c,
+                    id,
+                    TrafficKind::Views,
+                    &[TrafficDay {
+                        timestamp: format!("{date}T00:00:00Z"),
+                        count,
+                        uniques: 1,
+                    }],
+                )
+            })
             .await
             .unwrap();
     }
@@ -326,6 +345,10 @@ async fn untracked_and_hidden_repos_are_absent_from_every_figure() {
 
     assert!(!body.contains(REPO_B), "{body}");
     assert!(!body.contains("octo/ccc"), "{body}");
+    // Names render with a break opportunity after the slash; check that form
+    // too, or the two lines above pass whatever the page shows.
+    assert!(!body.contains("octo/<wbr>bbb"), "{body}");
+    assert!(!body.contains("octo/<wbr>ccc"), "{body}");
     assert_eq!(series[series.len() - 1], Some(3), "{body}");
 }
 
@@ -352,11 +375,11 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
         body.contains(r#"<strong class="wp-total-value">42</strong>"#),
         "{body}"
     );
-    // The delta badge rides the same summed series the portfolio chart plots,
-    // so the two always agree: A moved 25 → 30, and B's first reading is a
-    // genuine step up in the total — +12 of arrival plus +5 of growth.
+    // The badge is each repo's own growth, added up: A moved 25 → 30, and B,
+    // read once, has not moved. B's arrival steps the curve up; it is not
+    // growth.
     assert!(
-        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+17</span>"#),
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+5</span>"#),
         "{body}"
     );
     assert!(
@@ -365,15 +388,54 @@ async fn the_totals_add_the_latest_row_of_every_tracked_repo() {
     );
 }
 
+/// The badge is the Growth column added up. Measured across the summed curve
+/// instead, B's arrival at 7 stars two days ago counted as growth: +13 where
+/// the two repos grew by +4 and +2.
+#[tokio::test]
+async fn a_newly_tracked_repo_adds_its_growth_to_the_badge_not_its_level() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    h.seed_stars(ID_A, days_ago(10), 100).await;
+    h.seed_stars(ID_A, days_ago(0), 104).await;
+    h.seed_stars(ID_B, days_ago(2), 7).await;
+    h.seed_stars(ID_B, days_ago(0), 9).await;
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+6</span>"#),
+        "{body}"
+    );
+    assert!(!body.contains(">+13</span>"), "{body}");
+    // The column the badge adds up.
+    assert!(
+        body.contains(r#"<span data-period-value="7">+4</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<span data-period-value="7">+2</span>"#),
+        "{body}"
+    );
+    // The curve keeps its documented step: 104 + 9 today.
+    let series = stars(&island(&body, "chart-data"));
+    assert_eq!(series[series.len() - 1], Some(113), "{body}");
+}
+
 #[tokio::test]
 async fn nothing_tracked_points_at_the_repo_picker() {
     let h = harness();
 
     let body = h.body("/analytics").await;
 
-    assert!(body.contains("No repos tracked yet"), "{body}");
     assert!(
-        body.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+        body.contains("No repositories tracked yet — watchpost only collects the ones you pick."),
+        "{body}"
+    );
+    assert!(
+        body.contains(
+            r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+        ),
         "{body}"
     );
     assert!(!body.contains("<canvas"), "{body}");
@@ -430,7 +492,7 @@ async fn a_repo_first_seen_inside_the_window_reports_no_growth_not_its_whole_cou
     let body = h.body("/analytics?days=7").await;
 
     assert!(
-        body.contains(r#"<span data-period-value="7">0</span>"#),
+        body.contains("<span data-period-value=\"7\">\u{00b1}0</span>"),
         "{body}"
     );
     assert!(!body.contains("+400"), "{body}");
@@ -453,7 +515,7 @@ async fn the_leaderboard_is_ranked_by_stars() {
         .expect("leaderboard rendered");
 
     assert!(
-        table.find(REPO_B).unwrap() < table.find(REPO_A).unwrap(),
+        table.find("octo/<wbr>bbb").unwrap() < table.find("octo/<wbr>aaa").unwrap(),
         "{body}"
     );
 }
@@ -467,7 +529,7 @@ async fn a_repo_with_no_releases_gets_no_downloads_column() {
     let body = h.body("/analytics").await;
 
     // A column that is an em dash in every row is furniture.
-    assert!(!body.contains("<th scope=\"col\">Downloads</th>"), "{body}");
+    assert!(!body.contains(r#"<th scope="col">Downloads "#), "{body}");
 }
 
 #[tokio::test]
@@ -481,9 +543,35 @@ async fn a_repo_name_cannot_break_out_of_the_leaderboard() {
 
     assert!(!body.contains("<script>alert(1)</script>"), "{body}");
     assert!(
-        body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        body.contains("&lt;script&gt;alert(1)&lt;/<wbr>script&gt;"),
         "{body}"
     );
+}
+
+/// On a phone the pinned name cell inherited `.wp-num-table`'s
+/// `overflow-wrap: anywhere`, which took every break point into its minimum
+/// width; the cell stayed at its 9rem floor and "anki_miner_android" split
+/// mid-word. `break-word` leaves those break points out of the minimum, so
+/// the cell grows to the longest segment and the name breaks at the slash.
+/// The selector carries both classes, or the later `.wp-num-table` rule at the
+/// same specificity overrides it and the fix silently does nothing.
+#[tokio::test]
+async fn a_pinned_repo_name_breaks_at_the_slash_not_mid_word() {
+    let h = harness();
+    let css = body_string(h.get("/assets/app.css").await).await;
+
+    let pinned = css
+        .split_once(
+            "@media (max-width: 40rem) {\n  .wp-leaders.wp-num-table :is(th, td):first-child {",
+        )
+        .expect("no pinned leaderboard name rule in app.css")
+        .1
+        .split('}')
+        .next()
+        .unwrap();
+
+    assert!(pinned.contains("position: sticky;"), "{pinned}");
+    assert!(pinned.contains("overflow-wrap: break-word;"), "{pinned}");
 }
 
 #[tokio::test]
@@ -520,12 +608,12 @@ async fn a_repo_that_ships_images_but_no_releases_still_gets_a_distribution_colu
     let body = h.body("/analytics").await;
 
     assert!(
-        body.contains("<th scope=\"col\">Container pulls</th>"),
+        body.contains(r#"<th scope="col">Container pulls <span class="wp-th-scope wp-muted">total</span></th>"#),
         "{body}"
     );
     // The newest reading, not the 110 a sum over two cumulative snapshots gives.
     assert!(body.contains("<td>70</td>"), "{body}");
-    assert!(!body.contains("<th scope=\"col\">Downloads</th>"), "{body}");
+    assert!(!body.contains(r#"<th scope="col">Downloads "#), "{body}");
 }
 
 #[tokio::test]
@@ -538,7 +626,7 @@ async fn a_repo_with_no_image_gets_no_container_pulls_column() {
 
     // A column that is an em dash in every row is furniture.
     assert!(
-        !body.contains("<th scope=\"col\">Container pulls</th>"),
+        !body.contains(r#"<th scope="col">Container pulls "#),
         "{body}"
     );
 }
@@ -578,4 +666,137 @@ async fn a_freshly_synced_repo_reports_no_changes() {
         "body was {body}"
     );
     assert!(!body.contains("+137"), "body was {body}");
+}
+
+/// Twenty-two changes in the window, twenty shown: the page says the rest
+/// exist rather than implying the fortnight is complete.
+#[tokio::test]
+async fn a_feed_cut_at_its_row_cap_says_so() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    // Twelve rising daily readings each: eleven changes per repo.
+    for day in 0..12_i64 {
+        h.seed_stars(ID_A, days_ago(day), 100 - day).await;
+        h.seed_stars(ID_B, days_ago(day), 50 - day).await;
+    }
+
+    let body = h.body("/analytics").await;
+
+    assert_eq!(
+        body.matches(r#"class="wp-change-repo""#).count(),
+        20,
+        "{body}"
+    );
+    assert!(
+        body.contains("Older changes are on each repository's page."),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_feed_with_room_to_spare_is_not_marked_cut() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stats(ID_A, days_ago(2), 137, 42, 7).await;
+    h.seed_stats(ID_A, days_ago(1), 140, 42, 6).await;
+
+    let body = h.body("/analytics").await;
+
+    assert!(body.contains("+3 stars"), "{body}");
+    assert!(!body.contains("Older changes"), "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// Views against the period before
+// ---------------------------------------------------------------------------
+
+/// The last seven complete days against the seven before them; today's
+/// half-filled bucket is in neither.
+#[tokio::test]
+async fn views_change_compares_the_last_complete_week_with_the_one_before() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    for day in 8..=14 {
+        h.seed_views(ID_A, days_ago(day), 10).await;
+    }
+    for day in 1..=7 {
+        h.seed_views(ID_A, days_ago(day), 20).await;
+    }
+    h.seed_views(ID_A, days_ago(0), 1).await;
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(
+        body.contains(
+            r#"<span data-period-value="7" class="wp-delta wp-delta-up wp-views-change">+100%"#
+        ),
+        "{body}"
+    );
+    // Thirty days would need sixty of history: no span for it, not "0%".
+    // One change span on the whole page, the 7-day one.
+    assert_eq!(body.matches("wp-views-change").count(), 1, "{body}");
+
+    // The class is a hook into app.css; renaming either side alone silently
+    // drops the gap between the figure and its change.
+    let css = body_string(h.get("/assets/app.css").await).await;
+    assert!(css.contains(".wp-views-change {"), "no views-change rule");
+}
+
+#[tokio::test]
+async fn a_gap_in_either_week_shows_no_change() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    // Day 10 was never observed.
+    for day in (1..=14).filter(|day| *day != 10) {
+        h.seed_views(ID_A, days_ago(day), 10).await;
+    }
+
+    let body = h.body("/analytics?days=7").await;
+
+    assert!(!body.contains("wp-views-change"), "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// Sync failures
+// ---------------------------------------------------------------------------
+
+/// Analytics is where a maintainer starts the day, so a broken collection has
+/// to show there, not only on a card two clicks away.
+#[tokio::test]
+async fn a_failed_sync_shows_on_the_start_page() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_repo(ID_B, REPO_B, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+    h.seed_stars(ID_B, days_ago(0), 5).await;
+    h.state
+        .db
+        .call(|c| queries::record_sync_err(c, ID_B, "github 502", None))
+        .await
+        .unwrap();
+
+    let body = h.body("/analytics").await;
+
+    let line = body
+        .find("1 repository failed its last sync")
+        .unwrap_or_else(|| panic!("no failure line in {body}"));
+    assert!(line < body.find("<h2>Portfolio</h2>").unwrap(), "{body}");
+    assert!(body.contains(r#"href="/settings#wp-repos""#), "{body}");
+    // The stored category only, on the glyph beside the name.
+    assert!(body.contains(r#"data-tooltip="github 502""#), "{body}");
+}
+
+#[tokio::test]
+async fn a_healthy_portfolio_shows_no_failure_line() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    h.seed_stars(ID_A, days_ago(0), 3).await;
+
+    let body = h.body("/analytics").await;
+
+    assert!(!body.contains("failed its last sync"), "{body}");
+    assert!(!body.contains("Last sync failed"), "{body}");
 }

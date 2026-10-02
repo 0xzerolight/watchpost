@@ -11,10 +11,10 @@
 use maud::{Markup, html};
 use serde::Serialize;
 
-use crate::routes::html::repo::chart_card;
+use crate::routes::html::index::{nothing_tracked, sync_failures_notice};
 use crate::routes::html::{
-    PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script, page_header,
-    period_select, plural, table_wrap,
+    ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_state, json_script,
+    page_header, period_select, plural, signed, slash_breaks, table_wrap,
 };
 use crate::types::{ChangeMetric, RepoChange, RepoOverview};
 
@@ -23,7 +23,8 @@ pub const CHANGES_DAYS: u32 = 14;
 
 /// How many days-with-movement the feed lists. A bound, not a page size: there
 /// is no "show more", because the repo pages are where the full history already
-/// lives.
+/// lives. The handler asks for one row more than this, so the page can say
+/// when rows were left out instead of implying it shows the whole fortnight.
 pub const CHANGES_MAX_ROWS: usize = 20;
 
 /// The `#chart-data` island, in the one shape `assets/app.js` reads.
@@ -74,9 +75,13 @@ pub struct Totals {
     pub forks: Option<i64>,
     pub issues: Option<i64>,
     pub prs: Option<i64>,
-    /// Movement per entry of [`PERIODS`], measured by the handler over the
-    /// same summed dense series the chart plots — the badge and the curve can
-    /// never disagree.
+    /// Movement per entry of [`PERIODS`]: each repo's own
+    /// [`growth`](crate::series::growth) over that window, added up by the
+    /// handler. Not growth over the summed curve the chart plots — that curve
+    /// steps up on the day a repo is first observed, and reading the step as
+    /// growth turned a newly tracked repo's whole star count into "+N". Summed
+    /// per repo, the badge always equals the leaderboard's Growth column added
+    /// up, while the curve keeps its documented step.
     pub stars_delta: [Option<i64>; PERIOD_COUNT],
     pub forks_delta: [Option<i64>; PERIOD_COUNT],
     pub issues_delta: [Option<i64>; PERIOD_COUNT],
@@ -97,8 +102,8 @@ impl Totals {
             forks: sum_levels(repos, |repo| repo.forks),
             issues: sum_levels(repos, |repo| repo.issues),
             prs: sum_levels(repos, |repo| repo.prs),
-            // The deltas need the summed dense series, which only the handler
-            // holds — it fills these after.
+            // The deltas need each repo's dense series, which only the
+            // handler holds — it adds them in after.
             ..Totals::default()
         }
     }
@@ -117,6 +122,10 @@ pub struct LeaderRow {
     pub star_growth: [Option<i64>; PERIOD_COUNT],
     /// Views summed over each entry of [`PERIODS`], in that order.
     pub views: [Option<i64>; PERIOD_COUNT],
+    /// How the period's views moved against the period before it, in whole
+    /// percent, per entry of [`PERIODS`]: see
+    /// [`crate::series::per_period_vs_previous`] for when it is `None`.
+    pub views_change: [Option<i64>; PERIOD_COUNT],
     /// Release downloads to date. Period-independent: a cumulative total is a
     /// level, like the star count beside it, not a rate.
     pub downloads: Option<i64>,
@@ -126,6 +135,9 @@ pub struct LeaderRow {
     /// publishes no release assets, and one shipping binaries publishes no
     /// image.
     pub pulls: Option<i64>,
+    /// The stored category of the repo's last failed sync, shown as the ⚠
+    /// glyph beside its name. `None` when the last sync succeeded.
+    pub last_error: Option<String>,
 }
 
 /// Everything the page renders, borrowed from the handler's one `db.call`.
@@ -134,6 +146,8 @@ pub struct AnalyticsView<'a> {
     pub payload: &'a PortfolioPayload,
     pub leaders: &'a [LeaderRow],
     pub changes: &'a [RepoChange],
+    /// Whether the feed had more rows than [`CHANGES_MAX_ROWS`].
+    pub changes_truncated: bool,
     pub days: i64,
 }
 
@@ -149,14 +163,14 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
             observed.then(|| period_select(view.days)),
         ))
         @if view.leaders.is_empty() {
-            (empty_state(
-                "No repos tracked yet — stats start collecting on the next sync.",
-                Some(("/settings", "Pick repos to watch")),
-            ))
+            (nothing_tracked())
         } @else {
+            (sync_failures_notice(
+                view.leaders.iter().filter(|row| row.last_error.is_some()).count(),
+            ))
             (portfolio_section(view))
             (leaders_section(view.leaders, view.days))
-            (changes_section(view.changes))
+            (changes_section(view.changes, view.changes_truncated))
         }
     }
 }
@@ -170,32 +184,47 @@ pub fn analytics_body(view: &AnalyticsView) -> Markup {
 /// destroy — that the repo with the most stars gets the fewest views. Past
 /// roughly fifty repos a full table stops being scannable, and the fix then is a
 /// row cap plus a sort control rather than more tables.
+///
+/// The table mixes figures that follow the period (Growth, Views) with levels
+/// to date (Stars, Downloads, Container pulls), so each period heading names
+/// its window and each level heading says "total". Bare words left a reader to
+/// guess that 1188 views was thirty days and 2487 downloads was all time.
 fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
     let cols = Columns::of(leaders);
     html! {
         section {
             h2 { "Repos" }
             (table_wrap(html! {
-                table class="wp-leaders" {
+                table class="wp-leaders wp-num-table" aria-label="Repositories by stars" {
                     thead {
                         tr {
                             th scope="col" { "Repo" }
                             th scope="col" { "Stars" }
-                            th scope="col" { "Growth" }
-                            @if cols.views { th scope="col" { "Views" } }
-                            @if cols.downloads { th scope="col" { "Downloads" } }
-                            @if cols.pulls { th scope="col" { "Container pulls" } }
+                            th scope="col" { "Growth " (period_scope(days)) }
+                            @if cols.views { th scope="col" { "Views " (period_scope(days)) } }
+                            @if cols.downloads { th scope="col" { "Downloads " (total_scope()) } }
+                            @if cols.pulls { th scope="col" { "Container pulls " (total_scope()) } }
                         }
                     }
                     tbody {
                         @for row in leaders {
                             tr {
                                 td {
-                                    a href=(format!("/repos/{}", row.repo_id)) { (row.name) }
+                                    a href=(format!("/repos/{}", row.repo_id)) {
+                                        (slash_breaks(&row.name))
+                                    }
+                                    @if let Some(error) = &row.last_error {
+                                        " " (leader_error_glyph(error))
+                                    }
                                 }
                                 td { (level(row.stars)) }
                                 (period_cell(&row.star_growth, days, true))
-                                @if cols.views { (period_cell(&row.views, days, false)) }
+                                @if cols.views {
+                                    td {
+                                        (period_spans(&row.views, days, false))
+                                        (views_change_spans(&row.views_change, days))
+                                    }
+                                }
                                 @if cols.downloads { td { (level(row.downloads)) } }
                                 @if cols.pulls { td { (level(row.pulls)) } }
                             }
@@ -204,6 +233,27 @@ fn leaders_section(leaders: &[LeaderRow], days: i64) -> Markup {
                 }
             }))
         }
+    }
+}
+
+/// The leaderboard's ⚠ beside a repo whose last sync failed: the same glyph
+/// as [`error_glyph`](crate::routes::html::error_glyph), opening to the right
+/// with its text allowed to wrap.
+///
+/// The shared glyph opens to the left, which suits a card. Here it sits in the
+/// first column of a table that scrolls inside `.wp-table-wrap`, and a box
+/// hung left of the name was cut at the wrapper's edge: "GitHub's rate limit
+/// is exhausted; the next sync will retry." read as "ync will retry." on a
+/// phone. To the right lie the figure columns, which the box may cover while
+/// it is open. Pico's tooltip is one unbroken line, and the categories the
+/// collector stores run to a hundred characters, so `app.css` lets this one
+/// wrap at a bounded width (`.wp-leaders [data-tooltip]::before`). Bottom
+/// placement was rejected: it is still centred on the glyph, so it clips on
+/// the left as well, and under the last row it overflows the wrapper.
+fn leader_error_glyph(error: &str) -> Markup {
+    html! {
+        span class="wp-danger" data-tooltip=(error) data-placement="right" tabindex="0"
+            role="img" aria-label=(format!("Last sync failed: {error}")) { "⚠" }
     }
 }
 
@@ -232,6 +282,11 @@ impl Columns {
     }
 }
 
+/// One period-scoped figure in its own cell. See [`period_spans`].
+fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, with_sign: bool) -> Markup {
+    html! { td { (period_spans(values, days, with_sign)) } }
+}
+
 /// One period-scoped figure, rendered once per entry of [`PERIODS`] with all but
 /// the selected one `hidden`.
 ///
@@ -242,24 +297,67 @@ impl Columns {
 /// — would multiply the page's payload by the number of repos in order to move
 /// one column. `updatePeriodValues` in assets/app.js is the entire client-side
 /// half: a `hidden` flip, no text written and nothing parsed.
-fn period_cell(values: &[Option<i64>; PERIOD_COUNT], days: i64, signed: bool) -> Markup {
+fn period_spans(values: &[Option<i64>; PERIOD_COUNT], days: i64, with_sign: bool) -> Markup {
     html! {
-        td {
-            @for ((period, _), value) in PERIODS.iter().zip(values) {
-                span data-period-value=(period) hidden[*period != days] {
-                    @match value {
-                        // U+2212 MINUS SIGN, not a hyphen: at this size a
-                        // hyphen next to a digit reads as punctuation. Same
-                        // choice the changes feed's delta chips make.
-                        Some(n) if signed && *n > 0 => { "+" (n) }
-                        Some(n) if signed && *n < 0 => { "\u{2212}" (n.abs()) }
-                        Some(n) => (n),
-                        None => "—",
-                    }
+        @for ((period, _), value) in PERIODS.iter().zip(values) {
+            span data-period-value=(period) hidden[*period != days] {
+                @match value {
+                    // "+N", "−N" or "±0" (an observed "nothing moved"),
+                    // the way `delta_badge` says it on the totals above.
+                    Some(n) if with_sign => (signed(*n)),
+                    Some(n) => (n),
+                    None => "—",
                 }
             }
         }
     }
+}
+
+/// How the views moved against the period before, after the Views figure:
+/// one span per entry of [`PERIODS`] with all but the selected one `hidden`,
+/// the [`period_spans`] contract, coloured like the delta badges with the sign
+/// spelled out. A change that cannot be measured (a gap in either window, a
+/// zero base, "All") has no span at all, so the cell never shows "0%" or a fall
+/// that did not happen. The hidden phrase gives a screenreader the comparison
+/// the colour and position give a sighted reader.
+fn views_change_spans(changes: &[Option<i64>; PERIOD_COUNT], days: i64) -> Markup {
+    html! {
+        @for ((period, _), change) in PERIODS.iter().zip(changes) {
+            @if let Some(pct) = change {
+                span data-period-value=(period) hidden[*period != days]
+                    class=(match *pct {
+                        n if n > 0 => "wp-delta wp-delta-up wp-views-change",
+                        n if n < 0 => "wp-delta wp-delta-down wp-views-change",
+                        _ => "wp-delta wp-muted wp-views-change",
+                    }) {
+                    (signed(*pct)) "%"
+                    span class="wp-visually-hidden" { " against the period before" }
+                }
+            }
+        }
+    }
+}
+
+/// What a period column covers, once per entry of [`PERIODS`] with all but the
+/// selected one `hidden`: the `data-period-value` contract the cells under it
+/// keep, so `updatePeriodValues` flips the heading with its figures and a
+/// period change still writes no text. "All" reads "all time", the window
+/// that entry sums over. With JS off the selected period's scope is the
+/// visible one, as the figures are.
+fn period_scope(days: i64) -> Markup {
+    html! {
+        @for (period, label) in PERIODS {
+            span class="wp-th-scope wp-muted" data-period-value=(period) hidden[period != days] {
+                @if period == ALL_DAYS { "all time" } @else { (label) }
+            }
+        }
+    }
+}
+
+/// The level columns' counterpart to [`period_scope`]: a figure to date,
+/// whatever the period selector says.
+fn total_scope() -> Markup {
+    html! { span class="wp-th-scope wp-muted" { "total" } }
 }
 
 /// A level, or an em dash for one that was never observed.
@@ -267,35 +365,58 @@ fn level(value: Option<i64>) -> Markup {
     html! { @match value { Some(n) => (n), None => "—" } }
 }
 
-/// What moved lately, newest day first.
+/// What moved lately, newest day first, grouped by day.
 ///
 /// Last on the page by design: the sections above answer how the portfolio is
 /// doing, and this answers what changed to get it there. Each row is one repo on
 /// one UTC day, and a day with nothing to report is simply absent — see
 /// [`crate::db::queries::recent_changes`] for what counts as a change.
-pub fn changes_section(changes: &[RepoChange]) -> Markup {
+///
+/// One muted label per day rather than a date on every row: with a dozen repos
+/// the same date was printed a dozen times in a column the eye had to scan to
+/// find where a day ended. The label is the stored UTC day through
+/// [`date_stamp`], never "Today" or "Yesterday" in `WATCHPOST_TZ`, because a UTC
+/// bucket cannot be re-cut into another zone. The heading names the window and
+/// a closing line says when the row cap cut it short, so the list never implies
+/// it is the whole fortnight.
+pub fn changes_section(changes: &[RepoChange], truncated: bool) -> Markup {
+    // Runs of one date. The query returns rows newest day first, so each day
+    // is one contiguous run and appears once.
+    let days: Vec<&[RepoChange]> = changes.chunk_by(|a, b| a.date == b.date).collect();
     html! {
         section class="wp-changes" {
-            h2 { "Recent changes" }
+            h2 {
+                "Recent changes "
+                span class="wp-muted" { "· last " (CHANGES_DAYS) " days" }
+            }
             @if changes.is_empty() {
                 (empty_state(
                     "Nothing changed in the last 14 days.",
                     None,
                 ))
             } @else {
-                ul {
-                    @for change in changes {
-                        li {
-                            span class="wp-change-day wp-muted wp-small" { (date_stamp(&change.date)) }
-                            a class="wp-change-repo" href=(format!("/repos/{}", change.repo_id)) {
-                                (change.name)
-                            }
-                            span class="wp-change-deltas" {
-                                @for (metric, delta) in &change.deltas {
-                                    (delta_chip(*metric, *delta))
+                @for day in &days {
+                    @if let Some(first) = day.first() {
+                        h3 class="wp-change-day wp-muted" { (date_stamp(&first.date)) }
+                    }
+                    ul {
+                        @for change in day.iter() {
+                            li {
+                                a class="wp-change-repo" href=(format!("/repos/{}", change.repo_id)) {
+                                    (slash_breaks(&change.name))
+                                }
+                                span class="wp-change-deltas" {
+                                    @for (metric, delta) in &change.deltas {
+                                        (delta_chip(*metric, *delta))
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+                @if truncated {
+                    p class="wp-muted wp-small wp-changes-more" {
+                        "Older changes are on each repository's page."
                     }
                 }
             }
@@ -307,8 +428,8 @@ pub fn changes_section(changes: &[RepoChange]) -> Markup {
 ///
 /// The sign is spelled out rather than left to colour alone, so the direction
 /// survives a monochrome screen and a reader who cannot separate the two hues.
-/// It is U+2212 MINUS SIGN, not a hyphen: at this size a hyphen next to a
-/// digit reads as punctuation.
+/// The figure goes through [`signed`], the one formatter every signed number
+/// on these pages shares.
 fn delta_chip(metric: ChangeMetric, delta: i64) -> Markup {
     let (one, many) = metric.labels();
     let class = if delta > 0 {
@@ -318,8 +439,7 @@ fn delta_chip(metric: ChangeMetric, delta: i64) -> Markup {
     };
     html! {
         span class=(class) {
-            (if delta > 0 { "+" } else { "\u{2212}" })
-            (delta.abs())
+            (signed(delta))
             " "
             (plural(delta.abs(), one, many))
         }
@@ -332,11 +452,13 @@ fn portfolio_section(view: &AnalyticsView) -> Markup {
             h2 { "Portfolio" }
             (totals_list(view.totals, view.days))
             @if view.payload.any_observed() {
-                // One card, full width: this chart is the section rather than
-                // one of several, so it does not want the card grid's 18rem
-                // track leaving it in a column with empty space beside it.
-                div class="wp-cards wp-cards-wide" {
-                    (chart_card("Stars", "chart_stars"))
+                // Frameless, like the repo page's hero chart, so the app draws
+                // one kind of chart one way. A card box around it drew Pico's
+                // wide shadow halo in light and a lighter slab in dark. No
+                // heading: the Stars total directly above names the series.
+                // The canvas id is the `CHART_SPECS` wire contract.
+                div class="wp-hero-chart" {
+                    canvas id="chart_stars" role="img" aria-label="Stars over time" {}
                 }
                 // Data only — the chart is built by app.js on
                 // `DOMContentLoaded` from this island.
@@ -402,8 +524,10 @@ mod tests {
             stars,
             star_growth: [Some(1), Some(12), Some(30), Some(90), Some(120)],
             views: [Some(2), Some(20), Some(60), Some(200), Some(400)],
+            views_change: [None; PERIOD_COUNT],
             downloads: Some(155),
             pulls: Some(70),
+            last_error: None,
         }
     }
 
@@ -431,6 +555,7 @@ mod tests {
             payload,
             leaders,
             changes: &[],
+            changes_truncated: false,
             days,
         }
     }
@@ -456,6 +581,23 @@ mod tests {
         let rows = [leader("octo/a", Some(3))];
         let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
         assert!(out.contains(r#"id="chart_stars""#), "out was {out}");
+    }
+
+    #[test]
+    fn the_portfolio_chart_is_frameless_like_the_repo_hero() {
+        let payload = payload(vec![Some(12)]);
+        let rows = [leader("octo/a", Some(3))];
+        let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
+        assert!(
+            out.contains(
+                r#"<div class="wp-hero-chart"><canvas id="chart_stars" role="img" aria-label="Stars over time"></canvas></div>"#
+            ),
+            "out was {out}"
+        );
+        // No card box, no grid track and no heading of its own: the Stars
+        // total directly above already names the series.
+        assert!(!out.contains("wp-card"), "out was {out}");
+        assert!(!out.contains("<h3"), "out was {out}");
     }
 
     #[test]
@@ -545,9 +687,16 @@ mod tests {
     fn nothing_tracked_points_at_the_repo_picker() {
         let payload = payload(vec![]);
         let out = analytics_body(&view(&Totals::default(), &payload, &[])).into_string();
-        assert!(out.contains("No repos tracked yet"), "out was {out}");
         assert!(
-            out.contains(r#"<a class="wp-empty-cta" href="/settings">Pick repos to watch</a>"#),
+            out.contains(
+                "No repositories tracked yet — watchpost only collects the ones you pick."
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(
+                r#"<a class="wp-empty-cta" href="/settings#wp-repos">Pick repositories to track</a>"#
+            ),
             "out was {out}"
         );
         assert!(!out.contains("wp-totals"), "out was {out}");
@@ -559,14 +708,15 @@ mod tests {
         // Every period's number is server-rendered and all but one hidden, so
         // the table works with JS off and a zoom costs no request.
         let out = leaders_section(&[leader("octo/a", Some(3))], 30).into_string();
+        let body = out.split("<tbody>").nth(1).expect("tbody rendered");
         assert_eq!(
-            out.matches("data-period-value").count(),
+            body.matches("data-period-value").count(),
             10,
             "out was {out}"
         );
-        assert_eq!(out.matches(" hidden>").count(), 8, "out was {out}");
+        assert_eq!(body.matches(" hidden>").count(), 8, "out was {out}");
         assert!(
-            out.contains(r#"<span data-period-value="30">+12</span>"#),
+            body.contains(r#"<span data-period-value="30">+12</span>"#),
             "out was {out}"
         );
     }
@@ -604,10 +754,13 @@ mod tests {
         row.downloads = None;
         let out = leaders_section(&[row], 7).into_string();
         assert!(
-            out.contains(r#"<th scope="col">Container pulls</th>"#),
+            out.contains(r#"<th scope="col">Container pulls <span class="wp-th-scope wp-muted">total</span></th>"#),
             "out was {out}"
         );
-        assert!(!out.contains(">Downloads<"), "out was {out}");
+        assert!(
+            !out.contains(r#"<th scope="col">Downloads "#),
+            "out was {out}"
+        );
         assert!(out.contains("<td>70</td>"), "out was {out}");
     }
 
@@ -618,9 +771,161 @@ mod tests {
         let out = leaders_section(&[leader("octo/b", Some(90)), leader("octo/a", Some(3))], 7)
             .into_string();
         assert!(
-            out.find("octo/b").unwrap() < out.find("octo/a").unwrap(),
+            out.find("octo/<wbr>b").unwrap() < out.find("octo/<wbr>a").unwrap(),
             "out was {out}"
         );
+    }
+
+    #[test]
+    fn the_leaderboard_is_a_labelled_numeric_table_with_breakable_names() {
+        let out = leaders_section(&[leader("octo/a", Some(3))], 30).into_string();
+        assert!(
+            out.contains(
+                r#"<table class="wp-leaders wp-num-table" aria-label="Repositories by stars">"#
+            ),
+            "out was {out}"
+        );
+        // The name breaks after the slash, not mid-word.
+        assert!(
+            out.contains(r#"<a href="/repos/7">octo/<wbr>a</a>"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn period_columns_say_which_window_they_cover_and_levels_say_total() {
+        let out = leaders_section(&[leader("octo/a", Some(3))], 30).into_string();
+        let head = out.split("<tbody>").next().expect("thead rendered");
+        // Growth and Views each carry every period's scope, one visible: the
+        // same `data-period-value` flip as the cells under them.
+        assert_eq!(head.matches("data-period-value").count(), 10, "{head}");
+        assert_eq!(
+            head.matches(
+                r#"<span class="wp-th-scope wp-muted" data-period-value="30">30 days</span>"#
+            )
+            .count(),
+            2,
+            "{head}"
+        );
+        assert!(
+            head.contains(r#"<span class="wp-th-scope wp-muted" data-period-value="-1" hidden>all time</span>"#),
+            "{head}"
+        );
+        assert!(
+            head.contains(
+                r#"<span class="wp-th-scope wp-muted" data-period-value="365" hidden>1 year</span>"#
+            ),
+            "{head}"
+        );
+        assert!(
+            head.contains(
+                r#"<th scope="col">Downloads <span class="wp-th-scope wp-muted">total</span></th>"#
+            ),
+            "{head}"
+        );
+        // Stars is a level the row is ranked by; it needs no scope.
+        assert!(head.contains(r#"<th scope="col">Stars</th>"#), "{head}");
+    }
+
+    #[test]
+    fn zero_growth_reads_as_nothing_moved() {
+        let mut row = leader("octo/a", Some(3));
+        row.star_growth = [Some(0); PERIOD_COUNT];
+        row.views = [Some(0); PERIOD_COUNT];
+        let out = leaders_section(&[row], 7).into_string();
+        let body = out.split("<tbody>").nth(1).expect("tbody rendered");
+        // Signed like `delta_badge`; a views count of zero stays a plain 0.
+        assert!(
+            body.contains("<span data-period-value=\"7\">\u{00b1}0</span>"),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"<span data-period-value="7">0</span>"#),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn views_change_ships_per_period_and_shows_the_selected_one() {
+        let mut row = leader("octo/a", Some(3));
+        row.views_change = [Some(96), Some(-42), Some(0), None, None];
+        let out = leaders_section(&[row], 7).into_string();
+        assert!(
+            out.contains(
+                r#"<span data-period-value="7" class="wp-delta wp-delta-up wp-views-change">+96%<span class="wp-visually-hidden"> against the period before</span></span>"#
+            ),
+            "out was {out}"
+        );
+        assert!(
+            out.contains("<span data-period-value=\"30\" hidden class=\"wp-delta wp-delta-down wp-views-change\">\u{2212}42%"),
+            "out was {out}"
+        );
+        assert!(
+            out.contains("<span data-period-value=\"90\" hidden class=\"wp-delta wp-muted wp-views-change\">\u{00b1}0%"),
+            "out was {out}"
+        );
+        // A change that cannot be measured has no span at all, never "0%".
+        assert_eq!(out.matches("wp-views-change").count(), 3, "out was {out}");
+        // The change sits in the Views cell, after that cell's figures.
+        let cell = out
+            .find(r#"<span data-period-value="-1" hidden>400</span>"#)
+            .unwrap();
+        assert!(cell < out.find("wp-views-change").unwrap(), "out was {out}");
+    }
+
+    #[test]
+    fn a_failed_sync_is_named_above_the_portfolio_and_marked_in_its_row() {
+        let payload = payload(vec![Some(12)]);
+        let mut broken = leader("octo/b", Some(1));
+        broken.last_error = Some("network error".into());
+        let rows = [leader("octo/a", Some(3)), broken];
+        let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
+
+        let line = out
+            .find("1 repository failed its last sync")
+            .expect("line rendered");
+        let portfolio = out.find("<h2>Portfolio</h2>").expect("portfolio rendered");
+        assert!(line < portfolio, "out was {out}");
+        assert!(
+            out.contains(r#"<a href="/settings#wp-repos">see Settings</a>"#),
+            "out was {out}"
+        );
+        // The glyph sits beside the failing repo's name, and only there.
+        assert!(
+            out.contains(&format!(
+                r#"<a href="/repos/7">octo/<wbr>b</a> {}"#,
+                leader_error_glyph("network error").into_string()
+            )),
+            "out was {out}"
+        );
+        assert_eq!(out.matches("wp-danger").count(), 1, "out was {out}");
+    }
+
+    #[test]
+    fn a_leaderboard_glyph_opens_over_the_figures_with_the_whole_category() {
+        // A category the collector really stores (`GhError::user_message`),
+        // long enough that a box hung left of the name was cut at the table
+        // wrapper's edge.
+        let category = "GitHub refused the request — check the token's permissions \
+                        (Metadata: read, Administration: read).";
+        let mut broken = leader("octo/b", Some(1));
+        broken.last_error = Some(category.into());
+        let out = leaders_section(&[broken], 30).into_string();
+
+        let glyph = format!(
+            r#"<span class="wp-danger" data-tooltip="{category}" data-placement="right" tabindex="0" role="img" aria-label="Last sync failed: {category}">⚠</span>"#
+        );
+        assert!(out.contains(&glyph), "out was {out}");
+        assert!(!out.contains(r#"data-placement="left""#), "out was {out}");
+    }
+
+    #[test]
+    fn a_healthy_portfolio_has_no_failure_line_or_glyph() {
+        let payload = payload(vec![Some(12)]);
+        let rows = [leader("octo/a", Some(3))];
+        let out = analytics_body(&view(&Totals::default(), &payload, &rows)).into_string();
+        assert!(!out.contains("last sync"), "out was {out}");
+        assert!(!out.contains("wp-danger"), "out was {out}");
     }
 
     fn change(deltas: Vec<(ChangeMetric, i64)>) -> RepoChange {
@@ -634,10 +939,13 @@ mod tests {
 
     #[test]
     fn a_delta_spells_out_its_direction_and_pluralises() {
-        let out = changes_section(&[change(vec![
-            (ChangeMetric::Stars, 3),
-            (ChangeMetric::Issues, -1),
-        ])])
+        let out = changes_section(
+            &[change(vec![
+                (ChangeMetric::Stars, 3),
+                (ChangeMetric::Issues, -1),
+            ])],
+            false,
+        )
         .into_string();
         assert!(
             out.contains(r#"<span class="wp-delta wp-delta-up">+3 stars</span>"#),
@@ -657,7 +965,7 @@ mod tests {
 
     #[test]
     fn a_quiet_fortnight_says_so_instead_of_rendering_an_empty_list() {
-        let out = changes_section(&[]).into_string();
+        let out = changes_section(&[], false).into_string();
         assert!(
             out.contains("<p>Nothing changed in the last 14 days.</p>"),
             "out was {out}"
@@ -678,6 +986,7 @@ mod tests {
             payload: &payload,
             leaders: &leaders,
             changes: &changes,
+            changes_truncated: false,
             days: ALL_DAYS,
         })
         .into_string();
@@ -687,5 +996,84 @@ mod tests {
         let changes_at = out.find("wp-changes").expect("feed rendered");
         assert!(totals_at < leaders_at, "out was {out}");
         assert!(leaders_at < changes_at, "out was {out}");
+    }
+
+    fn change_on(repo_id: i64, name: &str, date: &str) -> RepoChange {
+        RepoChange {
+            repo_id,
+            name: name.into(),
+            date: date.into(),
+            deltas: vec![(ChangeMetric::Stars, 1)],
+        }
+    }
+
+    #[test]
+    fn each_day_is_labelled_once_and_its_rows_follow_it() {
+        let rows = [
+            change_on(1, "octo/a", "2026-08-19"),
+            change_on(2, "octo/b", "2026-08-19"),
+            change_on(1, "octo/a", "2026-08-18"),
+        ];
+        let out = changes_section(&rows, false).into_string();
+        // The stored UTC day, once per day, as a sub-heading.
+        assert_eq!(
+            out.matches(r#"<time datetime="2026-08-19">"#).count(),
+            1,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<time datetime="2026-08-18">"#).count(),
+            1,
+            "out was {out}"
+        );
+        assert_eq!(
+            out.matches(r#"<h3 class="wp-change-day wp-muted">"#)
+                .count(),
+            2,
+            "out was {out}"
+        );
+        assert_eq!(out.matches("<li>").count(), 3, "out was {out}");
+        // Label, its rows, then the next label.
+        let first_day = out.find(r#"datetime="2026-08-19""#).unwrap();
+        let second_repo = out.find(r#"href="/repos/2""#).unwrap();
+        let second_day = out.find(r#"datetime="2026-08-18""#).unwrap();
+        assert!(
+            first_day < second_repo && second_repo < second_day,
+            "out was {out}"
+        );
+        // The repo name comes first in a row and breaks after the slash.
+        assert!(
+            out.contains(r#"<li><a class="wp-change-repo" href="/repos/1">octo/<wbr>a</a><span class="wp-change-deltas">"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn the_heading_says_what_the_feed_covers() {
+        let out = changes_section(&[], false).into_string();
+        assert!(
+            out.contains(r#"<h2>Recent changes <span class="wp-muted">· last 14 days</span></h2>"#),
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn a_cut_feed_says_where_the_rest_is_and_a_whole_one_does_not() {
+        let rows = [change(vec![(ChangeMetric::Stars, 3)])];
+        let cut = changes_section(&rows, true).into_string();
+        assert!(
+            cut.contains(
+                r#"<p class="wp-muted wp-small wp-changes-more">Older changes are on each repository's page.</p>"#
+            ),
+            "out was {cut}"
+        );
+        let whole = changes_section(&rows, false).into_string();
+        assert!(!whole.contains("Older changes"), "out was {whole}");
+        // Nothing to cut, nothing to say: the empty state stands alone.
+        assert!(
+            !changes_section(&[], true)
+                .into_string()
+                .contains("Older changes")
+        );
     }
 }

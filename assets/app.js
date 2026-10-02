@@ -1815,7 +1815,15 @@
               borderWidth: 1.5,
               borderJoinStyle: "round",
               borderCapStyle: "round",
-              pointRadius: 0,
+              // The big charts' rule: a reading with no neighbours draws a
+              // dot, where a radius of 0 left a repo read once as a 1px
+              // speck. A run of three or more stays a bare line. Filled with
+              // the line colour, not the area gradient, which is nearly
+              // transparent at a dot's height; `applyTheme` recolours it.
+              pointRadius: strandedPointRadius,
+              pointBackgroundColor: colour,
+              pointBorderWidth: 0,
+              pointHoverRadius: 0,
               tension: 0,
               // Same rule as the big charts: a day with no observation is a
               // break, not a dip to zero.
@@ -1831,7 +1839,6 @@
           // tooltip to chase with a pointer.
           scales: { x: { display: false }, y: { display: false } },
           plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          elements: { point: { radius: 0 } },
         },
       });
       live.add(chart);
