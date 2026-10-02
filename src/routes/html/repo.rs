@@ -19,8 +19,8 @@ use serde::Serialize;
 
 use crate::routes::html::{
     ALL_DAYS, PERIOD_COUNT, PERIODS, date_stamp, delta_badge, empty_row, empty_state, field,
-    field_compact, json_script, kind_class, page_header, period_select, render_markdown, spinner,
-    table_wrap,
+    field_compact, json_script, kind_class, page_header, period_select, plural, render_markdown,
+    spinner, table_wrap,
 };
 use crate::series::{growth, last_observed, per_period, sum_observed};
 use crate::types::{Event, PopularItem, PopularKind, RepoOverview};
@@ -1134,9 +1134,18 @@ fn event_add_form(repo_id: i64, draft: Option<&EventDraft>, tz: Tz) -> Markup {
 /// opening a note only makes its own row taller. The `aria-label` names the
 /// table in a screenreader's table list, where a visible caption would only
 /// repeat the section's own heading.
+///
+/// Past [`SHOWN_ROWS`] events the older rows carry `wp-more-row` and the
+/// table carries the disclosure hook. The newest ten are the ones a reader
+/// comes to edit, and 49 events made this section longer than the rest of the
+/// page together. The chart markers and `#events-data` keep every event. The
+/// id is the client's key for whether the reader opened the list.
 fn events_table(repo_id: i64, events: &[Event]) -> Markup {
+    let more = events.len() > SHOWN_ROWS;
+    let older = events.len().saturating_sub(SHOWN_ROWS);
     html! {
-        table class="wp-events" aria-label="Events" {
+        table id="wp-events-table" class="wp-events" aria-label="Events"
+            data-more=[more.then_some(SHOWN_ROWS)] {
             thead {
                 tr {
                     th scope="col" { "Date" }
@@ -1145,17 +1154,42 @@ fn events_table(repo_id: i64, events: &[Event]) -> Markup {
                     th scope="col" { "Actions" }
                 }
             }
-            tbody { @for event in events { (event_row(repo_id, event)) } }
+            tbody {
+                @for (i, event) in events.iter().enumerate() {
+                    (event_row(repo_id, event, i >= SHOWN_ROWS))
+                }
+            }
+            @if more {
+                tfoot class="wp-more-foot" {
+                    tr {
+                        td colspan="4" {
+                            (more_toggle(
+                                &format!(
+                                    "Show {older} older {}",
+                                    plural(older as i64, "event", "events")
+                                ),
+                                &format!("Show the newest {SHOWN_ROWS} only"),
+                            ))
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-/// One event as a display row. Also served on its own by the cancel button, so
-/// the swapped-back row is byte-identical to the one the edit form replaced.
-pub fn event_row(repo_id: i64, event: &Event) -> Markup {
+/// One event as a display row. Also served on its own by the cancel button,
+/// which works `older` out from the same section data, so the swapped-back
+/// row is byte-identical to the one the edit form replaced.
+///
+/// `older` marks a row past [`SHOWN_ROWS`] for the client's disclosure. The
+/// class goes after `id` and `data-kind`, which the marker code and the kind
+/// filter key on.
+pub fn event_row(repo_id: i64, event: &Event, older: bool) -> Markup {
     let base = format!("/repos/{repo_id}/events/{}", event.id);
     html! {
-        tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()] {
+        tr id=(format!("event-row-{}", event.id)) data-kind=[event.kind.as_deref()]
+            class=[older.then_some("wp-more-row")] {
             td { (event.date) }
             td {
                 @if let Some(kind) = &event.kind {
@@ -2221,7 +2255,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let out = event_row(1, &event).into_string();
+        let out = event_row(1, &event, false).into_string();
         // Both actions: a second click during the first is a second request.
         assert_eq!(
             out.matches(r#"hx-disabled-elt="this""#).count(),
@@ -2266,7 +2300,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let row = event_row(1, &event).into_string();
+        let row = event_row(1, &event, false).into_string();
         assert!(row.contains(r#"id="event-edit-7""#), "row was {row}");
         assert!(row.contains(r#"id="event-del-7""#), "row was {row}");
 
@@ -2380,7 +2414,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let out = event_row(1, &event).into_string();
+        let out = event_row(1, &event, false).into_string();
         assert!(
             out.starts_with(r#"<tr id="event-row-7" data-kind="release""#),
             "{out}"
@@ -2452,7 +2486,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let out = event_row(1, &event).into_string();
+        let out = event_row(1, &event, false).into_string();
         assert!(
             out.contains(
                 r#">Edit<span class="wp-visually-hidden"> r/ajatt, 2026-09-01</span></button>"#
@@ -2486,7 +2520,8 @@ mod tests {
 
         let section = events_section(&events_view(std::slice::from_ref(&event), &[])).into_string();
         assert!(
-            section.contains(r#"<table class="wp-events" aria-label="Events">"#),
+            section
+                .contains(r#"<table id="wp-events-table" class="wp-events" aria-label="Events">"#),
             "section was {section}"
         );
         assert!(
@@ -2539,5 +2574,83 @@ mod tests {
             "out was {out}"
         );
         assert_eq!(out.matches("aria-invalid").count(), 2, "out was {out}");
+    }
+
+    /// `n` events, newest first as the query returns them, all of kind "hn".
+    fn numbered_events(n: i64) -> Vec<Event> {
+        (1..=n)
+            .map(|id| Event {
+                id,
+                repo_id: 1,
+                date: format!("2026-08-{:02}", 28 - id),
+                title: format!("Event {id}"),
+                notes: String::new(),
+                url: None,
+                kind: Some("hn".into()),
+                created_at: String::new(),
+                updated_at: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn events_past_the_newest_ten_carry_the_disclosure_hook() {
+        let events = numbered_events(12);
+        let out = events_section(&events_view(&events, &[])).into_string();
+        assert!(
+            out.contains(
+                r#"<table id="wp-events-table" class="wp-events" aria-label="Events" data-more="10">"#
+            ),
+            "out was {out}"
+        );
+        // Ids and kinds are untouched; the class rides after them.
+        assert!(
+            out.contains(r#"<tr id="event-row-10" data-kind="hn">"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<tr id="event-row-11" data-kind="hn" class="wp-more-row">"#),
+            "out was {out}"
+        );
+        assert!(
+            out.contains(r#"<tr id="event-row-12" data-kind="hn" class="wp-more-row">"#),
+            "out was {out}"
+        );
+        assert_eq!(out.matches("wp-more-row").count(), 2, "out was {out}");
+        assert!(
+            out.contains(concat!(
+                r#"<td colspan="4"><button type="button" class="secondary outline wp-more-toggle" data-more-toggle "#,
+                r#"data-more-show="Show 2 older events" data-more-hide="Show the newest 10 only""#
+            )),
+            "out was {out}"
+        );
+        // The chart markers keep every event, collapsed or not.
+        assert_eq!(
+            out.matches(r#""title":"Event "#).count(),
+            12,
+            "out was {out}"
+        );
+    }
+
+    #[test]
+    fn ten_events_or_fewer_render_no_toggle() {
+        let events = numbered_events(10);
+        let out = events_section(&events_view(&events, &[])).into_string();
+        assert!(
+            out.contains(r#"<table id="wp-events-table" class="wp-events" aria-label="Events">"#),
+            "out was {out}"
+        );
+        assert!(!out.contains("data-more"), "out was {out}");
+        assert!(!out.contains("wp-more"), "out was {out}");
+    }
+
+    #[test]
+    fn one_older_event_is_singular() {
+        let events = numbered_events(11);
+        let out = events_section(&events_view(&events, &[])).into_string();
+        assert!(
+            out.contains(r#"data-more-show="Show 1 older event""#),
+            "out was {out}"
+        );
     }
 }

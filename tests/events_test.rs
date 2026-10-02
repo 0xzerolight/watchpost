@@ -783,6 +783,39 @@ async fn edit_form_and_cancel_swap_the_same_row() {
     );
 }
 
+/// Cancel swaps a display row back in on its own, so the row has to know
+/// whether it is one of the older rows the page collapses. One that came back
+/// unmarked would reappear in a collapsed list.
+#[tokio::test]
+async fn a_cancelled_row_comes_back_marked_by_where_it_sorts() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    let mut ids = Vec::new();
+    for day in 1..=11 {
+        let date = format!("2026-08-{day:02}");
+        let title = format!("Event {day}");
+        ids.push(
+            h.create(ID_A, &[("date", date.as_str()), ("title", title.as_str())])
+                .await,
+        );
+    }
+
+    // Newest first: Aug 11 is row one, Aug 1 the eleventh.
+    let oldest = body_string(h.get(&format!("/repos/1/events/{}", ids[0])).await).await;
+    assert!(
+        oldest.starts_with(&format!(
+            r#"<tr id="event-row-{}" class="wp-more-row">"#,
+            ids[0]
+        )),
+        "{oldest}"
+    );
+    let newest = body_string(h.get(&format!("/repos/1/events/{}", ids[10])).await).await;
+    assert!(
+        newest.starts_with(&format!(r#"<tr id="event-row-{}">"#, ids[10])),
+        "{newest}"
+    );
+}
+
 #[tokio::test]
 async fn delete_removes() {
     let h = harness();

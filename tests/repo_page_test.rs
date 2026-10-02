@@ -994,6 +994,12 @@ async fn the_repo_page_client_hooks_ship_in_the_assets() {
         "function initMore(",
         "[data-more-toggle]",
         "table[data-more]",
+        // Events disclosure (REPO-05): a chip press opens the whole list
+        // first, so a filtered view is never partial, and a jump to an older
+        // row opens the table holding it.
+        "function showAllEvents(",
+        "showAllEvents();",
+        "function revealRow(",
     ] {
         assert!(js.contains(name), "app.js is missing {name}");
     }

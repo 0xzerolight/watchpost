@@ -37,7 +37,7 @@ use crate::db::queries;
 use crate::errors::{AppError, DbError};
 use crate::routes::PathId;
 use crate::routes::html::repo::{
-    EventDraft, EventErrors, EventsView, event_form_row, event_row, events_section,
+    EventDraft, EventErrors, EventsView, SHOWN_ROWS, event_form_row, event_row, events_section,
 };
 use crate::state::AppState;
 use crate::types::{Event, NewEvent};
@@ -146,11 +146,31 @@ pub async fn event_delete(
 
 /// GET /repos/{id}/events/{eid} — the display row, which is what the edit
 /// form's Cancel button swaps back in.
+///
+/// Rendered from the same section data a mutation answers with, because a row
+/// is not quite independent of the rest: whether it is one of the older rows
+/// the page collapses depends on where it sorts. A row that came back without
+/// knowing would reappear in a collapsed list.
 pub async fn event_row_get(
     State(state): State<Arc<AppState>>,
     PathId((repo_id, event_id)): PathId<(i64, i64)>,
 ) -> Result<Markup, AppError> {
-    Ok(event_row(repo_id, &fetch(&state, repo_id, event_id).await?))
+    let data = state
+        .db
+        .call(move |conn| {
+            if queries::event_by_id(conn, repo_id, event_id)?.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(section_data(conn, repo_id)?))
+        })
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let index = data
+        .events
+        .iter()
+        .position(|event| event.id == event_id)
+        .ok_or(AppError::NotFound)?;
+    Ok(event_row(repo_id, &data.events[index], index >= SHOWN_ROWS))
 }
 
 /// GET /repos/{id}/events/{eid}/edit — the same row as inputs.

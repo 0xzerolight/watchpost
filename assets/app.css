@@ -915,6 +915,88 @@ tr.wp-edit-row [name="kind"] {
 }
 
 /*
+ * The events table on a phone. Four columns of nowrap content are about
+ * 570px wide, so Edit and Delete sat off-screen behind a sideways scroll.
+ * Below 40rem each row is a small grid instead. Date, kind and the actions
+ * share the first line; the title, with its notes, runs under them; a
+ * hairline separates rows. The header row names columns that no longer line
+ * up, so it leaves the screen but stays in the accessibility tree. The edit
+ * row uses the same grid: date and kind side by side, then title, link and
+ * notes full width, then Save and Cancel. DOM order is unchanged, so
+ * `hx-include="closest tr"` and the kind filter's `row.hidden` work as
+ * before, and `.wp-collapsed .wp-more-row` (two classes) still outranks
+ * `display: grid` here.
+ */
+@media (max-width: 40rem) {
+  table.wp-events,
+  table.wp-events > tbody,
+  table.wp-events > tfoot,
+  table.wp-events > tfoot > tr,
+  table.wp-events > tfoot > tr > td {
+    display: block;
+  }
+
+  table.wp-events > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  table.wp-events > tbody > tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "date kind actions"
+      "event event event";
+    align-items: center;
+    gap: var(--wp-space-1) var(--wp-space-2);
+    padding-block: var(--wp-space-2);
+    border-bottom: 1px solid var(--wp-border);
+  }
+
+  /* `:nth-child(n)` lifts this over the desktop column rule's `width: 1%`. */
+  table.wp-events > tbody > tr > td:nth-child(n) {
+    display: block;
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(1) {
+    grid-area: date;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(2) {
+    grid-area: kind;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(3) {
+    grid-area: event;
+  }
+
+  table.wp-events > tbody > tr > td:nth-child(4) {
+    grid-area: actions;
+    justify-self: end;
+  }
+
+  table.wp-events > tbody > tr.wp-edit-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "date kind"
+      "event event"
+      "actions actions";
+    align-items: start;
+  }
+
+  table.wp-events > tbody > tr.wp-edit-row :is([name="date"], [name="kind"]) {
+    width: 100%;
+  }
+}
+
+/*
  * The skip link (first element in <body>). It has to stay in the tab order and
  * keep its accessible name, so it is moved out of the viewport rather than
  * hidden: `display: none` and `visibility: hidden` both take it out of the tab
