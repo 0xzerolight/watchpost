@@ -55,6 +55,10 @@ async fn asset(uri: &str) -> String {
 }
 
 /// Fails naming the first of `names` that `body` lacks.
+///
+/// A needle is a piece of code, never a word a comment also uses: "wpLane"
+/// alone was satisfied by the comment describing the lane, so deleting the
+/// lane itself stayed green.
 fn assert_has(body: &str, file: &str, names: &[&str]) {
     for name in names {
         assert!(body.contains(name), "{file} is missing {name}");
@@ -78,7 +82,11 @@ async fn tooltip_rows_follow_the_legend() {
 #[tokio::test]
 async fn markers_have_a_lane_of_their_own() {
     let js = asset("/assets/app.js").await;
-    assert_has(&js, "app.js", &["wpLane", "var LANE_PX = 18;"]);
+    assert_has(
+        &js,
+        "app.js",
+        &["wpLane: {", "scale.height = LANE_PX;", "var LANE_PX = 18;"],
+    );
 }
 
 /// One tooltip: a column's figures, then a hairline and its visible events.
@@ -115,7 +123,7 @@ async fn partly_observed_buckets_say_so_and_fade() {
         &[
             "function barFill(",
             "function bucketCoverage(",
-            "days observed",
+            "\" days observed\"",
         ],
     );
 }
@@ -137,7 +145,12 @@ async fn every_series_wears_the_one_accent() {
     assert_has(
         &js,
         "app.js",
-        &[r#"cssVar: "--wp-chart-tick""#, "descriptor.secondary"],
+        &[
+            r#"cssVar: "--wp-chart-tick""#,
+            "secondary: true,",
+            "descriptor.secondary",
+            "dataset.borderWidth = 1.5",
+        ],
     );
 }
 
@@ -153,6 +166,7 @@ async fn the_period_follows_links_to_other_pages() {
         &[
             "function updatePeriodLinks(",
             "a[data-period-link]",
+            "updatePeriodLinks(currentDays);",
             "updatePeriodLinks(days);",
         ],
     );
