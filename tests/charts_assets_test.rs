@@ -80,3 +80,26 @@ async fn markers_have_a_lane_of_their_own() {
     let js = asset("/assets/app.js").await;
     assert_has(&js, "app.js", &["wpLane", "var LANE_PX = 18;"]);
 }
+
+/// One tooltip: a column's figures, then a hairline and its visible events.
+/// The separate marker tip is retired, so nothing creates `#marker-tip` any
+/// more, and the event lines have rules of their own.
+#[tokio::test]
+async fn one_tooltip_carries_the_figures_and_the_events() {
+    let js = asset("/assets/app.js").await;
+    assert_has(
+        &js,
+        "app.js",
+        &[
+            "function eventsInBucket(",
+            "\"wp-tip-sep\"",
+            "\"wp-tip-event\"",
+        ],
+    );
+    assert!(
+        !js.contains("\"marker-tip\""),
+        "app.js still builds the separate marker tip"
+    );
+    let css = asset("/assets/app.css").await;
+    assert_has(&css, "app.css", &["\n.wp-tip-sep {", "\n.wp-tip-event {"]);
+}

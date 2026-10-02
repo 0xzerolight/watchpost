@@ -661,6 +661,44 @@
   display: block;
 }
 
+/*
+ * A column's events, under its figures in the chart tooltip: a hairline, then
+ * one line per event (`eventLine` in app.js), with the kind chip before the
+ * title. The chip is a label here, not a button, so it opts out of the touch
+ * height the coarse-pointer block gives chips; the higher weight wins over
+ * that block although it comes later.
+ */
+.wp-tip-sep {
+  margin-block: var(--wp-space-2);
+  border-top: 1px solid var(--wp-border);
+}
+
+.wp-tip-event {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wp-space-2);
+}
+
+.wp-tip-event + .wp-tip-event {
+  margin-top: var(--wp-space-1);
+}
+
+.wp-tip-event > .wp-chip {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+/* The date leading a wider bucket's line; only the title may wrap. */
+.wp-tip-event > .wp-small {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.wp-tip-event-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .wp-tip-title {
   margin-bottom: var(--wp-space-1);
   color: var(--pico-muted-color, #6b7280);
