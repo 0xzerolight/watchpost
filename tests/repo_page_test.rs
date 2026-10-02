@@ -1026,6 +1026,9 @@ async fn the_repo_page_client_hooks_ship_in_the_assets() {
         "function showAllEvents(",
         "showAllEvents();",
         "function revealRow(",
+        // The chart's event click calls it (the semicolon matches the call
+        // in `focusRow`, not the declaration).
+        "revealRow(row);",
         // Repo switcher (REPO-07): an outside click and Escape close the
         // open dropdown, which Pico's overlay does not always catch. The
         // Escape needle is the focus-return line, which only the switcher's
