@@ -142,12 +142,15 @@ fn load(conn: &Connection, repo_id: i64, selected: i64) -> Result<Option<PageDat
     let Some(repo) = queries::repo_overview_one(conn, repo_id)? else {
         return Ok(None);
     };
-    let payload = chart_payload(conn, repo_id, all_window(conn, repo_id)?, selected)?;
+    let window = all_window(conn, repo_id)?;
+    let payload = chart_payload(conn, repo_id, window, selected)?;
+    let downloads_gained = values(queries::dense_downloads_gained(conn, repo_id, window)?);
     Ok(Some(PageData {
         repo,
         // Derived from the payload it ships beside, so the tiles and the
-        // charts always describe the same series.
-        kpis: KpiData::of(&payload.series),
+        // charts always describe the same series. Downloads growth is the one
+        // figure the charts do not plot: see `KpiData::of`.
+        kpis: KpiData::of(&payload.series, &downloads_gained),
         payload,
         // 0 is `popular_items`' "all time" — these tables ignore the charts'
         // period, and the repo's first *chartable* observation is not

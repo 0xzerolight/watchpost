@@ -178,7 +178,12 @@ pub struct KpiData {
 }
 
 impl KpiData {
-    pub fn of(series: &ChartSeries) -> KpiData {
+    /// `downloads_gained` is [`crate::db::queries::dense_downloads_gained`]
+    /// over the same window as `series`. The downloads badge measures it
+    /// rather than `downloads_total`, which follows GitHub's own sum and drops
+    /// when a release leaves the repo; growth across that drop read as minus
+    /// every download the release ever had.
+    pub fn of(series: &ChartSeries, downloads_gained: &[Option<i64>]) -> KpiData {
         KpiData {
             // Levels stand at the newest reading; growth of a carried-forward
             // level over a window is its period delta.
@@ -189,7 +194,7 @@ impl KpiData {
             views: per_period(&series.views_count, sum_observed),
             clones: per_period(&series.clones_count, sum_observed),
             downloads_level: last_observed(&series.downloads_total),
-            downloads_delta: per_period(&series.downloads_total, growth),
+            downloads_delta: per_period(downloads_gained, growth),
             pulls_level: last_observed(&series.pulls_total),
             pulls_delta: per_period(&series.pulls_total, growth),
         }
@@ -2085,7 +2090,7 @@ mod tests {
     #[test]
     fn the_section_ships_data_only_and_the_selector_is_client_side() {
         let payload = payload(7, Some(3));
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         // The payload island is the only script here: no executable inline
@@ -2117,7 +2122,7 @@ mod tests {
     fn kpi_tiles_render_for_observed_metrics_only() {
         let mut payload = payload(-1, Some(3));
         payload.series.views_count = vec![Some(2)];
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         assert!(
@@ -2147,7 +2152,7 @@ mod tests {
     fn kpi_values_ship_every_period_and_show_one() {
         let mut payload = payload(30, Some(3));
         payload.series.views_count = vec![Some(2)];
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         // Views value: one span per period. Stars adds a delta badge, which
@@ -2182,7 +2187,7 @@ mod tests {
     fn kpi_captions_ship_every_period_and_show_the_selected_one() {
         let mut payload = payload(30, Some(3));
         payload.series.views_count = vec![Some(2)];
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
 
@@ -2243,7 +2248,7 @@ mod tests {
             downloads_total: vec![None; 10],
             pulls_total: vec![None; 10],
         };
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
 
@@ -2276,9 +2281,9 @@ mod tests {
         payload.series.views_uniques = vec![None, None];
         payload.series.clones_count = vec![None, None];
         payload.series.clones_uniques = vec![None, None];
-        payload.series.downloads_total = vec![Some(9), Some(7)];
-        payload.series.pulls_total = vec![None, None];
-        let kpis = KpiData::of(&payload.series);
+        payload.series.downloads_total = vec![None, None];
+        payload.series.pulls_total = vec![Some(9), Some(7)];
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         // Stars grew by 40 over the whole window...
@@ -2286,7 +2291,7 @@ mod tests {
             out.contains(r#"class="wp-delta wp-delta-up">+40<"#),
             "out was {out}"
         );
-        // ...downloads fell by two, spelled with U+2212, not a hyphen.
+        // ...pulls fell by two, spelled with U+2212, not a hyphen.
         assert!(
             out.contains(r#"class="wp-delta wp-delta-down">−2<"#),
             "out was {out}"
@@ -2299,7 +2304,7 @@ mod tests {
     fn hero_panels_hide_all_but_the_default() {
         let mut payload = payload(-1, Some(3));
         payload.series.views_count = vec![Some(2)];
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         assert!(
@@ -2328,7 +2333,7 @@ mod tests {
         payload.series.clones_count = vec![Some(1)];
         payload.series.downloads_total = vec![Some(1)];
         payload.series.pulls_total = vec![Some(1)];
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         assert_eq!(out.matches(r#"role="img""#).count(), 5, "out was {out}");
@@ -2353,7 +2358,7 @@ mod tests {
     #[test]
     fn a_card_with_nothing_observed_is_not_rendered() {
         let payload = payload(-1, Some(3));
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
         assert!(out.contains("chart_stars"), "out was {out}");
@@ -2372,7 +2377,7 @@ mod tests {
         // Every series null end to end: four blank panes and a zoom control
         // over nothing are furniture, and `setPeriod` bails without a payload.
         let payload = payload(-1, None);
-        let kpis = KpiData::of(&payload.series);
+        let kpis = KpiData::of(&payload.series, &[]);
         let repo = repo();
         let out = charts_section(&chart_view(&payload, &kpis, &repo)).into_string();
 

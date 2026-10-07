@@ -939,6 +939,87 @@ pub fn dense_downloads_total(
     Ok(out)
 }
 
+/// Release downloads gained, as a running level dense over the trailing `days`
+/// window ending today: what the downloads growth badges measure, by the same
+/// last-minus-first [`crate::series::growth`] as every other level.
+///
+/// Not [`dense_downloads_total`]'s movement. That total is GitHub's own sum, so
+/// it drops when a release leaves the repo — deleted, or moved to another repo
+/// whose re-uploaded assets start again from zero — and growth measured across
+/// the drop read as minus every download the release ever had, burying the
+/// real ones. Each asset instead adds what it gained since its own previous
+/// reading, which is the arithmetic of the downloads in [`recent_changes`]:
+///
+/// - an asset's first reading adds nothing, because its count is a baseline
+///   and a renamed asset arrives under its new name already holding it;
+/// - an asset that leaves adds nothing, because nobody un-downloaded it;
+/// - a count that fell adds nothing, because GitHub's counter never falls: the
+///   asset was deleted and uploaded again under the same name, and the new one
+///   restarted from zero.
+///
+/// The cost of the first rule: downloads a new asset collected before its first
+/// reading never count as growth. Hourly sampling keeps that to the downloads
+/// of its first hour, or of however long watchpost was down.
+///
+/// The level starts at 0 on the first reading and carries across days with no
+/// reading. A day before the first reading is `None`, matching
+/// [`dense_downloads_total`]. `days == 0` is an empty range, matching
+/// [`dense_series`].
+pub fn dense_downloads_gained(
+    conn: &Connection,
+    repo_id: i64,
+    days: u32,
+) -> Result<Vec<(String, Option<i64>)>, DbError> {
+    if days == 0 {
+        return Ok(Vec::new());
+    }
+    let today = chrono::Utc::now().date_naive();
+    let start = today - chrono::Duration::days(i64::from(days) - 1);
+    let start_str = start.to_string();
+
+    // Every reading day, oldest first, with what its assets gained. The level
+    // is a running sum, so the days before the window are walked too: the
+    // newest of them is the level the window opens on.
+    let mut stmt = conn.prepare(
+        "WITH obs AS (
+             SELECT date, download_count - LAG(download_count) OVER (
+                        PARTITION BY release_tag, asset_name ORDER BY date
+                    ) AS gained
+             FROM release_assets
+             WHERE repo_id = ?1
+         )
+         SELECT date, SUM(MAX(COALESCE(gained, 0), 0)) FROM obs
+         GROUP BY date
+         ORDER BY date",
+    )?;
+    let days_gained = stmt.query_map(params![repo_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+
+    let mut carried = None;
+    let mut observed = std::collections::HashMap::new();
+    let mut level = 0;
+    for day in days_gained {
+        let (date, gained) = day?;
+        level += gained;
+        if date < start_str {
+            carried = Some(level);
+        } else {
+            observed.insert(date, level);
+        }
+    }
+
+    let mut out = Vec::with_capacity(days as usize);
+    for offset in 0..i64::from(days) {
+        let date = (start + chrono::Duration::days(offset)).to_string();
+        if let Some(level) = observed.get(&date) {
+            carried = Some(*level);
+        }
+        out.push((date, carried));
+    }
+    Ok(out)
+}
+
 /// Per-day cumulative GHCR pull count, dense over the trailing `days` window
 /// ending today — the `pulls_total` chart series.
 ///
@@ -2478,6 +2559,95 @@ mod tests {
             values(&rows),
             vec![None, Some(16), Some(16), Some(16), Some(16)]
         );
+    }
+
+    fn seed_release_asset(conn: &Connection, date: &str, tag: &str, asset: &str, count: i64) {
+        upsert_release_assets(
+            conn,
+            1,
+            date,
+            &[AssetSnapshot {
+                release_tag: tag.into(),
+                asset_name: asset.into(),
+                download_count: count,
+            }],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn downloads_gained_adds_what_each_asset_gained_since_its_last_reading() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_release_asset(&c, &days_ago(3), "v1", "a.bin", 10);
+        seed_release_asset(&c, &days_ago(2), "v1", "a.bin", 12);
+        seed_release_asset(&c, &days_ago(2), "v2", "b.bin", 5);
+        seed_release_asset(&c, &days_ago(1), "v1", "a.bin", 15);
+        seed_release_asset(&c, &days_ago(1), "v2", "b.bin", 9);
+        let rows = dense_downloads_gained(&c, 1, 5).unwrap();
+        // -3d: the first reading is the baseline, not growth. -2d: a.bin +2,
+        // b.bin's first reading adds nothing. -1d: +3 and +4.
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(0), Some(2), Some(9), Some(9)]
+        );
+    }
+
+    #[test]
+    fn downloads_gained_ignores_a_release_that_leaves() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_release_asset(&c, &days_ago(3), "resources", "data.zip", 1000);
+        seed_release_asset(&c, &days_ago(3), "v2", "app.bin", 10);
+        seed_release_asset(&c, &days_ago(1), "v2", "app.bin", 15);
+        let rows = dense_downloads_gained(&c, 1, 5).unwrap();
+        // The total falls by 995 at -1d, but nobody un-downloaded anything:
+        // the five new downloads are the growth.
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(0), Some(0), Some(5), Some(5)]
+        );
+    }
+
+    #[test]
+    fn downloads_gained_counts_a_rename_as_nothing() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_release_asset(&c, &days_ago(3), "v1", "app-release.apk", 16);
+        seed_release_asset(&c, &days_ago(2), "v1", "app-1.0.0.apk", 16);
+        seed_release_asset(&c, &days_ago(1), "v1", "app-1.0.0.apk", 18);
+        let rows = dense_downloads_gained(&c, 1, 5).unwrap();
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(0), Some(0), Some(2), Some(2)]
+        );
+    }
+
+    #[test]
+    fn downloads_gained_ignores_a_reupload_under_the_same_name() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        // Deleted and uploaded again: a new asset whose counter restarts.
+        seed_release_asset(&c, &days_ago(3), "v1", "app.bin", 50);
+        seed_release_asset(&c, &days_ago(2), "v1", "app.bin", 3);
+        seed_release_asset(&c, &days_ago(1), "v1", "app.bin", 6);
+        let rows = dense_downloads_gained(&c, 1, 5).unwrap();
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(0), Some(0), Some(3), Some(3)]
+        );
+    }
+
+    #[test]
+    fn downloads_gained_opens_the_window_on_the_level_before_it() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        seed_release_asset(&c, &days_ago(9), "v1", "a.bin", 10);
+        seed_release_asset(&c, &days_ago(6), "v1", "a.bin", 14);
+        seed_release_asset(&c, &days_ago(1), "v1", "a.bin", 20);
+        let rows = dense_downloads_gained(&c, 1, 3).unwrap();
+        assert_eq!(values(&rows), vec![Some(4), Some(10), Some(10)]);
+        assert!(dense_downloads_gained(&c, 1, 0).unwrap().is_empty());
     }
 
     #[test]
