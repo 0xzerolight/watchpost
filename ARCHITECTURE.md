@@ -55,10 +55,10 @@ The schema is deliberately opinionated about what a missing number means:
   clones) do not.
 - A day's release-asset rows are that day's complete asset list: a `/releases` read either lists
   every asset or writes nothing, and a later read the same day removes the assets it no longer
-  lists. The download total carries each release's sum forward from its newest reading. Within a
-  release that is still listed, an asset GitHub stops listing, renamed or deleted, drops out rather
-  than being carried forward on its own. A release that is no longer listed, deleted or moved to
-  another repo, keeps its last sum, so the total can sit above GitHub's own.
+  lists. The download total is the newest such day's sum, so an asset GitHub stops listing, renamed
+  or deleted, drops out rather than being carried forward on its own. Download growth is measured
+  per asset instead: each adds what it gained since its own previous reading, so an asset or release
+  that leaves lowers the total without counting as negative downloads.
 - Before any schema upgrade the database is copied through SQLite's backup API to
   `data/watchpost.v{schema}.{timestamp}.bak`, newest three kept. A database written by a newer
   build is refused rather than opened.

@@ -5,9 +5,10 @@
 //! client can plot a category axis and land event markers on the right day.
 //! It must also always span the repo's whole history whatever period is
 //! selected, because the period selector zooms client-side over exactly this
-//! payload. `downloads_total` must carry each release's newest sum forward,
-//! so a renamed asset counts once and a release that leaves keeps its
-//! downloads. And the `days` query parameter is an allowlist, not a clamp: junk
+//! payload. `downloads_total` must be GitHub's own sum, the newest reading's
+//! rows carried across days with no read, while the downloads growth badge
+//! counts what each asset gained. And the `days` query parameter is an
+//! allowlist, not a clamp: junk
 //! falls back to the default ("all") rather than 400ing or rendering an
 //! arbitrary window.
 
@@ -445,11 +446,11 @@ async fn downloads_total_carries_from_the_first_asset_observation() {
 }
 
 /// Moving a release's assets to another repo takes them off this repo's
-/// release list, and GitHub's own sum drops by everything they were ever
-/// downloaded. The downloads still happened: the total keeps them, and the
-/// period's growth is the new downloads rather than minus the move.
+/// release list. The total follows GitHub, so it drops; the growth badge
+/// counts what the remaining assets gained, so the move does not read as
+/// minus that many downloads.
 #[tokio::test]
-async fn a_release_that_leaves_keeps_its_downloads_and_growth_stays_positive() {
+async fn a_release_that_leaves_drops_the_total_but_not_the_growth() {
     let h = harness();
     h.seed_repo(ID_A, REPO_A).await;
     h.seed_asset(ID_A, days_ago(3), "resources", "data.zip", 1000)
@@ -463,7 +464,11 @@ async fn a_release_that_leaves_keeps_its_downloads_and_growth_stays_positive() {
 
     assert_eq!(
         tail(&downloads, 4),
-        vec![Some(1010), Some(1010), Some(1015), Some(1015)]
+        vec![Some(1010), Some(1010), Some(15), Some(15)]
+    );
+    assert!(
+        body.contains(r#"<strong class="wp-kpi-value">15</strong>"#),
+        "{body}"
     );
     assert!(
         body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+5</span>"#),

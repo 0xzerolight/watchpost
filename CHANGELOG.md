@@ -9,19 +9,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **A release that leaves a repo keeps its downloads.** The download total was the sum of the
-  newest reading, so a release GitHub stopped listing left it. Moving a repo's resource releases
-  to a separate repo, where the re-uploaded assets start again from zero, therefore halved its
-  total overnight (2,776 to 1,232). Every period that spanned the move also showed its growth as
-  minus the moved downloads, so the downloads gained that week vanished inside a figure of −1,264.
-  The total now carries forward per release. Each release counts the sum of its newest reading,
-  and a release that is no longer listed keeps its last sum. Inside a release GitHub still lists,
-  nothing changes: a renamed asset is counted once, and a deleted asset leaves, as it does on
-  GitHub. The total, the chart and the growth badges all read the new figure, which can now sit
-  above GitHub's own sum and a downloads badge. Keying rows by GitHub's asset id would have kept
-  every deleted asset too, but it needs a migration and has no ids for the rows already written.
-  Keying by tag costs one case: editing a release's tag after uploading counts that release under
-  both tags.
+- **Download growth no longer goes negative when a release leaves the repo.** The growth badges
+  measured the download total's movement, and that total is GitHub's own sum, the figure a
+  downloads badge shows. Moving a repo's resource releases to a separate repo, where the
+  re-uploaded assets start again from zero, therefore took 1,608 downloads off the total, and every
+  period that spanned the move showed its growth as −1,264 instead of the downloads actually
+  gained. Growth now adds what each asset gained since its own previous reading, which is the
+  arithmetic Recent changes already used. An asset's first reading is its baseline rather than
+  growth, so a renamed asset counts nothing. An asset that leaves adds nothing, and a count that
+  fell, from an asset deleted and uploaded again under the same name, adds nothing either. The
+  total and its chart still follow GitHub and drop when a release leaves. Carrying a departed
+  release's last sum in the total was the alternative, and it was tried and reverted: it set the
+  total above the README badge. The cost: downloads a new asset collects before its first reading
+  are in the total but never in growth.
 
 ## [1.4.0] - 2026-10-02
 
