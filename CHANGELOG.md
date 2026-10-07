@@ -7,22 +7,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-
-- **A release that leaves a repo keeps its downloads.** The download total was the sum of the
-  newest reading, so a release GitHub stopped listing left it. Moving a repo's resource releases
-  to a separate repo, where the re-uploaded assets start again from zero, therefore halved its
-  total overnight (2,776 to 1,232). Every period that spanned the move also showed its growth as
-  minus the moved downloads, so the downloads gained that week vanished inside a figure of −1,264.
-  The total now carries forward per release. Each release counts the sum of its newest reading,
-  and a release that is no longer listed keeps its last sum. Inside a release GitHub still lists,
-  nothing changes: a renamed asset is counted once, and a deleted asset leaves, as it does on
-  GitHub. The total, the chart and the growth badges all read the new figure, which can now sit
-  above GitHub's own sum and a downloads badge. Keying rows by GitHub's asset id would have kept
-  every deleted asset too, but it needs a migration and has no ids for the rows already written.
-  Keying by tag costs one case: editing a release's tag after uploading counts that release under
-  both tags.
-
 ## [1.4.0] - 2026-10-02
 
 ### Added
