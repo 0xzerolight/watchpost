@@ -14,14 +14,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   downloads badge shows. Moving a repo's resource releases to a separate repo, where the
   re-uploaded assets start again from zero, therefore took 1,608 downloads off the total, and every
   period that spanned the move showed its growth as −1,264 instead of the downloads actually
-  gained. Growth now adds what each asset gained since its own previous reading, which is the
-  arithmetic Recent changes already used. An asset's first reading is its baseline rather than
-  growth, so a renamed asset counts nothing. An asset that leaves adds nothing, and a count that
-  fell, from an asset deleted and uploaded again under the same name, adds nothing either. The
-  total and its chart still follow GitHub and drop when a release leaves. Carrying a departed
-  release's last sum in the total was the alternative, and it was tried and reverted: it set the
-  total above the README badge. The cost: downloads a new asset collects before its first reading
-  are in the total but never in growth.
+  gained. Growth now adds what each asset gained since its own previous reading, the arithmetic
+  Recent changes uses. An older asset's first reading is its baseline rather than growth, so a
+  renamed asset counts nothing, and an asset that leaves adds nothing. The total and its chart
+  still follow GitHub and drop when a release leaves. Carrying a departed release's last sum in
+  the total was the alternative, and it was tried and reverted: it set the total above the README
+  badge.
+- **Recent changes and the download growth badges count a new release's first day.** Both treated
+  every asset's first reading as a baseline, because a name alone cannot tell a new upload from a
+  renamed asset that arrives already holding its count. A day's row is that day's last reading, so
+  a release published in the morning was first read with everything it collected until midnight,
+  and that whole first day, usually its biggest, vanished from growth: a day that gained 16
+  downloads, 11 of them on a release published that morning, showed +5. Schema v5 records GitHub's
+  upload time for each asset (`release_assets.created_at`, also in the JSON export), and an asset
+  uploaded since the repo's previous reading day now adds its whole count. A rename keeps its
+  upload time and stays a baseline, and a same-name re-upload counts from zero instead of nothing.
+  Counting only assets uploaded on the reading's own day was rejected: it misses an upload after
+  the day's last reading, which on a daily schedule is nearly all of them. The first sync after
+  the upgrade stamps the upload time onto the earlier rows of every asset GitHub still lists, so
+  those releases' first days are recovered and growth figures rise once. The feed and the badges
+  now read one query, and the feed no longer shows a re-upload as negative downloads. The cost
+  that remains: an asset first listed more than a reading day after its upload, such as a draft
+  the token cannot see, still counts its first reading as a baseline.
 
 ## [1.4.0] - 2026-10-02
 

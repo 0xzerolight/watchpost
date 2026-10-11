@@ -145,11 +145,24 @@ impl Harness {
     }
 
     async fn seed_asset(&self, id: i64, date: String, tag: &str, name: &str, count: i64) {
+        self.seed_uploaded_asset(id, date, tag, name, count, None)
+            .await;
+    }
+
+    async fn seed_uploaded_asset(
+        &self,
+        id: i64,
+        date: String,
+        tag: &str,
+        name: &str,
+        count: i64,
+        created_at: Option<String>,
+    ) {
         let rows = vec![AssetSnapshot {
             release_tag: tag.to_owned(),
             asset_name: name.to_owned(),
             download_count: count,
-            created_at: None,
+            created_at,
         }];
         self.state
             .db
@@ -651,6 +664,26 @@ async fn the_feed_reports_what_moved_since_the_last_observation() {
     assert!(body.contains("\u{2212}1 open issue"), "body was {body}");
     // Forks did not move, so they are not a line.
     assert!(!body.contains("forks</span>"), "body was {body}");
+}
+
+/// A release published yesterday at 08:54 is first read holding everything
+/// it collected until the day's last reading. The feed counts those with the
+/// older release's 5 rather than treating them as a baseline.
+#[tokio::test]
+async fn the_feed_counts_a_new_releases_first_day_of_downloads() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A, true).await;
+    let old = Some(format!("{}T11:08:00Z", days_ago(30)));
+    let new = Some(format!("{}T08:54:00Z", days_ago(1)));
+    h.seed_uploaded_asset(ID_A, days_ago(2), "v3.7.0", "app.exe", 100, old.clone())
+        .await;
+    h.seed_uploaded_asset(ID_A, days_ago(1), "v3.7.0", "app.exe", 105, old)
+        .await;
+    h.seed_uploaded_asset(ID_A, days_ago(1), "v3.8.0", "app.exe", 11, new)
+        .await;
+
+    let body = h.body("/analytics").await;
+    assert!(body.contains("+16 downloads"), "body was {body}");
 }
 
 /// One observation is a reading, not news — an install whose first sync has

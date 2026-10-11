@@ -160,11 +160,24 @@ impl Harness {
     }
 
     async fn seed_asset(&self, id: i64, date: String, tag: &str, asset: &str, downloads: i64) {
+        self.seed_uploaded_asset(id, date, tag, asset, downloads, None)
+            .await;
+    }
+
+    async fn seed_uploaded_asset(
+        &self,
+        id: i64,
+        date: String,
+        tag: &str,
+        asset: &str,
+        downloads: i64,
+        created_at: Option<String>,
+    ) {
         let snapshot = AssetSnapshot {
             release_tag: tag.to_owned(),
             asset_name: asset.to_owned(),
             download_count: downloads,
-            created_at: None,
+            created_at,
         };
         self.state
             .db
@@ -473,6 +486,29 @@ async fn a_release_that_leaves_drops_the_total_but_not_the_growth() {
     );
     assert!(
         body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+5</span>"#),
+        "{body}"
+    );
+}
+
+/// A release published yesterday at 08:54 is first read holding everything
+/// it collected until the day's last reading. Those are downloads, not a
+/// baseline: the badge counts them with the older release's.
+#[tokio::test]
+async fn a_new_release_moves_the_growth_badge_by_its_first_days_downloads() {
+    let h = harness();
+    h.seed_repo(ID_A, REPO_A).await;
+    let old = Some(format!("{}T11:08:00Z", days_ago(30)));
+    let new = Some(format!("{}T08:54:00Z", days_ago(1)));
+    h.seed_uploaded_asset(ID_A, days_ago(2), "v3.7.0", "app.exe", 100, old.clone())
+        .await;
+    h.seed_uploaded_asset(ID_A, days_ago(1), "v3.7.0", "app.exe", 105, old)
+        .await;
+    h.seed_uploaded_asset(ID_A, days_ago(1), "v3.8.0", "app.exe", 11, new)
+        .await;
+
+    let body = body_string(h.get("/repos/1?days=7").await).await;
+    assert!(
+        body.contains(r#"<span data-period-value="7" class="wp-delta wp-delta-up">+16</span>"#),
         "{body}"
     );
 }

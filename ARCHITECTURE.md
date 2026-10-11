@@ -58,7 +58,11 @@ The schema is deliberately opinionated about what a missing number means:
   lists. The download total is the newest such day's sum, so an asset GitHub stops listing, renamed
   or deleted, drops out rather than being carried forward on its own. Download growth is measured
   per asset instead: each adds what it gained since its own previous reading, so an asset or release
-  that leaves lowers the total without counting as negative downloads.
+  that leaves lowers the total without counting as negative downloads. An asset uploaded since the
+  repo's previous reading day adds its whole count, because it started from zero; any other first
+  reading is a baseline. `release_assets.created_at` is GitHub's upload time, which a rename keeps
+  and a re-upload changes. It is NULL on rows written before schema v5 until a sync stamps the
+  asset's time onto them.
 - Before any schema upgrade the database is copied through SQLite's backup API to
   `data/watchpost.v{schema}.{timestamp}.bak`, newest three kept. A database written by a newer
   build is refused rather than opened.
