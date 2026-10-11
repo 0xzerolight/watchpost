@@ -11,7 +11,7 @@ pub type Migration = fn(&rusqlite::Transaction) -> Result<(), DbError>;
 /// one that has shipped, because deployed databases have already run it and
 /// will not run it again. Each bumps `user_version` in its own transaction,
 /// and an older binary refuses the database from then on.
-pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
+pub const MIGRATIONS: &[Migration] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5];
 
 /// Run all pending migrations against `conn`, bringing `PRAGMA user_version`
 /// up to `MIGRATIONS.len()`.
@@ -176,6 +176,20 @@ fn migrate_v4(tx: &rusqlite::Transaction) -> Result<(), DbError> {
     Ok(())
 }
 
+/// v5 — when GitHub says each release asset was uploaded: the one fact that
+/// tells a new upload, which started from zero, from a renamed asset, which
+/// arrives under its new name already holding its count. Without it the
+/// download growth figures treated every asset's first reading as a baseline,
+/// and a day's row is that day's last reading, so a new release lost its whole
+/// first day. Nullable: a row written before this version was never observed
+/// with it, and a sync stamps each still-listed asset's earlier rows (see
+/// `queries::upsert_release_assets`). No index: the reads that use it already
+/// go through the primary key or `idx_assets_series`.
+fn migrate_v5(tx: &rusqlite::Transaction) -> Result<(), DbError> {
+    tx.execute_batch("ALTER TABLE release_assets ADD COLUMN created_at TEXT;")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +318,33 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn v5_adds_an_unobserved_upload_time_to_existing_asset_rows() {
+        // A v4 reading keeps its count and reads NULL, "not observed", rather
+        // than a made-up upload time.
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        run_migrations(&mut c, &MIGRATIONS[..4]).unwrap();
+        c.execute("INSERT INTO repos (id, name) VALUES (1, 'o/r')", [])
+            .unwrap();
+        c.execute(
+            "INSERT INTO release_assets (repo_id, date, release_tag, asset_name, download_count)
+             VALUES (1, '2026-10-10', 'v1', 'app.bin', 11)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut c).unwrap();
+
+        let (count, created_at): (i64, Option<String>) = c
+            .query_row(
+                "SELECT download_count, created_at FROM release_assets",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((count, created_at), (11, None));
     }
 
     #[test]

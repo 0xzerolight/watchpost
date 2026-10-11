@@ -158,7 +158,8 @@ async fn mount_full_repo(server: &MockServer, id: i64, name: &str) {
     mount_json(
         server,
         format!("/repos/{name}/releases"),
-        json!([{"tag_name": "v1", "assets": [{"name": "app.bin", "download_count": 12}]}]),
+        json!([{"tag_name": "v1", "assets": [{"name": "app.bin", "download_count": 12,
+                                               "created_at": "2026-07-30T10:00:00Z"}]}]),
     )
     .await;
 }
@@ -347,6 +348,10 @@ async fn happy_path_populates_all_tables() {
     assert_eq!(
         scalar::<String>(&state, "SELECT release_tag FROM release_assets").await,
         "v1"
+    );
+    assert_eq!(
+        scalar::<String>(&state, "SELECT created_at FROM release_assets").await,
+        "2026-07-30T10:00:00Z"
     );
 
     // Star backfill: cumulative counts per day, then marked done.

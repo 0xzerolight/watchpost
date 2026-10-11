@@ -231,6 +231,8 @@ pub struct AssetSnapshot {
     pub release_tag: String,
     pub asset_name: String,
     pub download_count: i64,
+    /// GitHub's upload time for the asset; `None` when not observed.
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,12 +282,15 @@ pub struct StatRow {
 
 /// One observed release-asset reading. `download_count` is cumulative for that
 /// `(release_tag, asset_name)` on that day, not the day's downloads.
+/// `created_at` is GitHub's upload time, `null` for a reading made before
+/// watchpost recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReleaseAssetRow {
     pub date: String,
     pub release_tag: String,
     pub asset_name: String,
     pub download_count: i64,
+    pub created_at: Option<String>,
 }
 
 /// One observed GHCR pull reading, cumulative like the asset counters.

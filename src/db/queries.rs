@@ -265,6 +265,21 @@ pub fn prune_release_assets(
     Ok(())
 }
 
+/// Record `date`'s readings of a repo's release assets.
+///
+/// A second reading the same day keeps the higher count, so a poll racing an
+/// earlier one never moves a counter backwards, unless the two carry different
+/// upload times. Then they are two assets under one name, the old one deleted
+/// and the new one uploaded in its place, and the newer reading replaces the
+/// row whole: a MAX would pin the deleted asset's count to the new asset's
+/// upload time, and the download growth figures would count it as new. An
+/// unknown upload time never erases a known one.
+///
+/// Each asset's upload time is also stamped onto its earlier rows that lack
+/// one: the rows written before watchpost recorded it. That is what lets the
+/// growth figures recognise a release first read before the upgrade as new.
+/// The stamp rides `idx_assets_series` and finds nothing to do after an
+/// asset's first sync.
 pub fn upsert_release_assets(
     conn: &Connection,
     repo_id: i64,
@@ -272,12 +287,21 @@ pub fn upsert_release_assets(
     rows: &[AssetSnapshot],
 ) -> Result<(), DbError> {
     let mut stmt = conn.prepare(
-        "INSERT INTO release_assets AS t (repo_id, date, release_tag, asset_name, download_count)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO release_assets AS t
+             (repo_id, date, release_tag, asset_name, download_count, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(repo_id, date, release_tag, asset_name) DO UPDATE SET
            -- download_count is NOT NULL; scalar MAX is safe here, unlike the
-           -- nullable columns rule 1 guards against.
-           download_count = MAX(t.download_count, excluded.download_count)",
+           -- nullable columns rule 1 guards against. A NULL upload time on
+           -- either side makes the `<>` NULL, which keeps the MAX.
+           download_count = CASE WHEN excluded.created_at <> t.created_at
+                                 THEN excluded.download_count
+                                 ELSE MAX(t.download_count, excluded.download_count) END,
+           created_at = COALESCE(excluded.created_at, t.created_at)",
+    )?;
+    let mut stamp = conn.prepare(
+        "UPDATE release_assets SET created_at = ?4
+         WHERE repo_id = ?1 AND release_tag = ?2 AND asset_name = ?3 AND created_at IS NULL",
     )?;
     for row in rows {
         stmt.execute(params![
@@ -285,8 +309,17 @@ pub fn upsert_release_assets(
             date,
             row.release_tag,
             row.asset_name,
-            row.download_count
+            row.download_count,
+            row.created_at
         ])?;
+        if let Some(created_at) = &row.created_at {
+            stamp.execute(params![
+                repo_id,
+                row.release_tag,
+                row.asset_name,
+                created_at
+            ])?;
+        }
     }
     Ok(())
 }
@@ -429,6 +462,13 @@ const CHANGE_STAT_COLUMNS: [ChangeMetric; 5] = [
 ///   day's value already is the change — which is the snapshot-versus-rate
 ///   split [`Metric::carries_forward`] draws, seen from the other side.
 ///
+/// Downloads are the sum of what each release asset gained, by
+/// [`asset_gains_cte`], the arithmetic the downloads growth badges share, so
+/// the feed and the badges never disagree about a day. They are the one
+/// exception to the first-observation rule: an asset uploaded since the
+/// repo's previous reading started from zero, so its first reading is all
+/// downloads, and a new release's first day appears on that day.
+///
 /// The `days` filter sits in the outer `SELECT`, never in the CTE. Filtering
 /// before the `LAG` would strip the predecessor of the window's first row and
 /// turn a level into a delta — the fake-spike-at-the-window-edge trap
@@ -520,24 +560,18 @@ pub fn recent_changes(
            AND o.prev IS NOT NULL AND o.v <> o.prev AND o.date >= ?1",
     )?;
 
-    // release_assets: per-(tag, asset) counters, summed. Only the total is a
-    // fact about the repo, so rows that did not move stay in the SUM as zero
-    // and the `HAVING` drops a day whose assets cancelled each other out.
-    collect(
-        "WITH obs AS (
-             SELECT repo_id, date, download_count AS v,
-                    LAG(download_count) OVER (
-                        PARTITION BY repo_id, release_tag, asset_name ORDER BY date
-                    ) AS prev
-             FROM release_assets
-         )
-         SELECT o.repo_id, r.name, o.date, 'downloads', SUM(o.v - o.prev) AS delta
-         FROM obs o JOIN repos r ON r.id = o.repo_id
-         WHERE r.tracked = 1 AND r.hidden = 0
-           AND o.prev IS NOT NULL AND o.date >= ?1
-         GROUP BY o.repo_id, r.name, o.date
+    // release_assets: what each asset gained, summed per repo per day by the
+    // arithmetic the downloads growth badges share. Only the sum is a fact
+    // about the repo, so the `HAVING` drops a day where no asset gained.
+    collect(&format!(
+        "WITH {}
+         SELECT g.repo_id, r.name, g.date, 'downloads', SUM(g.gained) AS delta
+         FROM asset_gains g JOIN repos r ON r.id = g.repo_id
+         WHERE g.date >= ?1
+         GROUP BY g.repo_id, r.name, g.date
          HAVING delta <> 0",
-    )?;
+        asset_gains_cte("repo_id IN (SELECT id FROM repos WHERE tracked = 1 AND hidden = 0)")
+    ))?;
 
     let mut out: Vec<RepoChange> = grouped
         .into_iter()
@@ -939,29 +973,101 @@ pub fn dense_downloads_total(
     Ok(out)
 }
 
-/// Release downloads gained, as a running level dense over the trailing `days`
-/// window ending today: what the downloads growth badges measure, by the same
-/// last-minus-first [`crate::series::growth`] as every other level.
+/// The downloads each release-asset reading gained, as two CTEs ending in
+/// `asset_gains(repo_id, date, gained)`: the one arithmetic behind both the
+/// downloads in [`recent_changes`] and [`dense_downloads_gained`]. Each caller
+/// once spelled it out itself, and the two drifted: the feed summed raw
+/// differences, so a fallen count read as negative downloads, while the badges
+/// clamped it. `scope` is the rows' `WHERE` predicate, always a literal from
+/// this module and never input.
 ///
-/// Not [`dense_downloads_total`]'s movement. That total is GitHub's own sum, so
-/// it drops when a release leaves the repo — deleted, or moved to another repo
+/// Not the movement of the repo's total. That total is GitHub's own sum, so it
+/// drops when a release leaves the repo — deleted, or moved to another repo
 /// whose re-uploaded assets start again from zero — and growth measured across
 /// the drop read as minus every download the release ever had, burying the
-/// real ones. Each asset instead adds what it gained since its own previous
-/// reading, which is the arithmetic of the downloads in [`recent_changes`]:
+/// real ones. Each reading instead adds what its asset gained, by the first of
+/// three rules that applies:
 ///
-/// - an asset's first reading adds nothing, because its count is a baseline
-///   and a renamed asset arrives under its new name already holding it;
-/// - an asset that leaves adds nothing, because nobody un-downloaded it;
-/// - a count that fell adds nothing, because GitHub's counter never falls: the
-///   asset was deleted and uploaded again under the same name, and the new one
-///   restarted from zero.
+/// - **An asset uploaded since the repo's previous reading adds its whole
+///   count**, because it started from zero. "Since" is measured against the
+///   previous reading *day*: a day's row is that day's last reading, so a
+///   release published at 09:00 is first read with everything it collected
+///   until midnight, and treating that as a baseline lost a new release's
+///   whole first day, usually its biggest. With no previous reading (the
+///   repo's first) only an asset uploaded that same day counts.
+/// - **The same asset adds what it gained since its previous reading**,
+///   clamped at zero: GitHub's counter never falls, so a fall is an asset
+///   deleted and uploaded again under the same name before watchpost knew
+///   upload times.
+/// - **Anything else adds nothing.** An older asset's first reading is a
+///   baseline: the first sync of a repo with years of releases is not a day
+///   of downloads. A renamed asset lands here too, because GitHub keeps its
+///   upload time, so it is not first seen under the new name. An asset that
+///   leaves adds nothing, because nobody un-downloaded it.
 ///
-/// The cost of the first rule: downloads a new asset collected before its first
-/// reading never count as growth. Hourly sampling keeps that to the downloads
-/// of its first hour, or of however long watchpost was down.
+/// "First seen" is the first day any row of the repo carried the asset's
+/// upload time, not the first row under its name. Rows written before
+/// watchpost recorded upload times are stamped with the time later (see
+/// [`upsert_release_assets`]), so an asset deleted and re-uploaded under the
+/// same name back then gives its old rows the new asset's time; the upper
+/// bound, never counting a row dated before its own upload, keeps those rows
+/// on the second rule. A row with no upload time can only take the second
+/// rule or the third.
 ///
-/// The level starts at 0 on the first reading and carries across days with no
+/// Rejected: counting an asset in full only when it was uploaded on its
+/// reading's own day. That misses an upload after the day's last reading,
+/// first read the next day, which on the hourly default is every upload
+/// between 23:05 and midnight UTC and on a daily schedule nearly all of them.
+/// GitHub's asset id was the other candidate: it survives a rename, but it
+/// cannot say whether an asset started from zero, and the rows already
+/// written have none. The cost that remains: an asset first listed more than
+/// a reading day after its upload, such as a draft the token cannot see that
+/// is published later, still counts its first reading as a baseline.
+///
+/// Callers filter dates outside these CTEs, never inside: the `LAG` has to see
+/// the reading before a window's first day, or that day's level reads as a
+/// gain, and every asset would be "first seen" on the window's first day.
+fn asset_gains_cte(scope: &'static str) -> String {
+    format!(
+        "readings AS (
+             SELECT repo_id, date, download_count AS v, created_at,
+                    LAG(download_count) OVER (
+                        PARTITION BY repo_id, release_tag, asset_name ORDER BY date
+                    ) AS prev,
+                    MIN(date) OVER (PARTITION BY repo_id, created_at) AS first_seen
+             FROM release_assets
+             WHERE {scope}
+         ),
+         asset_gains AS (
+             SELECT repo_id, date,
+                    CASE
+                        WHEN first_seen = date
+                         AND date(created_at) BETWEEN COALESCE(
+                                 (SELECT MAX(p.date) FROM release_assets p
+                                  WHERE p.repo_id = readings.repo_id AND p.date < readings.date),
+                                 date)
+                             AND date
+                        THEN v
+                        WHEN prev IS NOT NULL THEN MAX(v - prev, 0)
+                        ELSE 0
+                    END AS gained
+             FROM readings
+         )"
+    )
+}
+
+/// Release downloads gained, as a running level dense over the trailing `days`
+/// window ending today: what the downloads growth badges measure, by the same
+/// last-minus-first [`crate::series::growth`] as every other level. Each day
+/// adds what its assets gained, by [`asset_gains_cte`]'s arithmetic, which
+/// [`recent_changes`] shares.
+///
+/// Not [`dense_downloads_total`]'s movement: that total drops when a release
+/// leaves the repo, and growth measured across the drop read as minus every
+/// download the release ever had.
+///
+/// The level starts on the first reading at what that day gained, which is 0
+/// unless an asset was uploaded that day, and carries across days with no
 /// reading. A day before the first reading is `None`, matching
 /// [`dense_downloads_total`]. `days == 0` is an empty range, matching
 /// [`dense_series`].
@@ -980,18 +1086,13 @@ pub fn dense_downloads_gained(
     // Every reading day, oldest first, with what its assets gained. The level
     // is a running sum, so the days before the window are walked too: the
     // newest of them is the level the window opens on.
-    let mut stmt = conn.prepare(
-        "WITH obs AS (
-             SELECT date, download_count - LAG(download_count) OVER (
-                        PARTITION BY release_tag, asset_name ORDER BY date
-                    ) AS gained
-             FROM release_assets
-             WHERE repo_id = ?1
-         )
-         SELECT date, SUM(MAX(COALESCE(gained, 0), 0)) FROM obs
+    let mut stmt = conn.prepare(&format!(
+        "WITH {}
+         SELECT date, SUM(gained) FROM asset_gains
          GROUP BY date
          ORDER BY date",
-    )?;
+        asset_gains_cte("repo_id = ?1")
+    ))?;
     let days_gained = stmt.query_map(params![repo_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
@@ -1329,7 +1430,7 @@ pub fn export_release_assets(
     repo_id: i64,
 ) -> Result<Vec<ReleaseAssetRow>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT date, release_tag, asset_name, download_count
+        "SELECT date, release_tag, asset_name, download_count, created_at
          FROM release_assets WHERE repo_id = ?1
          ORDER BY date, release_tag, asset_name",
     )?;
@@ -1340,6 +1441,7 @@ pub fn export_release_assets(
                 release_tag: r.get(1)?,
                 asset_name: r.get(2)?,
                 download_count: r.get(3)?,
+                created_at: r.get(4)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -2108,60 +2210,104 @@ mod tests {
         assert_eq!(uniques, 8); // MAX(5, 8)
     }
 
+    /// One `v1/app.bin` reading, uploaded at `created_at`.
+    fn app_bin(count: i64, created_at: Option<&str>) -> [AssetSnapshot; 1] {
+        [AssetSnapshot {
+            release_tag: "v1".into(),
+            asset_name: "app.bin".into(),
+            download_count: count,
+            created_at: created_at.map(Into::into),
+        }]
+    }
+
+    /// Every stored `v1/app.bin` row: (date, count, upload time), oldest first.
+    fn app_bin_rows(c: &Connection) -> Vec<(String, i64, Option<String>)> {
+        c.prepare(
+            "SELECT date, download_count, created_at FROM release_assets
+             WHERE repo_id = 1 AND release_tag = 'v1' AND asset_name = 'app.bin'
+             ORDER BY date",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    const UPLOADED: &str = "2026-07-30T10:00:00Z";
+
     #[test]
     fn release_assets_upsert_is_monotonic() {
         let c = test_conn();
         seed_repo(&c, 1);
-        upsert_release_assets(
-            &c,
-            1,
-            "2026-08-01",
-            &[AssetSnapshot {
-                release_tag: "v1".into(),
-                asset_name: "app.bin".into(),
-                download_count: 10,
-            }],
-        )
-        .unwrap();
-        upsert_release_assets(
-            &c,
-            1,
-            "2026-08-02",
-            &[AssetSnapshot {
-                release_tag: "v1".into(),
-                asset_name: "app.bin".into(),
-                download_count: 25,
-            }],
-        )
-        .unwrap();
+        let up = Some(UPLOADED);
+        upsert_release_assets(&c, 1, "2026-08-01", &app_bin(10, up)).unwrap();
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(25, up)).unwrap();
         // re-upsert same day with a lower count — must not regress
-        upsert_release_assets(
-            &c,
-            1,
-            "2026-08-02",
-            &[AssetSnapshot {
-                release_tag: "v1".into(),
-                asset_name: "app.bin".into(),
-                download_count: 20,
-            }],
-        )
-        .unwrap();
-        let mut stmt = c
-            .prepare(
-                "SELECT date, download_count FROM release_assets
-                 WHERE repo_id = 1 AND release_tag = 'v1' AND asset_name = 'app.bin'
-                 ORDER BY date",
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(20, up)).unwrap();
+        assert_eq!(
+            app_bin_rows(&c),
+            [
+                ("2026-08-01".to_owned(), 10, up.map(Into::into)),
+                ("2026-08-02".to_owned(), 25, up.map(Into::into)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_same_name_reupload_replaces_the_days_reading_rather_than_keeping_the_old_count() {
+        // Deleted and uploaded again between two polls of one day: the old
+        // asset's 500 belongs to an asset GitHub no longer lists, and a MAX
+        // would pin it to the new upload time, where growth reads it as new.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let new = "2026-08-02T15:00:00Z";
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(500, Some(UPLOADED))).unwrap();
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(3, Some(new))).unwrap();
+        assert_eq!(
+            app_bin_rows(&c),
+            [("2026-08-02".to_owned(), 3, Some(new.to_owned()))]
+        );
+    }
+
+    #[test]
+    fn an_unknown_upload_time_never_erases_a_known_one() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(10, Some(UPLOADED))).unwrap();
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(8, None)).unwrap();
+        assert_eq!(
+            app_bin_rows(&c),
+            [("2026-08-02".to_owned(), 10, Some(UPLOADED.to_owned()))]
+        );
+    }
+
+    #[test]
+    fn writing_an_asset_stamps_its_upload_time_onto_its_earlier_unstamped_rows() {
+        // Rows written before watchpost recorded upload times get the asset's
+        // time on its next sync; another asset's rows are left alone.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_release_assets(&c, 1, "2026-08-01", &app_bin(10, None)).unwrap();
+        seed_release_asset(&c, "2026-08-01", "v1", "other.bin", 4);
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(12, Some(UPLOADED))).unwrap();
+
+        let up = Some(UPLOADED.to_owned());
+        assert_eq!(
+            app_bin_rows(&c),
+            [
+                ("2026-08-01".to_owned(), 10, up.clone()),
+                ("2026-08-02".to_owned(), 12, up),
+            ]
+        );
+        let other: Option<String> = c
+            .query_row(
+                "SELECT created_at FROM release_assets WHERE asset_name = 'other.bin'",
+                [],
+                |r| r.get(0),
             )
             .unwrap();
-        let rows: Vec<(String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            rows,
-            [("2026-08-01".to_owned(), 10), ("2026-08-02".to_owned(), 25)]
-        );
+        assert_eq!(other, None);
     }
 
     #[test]
@@ -2525,6 +2671,7 @@ mod tests {
                 release_tag: "v1".into(),
                 asset_name: asset.into(),
                 download_count: count,
+                created_at: None,
             }],
         )
         .unwrap();
@@ -2561,7 +2708,20 @@ mod tests {
         );
     }
 
+    /// A repo-1 asset reading with no upload time: a row written before
+    /// watchpost recorded one.
     fn seed_release_asset(conn: &Connection, date: &str, tag: &str, asset: &str, count: i64) {
+        seed_uploaded_asset(conn, date, tag, asset, count, None);
+    }
+
+    fn seed_uploaded_asset(
+        conn: &Connection,
+        date: &str,
+        tag: &str,
+        asset: &str,
+        count: i64,
+        created_at: Option<&str>,
+    ) {
         upsert_release_assets(
             conn,
             1,
@@ -2570,9 +2730,15 @@ mod tests {
                 release_tag: tag.into(),
                 asset_name: asset.into(),
                 download_count: count,
+                created_at: created_at.map(Into::into),
             }],
         )
         .unwrap();
+    }
+
+    /// GitHub's upload-time format for `time` (HH:MM) on `day`.
+    fn at(day: &str, time: &str) -> String {
+        format!("{day}T{time}:00Z")
     }
 
     #[test]
@@ -2624,18 +2790,55 @@ mod tests {
     }
 
     #[test]
-    fn downloads_gained_ignores_a_reupload_under_the_same_name() {
+    fn downloads_gained_counts_a_rename_the_day_after_upload_once() {
+        // Uploaded at -3 and counted in full there; renamed at -2, it keeps
+        // its upload time, so it is not "first seen" again under the new
+        // name, which would count the same 16 twice.
         let c = test_conn();
         seed_repo(&c, 1);
-        // Deleted and uploaded again: a new asset whose counter restarts.
-        seed_release_asset(&c, &days_ago(3), "v1", "app.bin", 50);
-        seed_release_asset(&c, &days_ago(2), "v1", "app.bin", 3);
-        seed_release_asset(&c, &days_ago(1), "v1", "app.bin", 6);
+        let old = at(&days_ago(30), "10:00");
+        let up = at(&days_ago(3), "09:00");
+        seed_uploaded_asset(&c, &days_ago(4), "v0", "old.bin", 5, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(3), "v1", "app-release.apk", 16, Some(&up));
+        seed_uploaded_asset(&c, &days_ago(2), "v1", "app-1.0.0.apk", 16, Some(&up));
+        seed_uploaded_asset(&c, &days_ago(1), "v1", "app-1.0.0.apk", 18, Some(&up));
         let rows = dense_downloads_gained(&c, 1, 5).unwrap();
         assert_eq!(
             values(&rows),
-            vec![None, Some(0), Some(0), Some(3), Some(3)]
+            vec![Some(0), Some(16), Some(16), Some(18), Some(18)]
         );
+    }
+
+    #[test]
+    fn downloads_gained_counts_a_same_name_reupload_from_zero() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        // Deleted and uploaded again: a new asset whose counter restarts, and
+        // its first 3 downloads are growth like any new upload's.
+        let old = at(&days_ago(30), "10:00");
+        let new = at(&days_ago(2), "10:00");
+        seed_uploaded_asset(&c, &days_ago(3), "v1", "app.bin", 50, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(2), "v1", "app.bin", 3, Some(&new));
+        seed_uploaded_asset(&c, &days_ago(1), "v1", "app.bin", 6, Some(&new));
+        let rows = dense_downloads_gained(&c, 1, 5).unwrap();
+        assert_eq!(
+            values(&rows),
+            vec![None, Some(0), Some(3), Some(6), Some(6)]
+        );
+    }
+
+    #[test]
+    fn a_repos_first_reading_counts_only_the_assets_uploaded_that_day() {
+        // A first sync of a repo with old releases is a reading, not a day of
+        // downloads; a release published that same day did collect its 3.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let day = days_ago(1);
+        let old = at(&days_ago(30), "10:00");
+        seed_uploaded_asset(&c, &day, "v1", "old.bin", 400, Some(&old));
+        seed_uploaded_asset(&c, &day, "v2", "new.bin", 3, Some(&at(&day, "08:00")));
+        let rows = dense_downloads_gained(&c, 1, 3).unwrap();
+        assert_eq!(values(&rows), vec![None, Some(3), Some(3)]);
     }
 
     #[test]
@@ -2994,11 +3197,13 @@ mod tests {
                     release_tag: "v1".into(),
                     asset_name: "linux".into(),
                     download_count: linux,
+                    created_at: None,
                 },
                 AssetSnapshot {
                     release_tag: "v1".into(),
                     asset_name: "mac".into(),
                     download_count: mac,
+                    created_at: None,
                 },
             ]
         };
@@ -3013,19 +3218,136 @@ mod tests {
     }
 
     #[test]
-    fn a_new_asset_enters_the_feed_on_its_second_reading() {
-        // A release first seen today has no predecessor, so its whole backlog
-        // is a reading rather than a day's downloads. It starts contributing
-        // once there are two observations to subtract.
+    fn a_new_release_counts_its_first_day_in_the_feed() {
+        // anki_miner, 2026-10-10: v3.8.0 went up at 08:54 UTC and its six
+        // assets held 11 downloads by the day's last reading. With v3.7.0's
+        // 5 the repo gained 16 that day; the feed used to show 5, because a
+        // day's row is its last reading and a first reading was a baseline.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let (before, day) = (days_ago(2), days_ago(1));
+        let old = at(&days_ago(30), "11:08");
+        let new = at(&day, "08:54");
+        let exe = "AnkiMiner-3.7.0-Windows-x86_64-Setup.exe";
+        seed_uploaded_asset(&c, &before, "v3.7.0", exe, 100, Some(&old));
+        seed_uploaded_asset(&c, &day, "v3.7.0", exe, 105, Some(&old));
+        for (name, n) in [
+            ("AnkiMiner-3.8.0-Linux-x86_64.AppImage", 2),
+            ("AnkiMiner-3.8.0-Linux-x86_64.AppImage.zsync", 0),
+            ("AnkiMiner-3.8.0-Windows-x86_64-Setup.exe", 7),
+            ("AnkiMiner-3.8.0-macOS-arm64.dmg", 2),
+            ("AnkiMiner-3.8.0-macOS-x86_64.dmg", 0),
+            ("anki-miner_3.8.0_amd64.deb", 0),
+        ] {
+            seed_uploaded_asset(&c, &day, "v3.8.0", name, n, Some(&new));
+        }
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(deltas_on(&rows, &day), vec![(ChangeMetric::Downloads, 16)]);
+    }
+
+    #[test]
+    fn an_asset_uploaded_after_its_days_last_reading_counts_in_full_the_next_day() {
+        // Uploaded at 23:30, after the day's last hourly reading: first read
+        // the next day, still holding nothing but new downloads.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let old = at(&days_ago(30), "10:00");
+        let late = at(&days_ago(2), "23:30");
+        seed_uploaded_asset(&c, &days_ago(3), "v1", "a.bin", 10, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(2), "v1", "a.bin", 12, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(1), "v1", "a.bin", 13, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(1), "v2", "b.bin", 4, Some(&late));
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(
+            deltas_on(&rows, &days_ago(1)),
+            vec![(ChangeMetric::Downloads, 5)]
+        );
+    }
+
+    #[test]
+    fn an_asset_uploaded_while_watchpost_was_not_reading_counts_in_full_on_its_first_reading() {
+        // Down from -5 to -2, and b.bin went up at -4: the first reading
+        // after the gap carries a.bin's 5 since -6, and so b.bin's 20.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let old = at(&days_ago(30), "10:00");
+        seed_uploaded_asset(&c, &days_ago(6), "v1", "a.bin", 10, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(1), "v1", "a.bin", 15, Some(&old));
+        let gap = at(&days_ago(4), "10:00");
+        seed_uploaded_asset(&c, &days_ago(1), "v2", "b.bin", 20, Some(&gap));
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(
+            deltas_on(&rows, &days_ago(1)),
+            vec![(ChangeMetric::Downloads, 25)]
+        );
+    }
+
+    #[test]
+    fn assets_uploaded_in_the_same_second_each_count_in_full() {
+        // One CI upload gives a release's assets one shared time.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let old = at(&days_ago(30), "10:00");
+        let up = at(&days_ago(1), "08:54");
+        seed_uploaded_asset(&c, &days_ago(2), "v1", "a.bin", 10, Some(&old));
+        seed_uploaded_asset(&c, &days_ago(1), "v2", "linux", 4, Some(&up));
+        seed_uploaded_asset(&c, &days_ago(1), "v2", "mac", 3, Some(&up));
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(
+            deltas_on(&rows, &days_ago(1)),
+            vec![(ChangeMetric::Downloads, 7)]
+        );
+    }
+
+    #[test]
+    fn history_stamped_before_its_upload_day_is_never_counted_as_new() {
+        // Before upload times were recorded, app.bin was deleted and uploaded
+        // again at -2, and that day's row kept the old asset's higher count.
+        // The first sync after the upgrade stamps the new asset's time onto
+        // every earlier app.bin row; the rows dated before -2 must stay on
+        // their old arithmetic rather than count the old asset's 400 as new.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        seed_release_asset(&c, &days_ago(6), "v0", "other.bin", 9);
+        seed_release_asset(&c, &days_ago(4), "v1", "app.bin", 400);
+        seed_release_asset(&c, &days_ago(3), "v1", "app.bin", 495);
+        seed_release_asset(&c, &days_ago(2), "v1", "app.bin", 500);
+        let new = at(&days_ago(2), "10:00");
+        seed_uploaded_asset(&c, &days_ago(1), "v1", "app.bin", 5, Some(&new));
+
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert!(deltas_on(&rows, &days_ago(4)).is_empty(), "{rows:?}");
+        assert_eq!(
+            deltas_on(&rows, &days_ago(3)),
+            vec![(ChangeMetric::Downloads, 95)]
+        );
+        assert_eq!(
+            deltas_on(&rows, &days_ago(2)),
+            vec![(ChangeMetric::Downloads, 5)]
+        );
+        assert!(deltas_on(&rows, &days_ago(1)).is_empty(), "{rows:?}");
+    }
+
+    #[test]
+    fn an_asset_uploaded_before_the_first_reading_enters_the_feed_on_its_second() {
+        // An asset already up for a month when first read has no predecessor,
+        // so its whole backlog is a reading rather than a day's downloads. It
+        // starts contributing once there are two observations to subtract.
         let c = test_conn();
         seed_tracked_repo(&c, 1);
         let first = days_ago(2);
         let second = days_ago(1);
+        let old = at(&days_ago(30), "10:00");
         let asset = |n: i64| {
             vec![AssetSnapshot {
                 release_tag: "v1".into(),
                 asset_name: "linux".into(),
                 download_count: n,
+                created_at: Some(old.clone()),
             }]
         };
         upsert_release_assets(&c, 1, &first, &asset(500)).unwrap();
@@ -3040,27 +3362,71 @@ mod tests {
     }
 
     #[test]
-    fn download_moves_that_cancel_out_are_not_a_change() {
-        // Two assets, one up 5 and one down 5: nothing happened to the repo's
-        // downloads, so the day does not appear.
+    fn a_download_count_that_falls_adds_nothing_rather_than_cancelling_a_gain() {
+        // GitHub's counter never falls, so "mac" down 5 is an asset deleted
+        // and uploaded again under the same name. Nobody un-downloaded
+        // anything: the day gained linux's 5, and the fall must not erase it.
         let c = test_conn();
         seed_tracked_repo(&c, 1);
         let before = days_ago(2);
         let after = days_ago(1);
-        // Seeded directly: `upsert_release_assets` is monotonic and would
-        // refuse to record the fall this test needs.
         for (date, linux, mac) in [(&before, 10, 20), (&after, 15, 15)] {
             for (name, n) in [("linux", linux), ("mac", mac)] {
-                c.execute(
-                    "INSERT INTO release_assets (repo_id, date, release_tag, asset_name, download_count)
-                     VALUES (1, ?1, 'v1', ?2, ?3)",
-                    params![date, name, n],
-                )
-                .unwrap();
+                seed_release_asset(&c, date, "v1", name, n);
             }
         }
 
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(deltas_on(&rows, &after), vec![(ChangeMetric::Downloads, 5)]);
+    }
+
+    #[test]
+    fn a_day_whose_assets_gained_nothing_is_not_a_change() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        for date in [days_ago(2), days_ago(1)] {
+            seed_release_asset(&c, &date, "v1", "linux", 10);
+            seed_release_asset(&c, &date, "v1", "mac", 20);
+        }
+
         assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_feed_and_the_growth_badges_count_the_same_downloads() {
+        // One arithmetic, two surfaces: every day's feed delta is the step in
+        // the badges' running level, whatever the assets did that day — grew,
+        // fell after a re-upload, left, or first appeared.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let rows = [
+            (6, "v1", "a.bin", 10),
+            (5, "v1", "a.bin", 14),
+            (4, "v1", "a.bin", 3),
+            (4, "v2", "b.bin", 7),
+            (3, "v1", "a.bin", 9),
+            (3, "v2", "b.bin", 12),
+            (2, "v2", "b.bin", 20),
+            (1, "v2", "b.bin", 21),
+            (1, "v3", "c.bin", 4),
+        ];
+        for (ago, tag, name, n) in rows {
+            seed_release_asset(&c, &days_ago(ago), tag, name, n);
+        }
+
+        let feed = recent_changes(&c, 7, 20).unwrap();
+        let level = dense_downloads_gained(&c, 1, 7).unwrap();
+        for pair in level.windows(2) {
+            let ((_, before), (date, after)) = (&pair[0], &pair[1]);
+            let step = after.unwrap_or(0) - before.unwrap_or(0);
+            let delta = deltas_on(&feed, date)
+                .iter()
+                .find(|(m, _)| *m == ChangeMetric::Downloads)
+                .map_or(0, |(_, d)| *d);
+            assert_eq!(delta, step, "on {date}: feed {feed:?}, level {level:?}");
+        }
+        // And the arithmetic is not vacuous: +4, +0 (fall), +5 and +6, +8, +1.
+        assert_eq!(values(&level)[6], Some(24));
     }
 
     #[test]
@@ -3123,6 +3489,7 @@ mod tests {
                 release_tag: tag.into(),
                 asset_name: "app.tar".into(),
                 download_count: count,
+                created_at: None,
             }],
         )
         .unwrap();

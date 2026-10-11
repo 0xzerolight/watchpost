@@ -359,6 +359,7 @@ async fn sync_one_repo(
                     release_tag: tag.clone(),
                     asset_name: a.name,
                     download_count: a.download_count,
+                    created_at: a.created_at,
                 })
             })
             .collect()

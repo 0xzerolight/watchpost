@@ -306,6 +306,7 @@ async fn an_observed_day_round_trips_every_column() {
                     release_tag: "v1".into(),
                     asset_name: "linux".into(),
                     download_count: 64,
+                    created_at: None,
                 }],
             )
         })
@@ -449,6 +450,7 @@ async fn the_json_carries_the_whole_record() {
                     release_tag: "v1".into(),
                     asset_name: "linux".into(),
                     download_count: 64,
+                    created_at: Some("2026-07-30T10:00:00Z".into()),
                 }],
             )?;
             queries::insert_event(
@@ -472,7 +474,7 @@ async fn the_json_carries_the_whole_record() {
 
     assert_eq!(doc["repo"]["name"], REPO);
     assert_eq!(doc["repo"]["id"], ID);
-    assert_eq!(doc["schema_version"], 4);
+    assert_eq!(doc["schema_version"], 5);
     assert!(doc["exported_at"].as_str().unwrap().ends_with('Z'));
 
     assert_eq!(doc["stats"].as_array().unwrap().len(), 1);
@@ -484,6 +486,10 @@ async fn the_json_carries_the_whole_record() {
     assert_eq!(doc["paths"][0]["title"], "aaa");
     assert_eq!(doc["container_pulls"][0]["pull_count"], 512);
     assert_eq!(doc["release_assets"][0]["asset_name"], "linux");
+    assert_eq!(
+        doc["release_assets"][0]["created_at"],
+        "2026-07-30T10:00:00Z"
+    );
 
     assert_eq!(doc["events"][0]["title"], "Show HN");
     assert_eq!(doc["events"][0]["kind"], "hn");
