@@ -66,6 +66,11 @@ pub struct GhRelease {
 pub struct GhAsset {
     pub name: String,
     pub download_count: i64,
+    /// When the asset was uploaded, ISO 8601 UTC. GitHub always sends it, but
+    /// it is optional all the same: a required field would fail the whole
+    /// `/releases` read over one missing timestamp, while `None` only falls
+    /// back to counting the asset's first reading as a baseline.
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

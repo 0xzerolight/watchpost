@@ -149,6 +149,7 @@ impl Harness {
             release_tag: tag.to_owned(),
             asset_name: name.to_owned(),
             download_count: count,
+            created_at: None,
         }];
         self.state
             .db

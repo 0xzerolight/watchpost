@@ -265,6 +265,21 @@ pub fn prune_release_assets(
     Ok(())
 }
 
+/// Record `date`'s readings of a repo's release assets.
+///
+/// A second reading the same day keeps the higher count, so a poll racing an
+/// earlier one never moves a counter backwards, unless the two carry different
+/// upload times. Then they are two assets under one name, the old one deleted
+/// and the new one uploaded in its place, and the newer reading replaces the
+/// row whole: a MAX would pin the deleted asset's count to the new asset's
+/// upload time, and the download growth figures would count it as new. An
+/// unknown upload time never erases a known one.
+///
+/// Each asset's upload time is also stamped onto its earlier rows that lack
+/// one: the rows written before watchpost recorded it. That is what lets the
+/// growth figures recognise a release first read before the upgrade as new.
+/// The stamp rides `idx_assets_series` and finds nothing to do after an
+/// asset's first sync.
 pub fn upsert_release_assets(
     conn: &Connection,
     repo_id: i64,
@@ -272,12 +287,21 @@ pub fn upsert_release_assets(
     rows: &[AssetSnapshot],
 ) -> Result<(), DbError> {
     let mut stmt = conn.prepare(
-        "INSERT INTO release_assets AS t (repo_id, date, release_tag, asset_name, download_count)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO release_assets AS t
+             (repo_id, date, release_tag, asset_name, download_count, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(repo_id, date, release_tag, asset_name) DO UPDATE SET
            -- download_count is NOT NULL; scalar MAX is safe here, unlike the
-           -- nullable columns rule 1 guards against.
-           download_count = MAX(t.download_count, excluded.download_count)",
+           -- nullable columns rule 1 guards against. A NULL upload time on
+           -- either side makes the `<>` NULL, which keeps the MAX.
+           download_count = CASE WHEN excluded.created_at <> t.created_at
+                                 THEN excluded.download_count
+                                 ELSE MAX(t.download_count, excluded.download_count) END,
+           created_at = COALESCE(excluded.created_at, t.created_at)",
+    )?;
+    let mut stamp = conn.prepare(
+        "UPDATE release_assets SET created_at = ?4
+         WHERE repo_id = ?1 AND release_tag = ?2 AND asset_name = ?3 AND created_at IS NULL",
     )?;
     for row in rows {
         stmt.execute(params![
@@ -285,8 +309,17 @@ pub fn upsert_release_assets(
             date,
             row.release_tag,
             row.asset_name,
-            row.download_count
+            row.download_count,
+            row.created_at
         ])?;
+        if let Some(created_at) = &row.created_at {
+            stamp.execute(params![
+                repo_id,
+                row.release_tag,
+                row.asset_name,
+                created_at
+            ])?;
+        }
     }
     Ok(())
 }
@@ -1356,7 +1389,7 @@ pub fn export_release_assets(
     repo_id: i64,
 ) -> Result<Vec<ReleaseAssetRow>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT date, release_tag, asset_name, download_count
+        "SELECT date, release_tag, asset_name, download_count, created_at
          FROM release_assets WHERE repo_id = ?1
          ORDER BY date, release_tag, asset_name",
     )?;
@@ -1367,6 +1400,7 @@ pub fn export_release_assets(
                 release_tag: r.get(1)?,
                 asset_name: r.get(2)?,
                 download_count: r.get(3)?,
+                created_at: r.get(4)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -2135,60 +2169,104 @@ mod tests {
         assert_eq!(uniques, 8); // MAX(5, 8)
     }
 
+    /// One `v1/app.bin` reading, uploaded at `created_at`.
+    fn app_bin(count: i64, created_at: Option<&str>) -> [AssetSnapshot; 1] {
+        [AssetSnapshot {
+            release_tag: "v1".into(),
+            asset_name: "app.bin".into(),
+            download_count: count,
+            created_at: created_at.map(Into::into),
+        }]
+    }
+
+    /// Every stored `v1/app.bin` row: (date, count, upload time), oldest first.
+    fn app_bin_rows(c: &Connection) -> Vec<(String, i64, Option<String>)> {
+        c.prepare(
+            "SELECT date, download_count, created_at FROM release_assets
+             WHERE repo_id = 1 AND release_tag = 'v1' AND asset_name = 'app.bin'
+             ORDER BY date",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    const UPLOADED: &str = "2026-07-30T10:00:00Z";
+
     #[test]
     fn release_assets_upsert_is_monotonic() {
         let c = test_conn();
         seed_repo(&c, 1);
-        upsert_release_assets(
-            &c,
-            1,
-            "2026-08-01",
-            &[AssetSnapshot {
-                release_tag: "v1".into(),
-                asset_name: "app.bin".into(),
-                download_count: 10,
-            }],
-        )
-        .unwrap();
-        upsert_release_assets(
-            &c,
-            1,
-            "2026-08-02",
-            &[AssetSnapshot {
-                release_tag: "v1".into(),
-                asset_name: "app.bin".into(),
-                download_count: 25,
-            }],
-        )
-        .unwrap();
+        let up = Some(UPLOADED);
+        upsert_release_assets(&c, 1, "2026-08-01", &app_bin(10, up)).unwrap();
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(25, up)).unwrap();
         // re-upsert same day with a lower count — must not regress
-        upsert_release_assets(
-            &c,
-            1,
-            "2026-08-02",
-            &[AssetSnapshot {
-                release_tag: "v1".into(),
-                asset_name: "app.bin".into(),
-                download_count: 20,
-            }],
-        )
-        .unwrap();
-        let mut stmt = c
-            .prepare(
-                "SELECT date, download_count FROM release_assets
-                 WHERE repo_id = 1 AND release_tag = 'v1' AND asset_name = 'app.bin'
-                 ORDER BY date",
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(20, up)).unwrap();
+        assert_eq!(
+            app_bin_rows(&c),
+            [
+                ("2026-08-01".to_owned(), 10, up.map(Into::into)),
+                ("2026-08-02".to_owned(), 25, up.map(Into::into)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_same_name_reupload_replaces_the_days_reading_rather_than_keeping_the_old_count() {
+        // Deleted and uploaded again between two polls of one day: the old
+        // asset's 500 belongs to an asset GitHub no longer lists, and a MAX
+        // would pin it to the new upload time, where growth reads it as new.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        let new = "2026-08-02T15:00:00Z";
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(500, Some(UPLOADED))).unwrap();
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(3, Some(new))).unwrap();
+        assert_eq!(
+            app_bin_rows(&c),
+            [("2026-08-02".to_owned(), 3, Some(new.to_owned()))]
+        );
+    }
+
+    #[test]
+    fn an_unknown_upload_time_never_erases_a_known_one() {
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(10, Some(UPLOADED))).unwrap();
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(8, None)).unwrap();
+        assert_eq!(
+            app_bin_rows(&c),
+            [("2026-08-02".to_owned(), 10, Some(UPLOADED.to_owned()))]
+        );
+    }
+
+    #[test]
+    fn writing_an_asset_stamps_its_upload_time_onto_its_earlier_unstamped_rows() {
+        // Rows written before watchpost recorded upload times get the asset's
+        // time on its next sync; another asset's rows are left alone.
+        let c = test_conn();
+        seed_repo(&c, 1);
+        upsert_release_assets(&c, 1, "2026-08-01", &app_bin(10, None)).unwrap();
+        seed_release_asset(&c, "2026-08-01", "v1", "other.bin", 4);
+        upsert_release_assets(&c, 1, "2026-08-02", &app_bin(12, Some(UPLOADED))).unwrap();
+
+        let up = Some(UPLOADED.to_owned());
+        assert_eq!(
+            app_bin_rows(&c),
+            [
+                ("2026-08-01".to_owned(), 10, up.clone()),
+                ("2026-08-02".to_owned(), 12, up),
+            ]
+        );
+        let other: Option<String> = c
+            .query_row(
+                "SELECT created_at FROM release_assets WHERE asset_name = 'other.bin'",
+                [],
+                |r| r.get(0),
             )
             .unwrap();
-        let rows: Vec<(String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            rows,
-            [("2026-08-01".to_owned(), 10), ("2026-08-02".to_owned(), 25)]
-        );
+        assert_eq!(other, None);
     }
 
     #[test]
@@ -2552,6 +2630,7 @@ mod tests {
                 release_tag: "v1".into(),
                 asset_name: asset.into(),
                 download_count: count,
+                created_at: None,
             }],
         )
         .unwrap();
@@ -2597,6 +2676,7 @@ mod tests {
                 release_tag: tag.into(),
                 asset_name: asset.into(),
                 download_count: count,
+                created_at: None,
             }],
         )
         .unwrap();
@@ -3021,11 +3101,13 @@ mod tests {
                     release_tag: "v1".into(),
                     asset_name: "linux".into(),
                     download_count: linux,
+                    created_at: None,
                 },
                 AssetSnapshot {
                     release_tag: "v1".into(),
                     asset_name: "mac".into(),
                     download_count: mac,
+                    created_at: None,
                 },
             ]
         };
@@ -3053,6 +3135,7 @@ mod tests {
                 release_tag: "v1".into(),
                 asset_name: "linux".into(),
                 download_count: n,
+                created_at: None,
             }]
         };
         upsert_release_assets(&c, 1, &first, &asset(500)).unwrap();
@@ -3194,6 +3277,7 @@ mod tests {
                 release_tag: tag.into(),
                 asset_name: "app.tar".into(),
                 download_count: count,
+                created_at: None,
             }],
         )
         .unwrap();
