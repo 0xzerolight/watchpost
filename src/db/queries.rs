@@ -429,6 +429,10 @@ const CHANGE_STAT_COLUMNS: [ChangeMetric; 5] = [
 ///   day's value already is the change — which is the snapshot-versus-rate
 ///   split [`Metric::carries_forward`] draws, seen from the other side.
 ///
+/// Downloads are the sum of what each release asset gained, by
+/// [`asset_gains_cte`], the arithmetic the downloads growth badges share, so
+/// the feed and the badges never disagree about a day.
+///
 /// The `days` filter sits in the outer `SELECT`, never in the CTE. Filtering
 /// before the `LAG` would strip the predecessor of the window's first row and
 /// turn a level into a delta — the fake-spike-at-the-window-edge trap
@@ -520,24 +524,18 @@ pub fn recent_changes(
            AND o.prev IS NOT NULL AND o.v <> o.prev AND o.date >= ?1",
     )?;
 
-    // release_assets: per-(tag, asset) counters, summed. Only the total is a
-    // fact about the repo, so rows that did not move stay in the SUM as zero
-    // and the `HAVING` drops a day whose assets cancelled each other out.
-    collect(
-        "WITH obs AS (
-             SELECT repo_id, date, download_count AS v,
-                    LAG(download_count) OVER (
-                        PARTITION BY repo_id, release_tag, asset_name ORDER BY date
-                    ) AS prev
-             FROM release_assets
-         )
-         SELECT o.repo_id, r.name, o.date, 'downloads', SUM(o.v - o.prev) AS delta
-         FROM obs o JOIN repos r ON r.id = o.repo_id
-         WHERE r.tracked = 1 AND r.hidden = 0
-           AND o.prev IS NOT NULL AND o.date >= ?1
-         GROUP BY o.repo_id, r.name, o.date
+    // release_assets: what each asset gained, summed per repo per day by the
+    // arithmetic the downloads growth badges share. Only the sum is a fact
+    // about the repo, so the `HAVING` drops a day where no asset gained.
+    collect(&format!(
+        "WITH {}
+         SELECT g.repo_id, r.name, g.date, 'downloads', SUM(g.gained) AS delta
+         FROM asset_gains g JOIN repos r ON r.id = g.repo_id
+         WHERE g.date >= ?1
+         GROUP BY g.repo_id, r.name, g.date
          HAVING delta <> 0",
-    )?;
+        asset_gains_cte("repo_id IN (SELECT id FROM repos WHERE tracked = 1 AND hidden = 0)")
+    ))?;
 
     let mut out: Vec<RepoChange> = grouped
         .into_iter()
@@ -939,16 +937,20 @@ pub fn dense_downloads_total(
     Ok(out)
 }
 
-/// Release downloads gained, as a running level dense over the trailing `days`
-/// window ending today: what the downloads growth badges measure, by the same
-/// last-minus-first [`crate::series::growth`] as every other level.
+/// The downloads each release-asset reading gained, as two CTEs ending in
+/// `asset_gains(repo_id, date, gained)`: the one arithmetic behind both the
+/// downloads in [`recent_changes`] and [`dense_downloads_gained`]. Each caller
+/// once spelled it out itself, and the two drifted: the feed summed raw
+/// differences, so a fallen count read as negative downloads, while the badges
+/// clamped it. `scope` is the rows' `WHERE` predicate, always a literal from
+/// this module and never input.
 ///
-/// Not [`dense_downloads_total`]'s movement. That total is GitHub's own sum, so
-/// it drops when a release leaves the repo — deleted, or moved to another repo
+/// Not the movement of the repo's total. That total is GitHub's own sum, so it
+/// drops when a release leaves the repo — deleted, or moved to another repo
 /// whose re-uploaded assets start again from zero — and growth measured across
 /// the drop read as minus every download the release ever had, burying the
 /// real ones. Each asset instead adds what it gained since its own previous
-/// reading, which is the arithmetic of the downloads in [`recent_changes`]:
+/// reading:
 ///
 /// - an asset's first reading adds nothing, because its count is a baseline
 ///   and a renamed asset arrives under its new name already holding it;
@@ -958,8 +960,38 @@ pub fn dense_downloads_total(
 ///   restarted from zero.
 ///
 /// The cost of the first rule: downloads a new asset collected before its first
-/// reading never count as growth. Hourly sampling keeps that to the downloads
-/// of its first hour, or of however long watchpost was down.
+/// reading never count as growth, and a day's row is that day's last reading,
+/// so for a new release that is its whole first day.
+///
+/// Callers filter dates outside these CTEs, never inside: the `LAG` has to see
+/// the reading before a window's first day, or that day's level reads as a gain.
+fn asset_gains_cte(scope: &'static str) -> String {
+    format!(
+        "readings AS (
+             SELECT repo_id, date, download_count AS v,
+                    LAG(download_count) OVER (
+                        PARTITION BY repo_id, release_tag, asset_name ORDER BY date
+                    ) AS prev
+             FROM release_assets
+             WHERE {scope}
+         ),
+         asset_gains AS (
+             SELECT repo_id, date,
+                    CASE WHEN prev IS NOT NULL THEN MAX(v - prev, 0) ELSE 0 END AS gained
+             FROM readings
+         )"
+    )
+}
+
+/// Release downloads gained, as a running level dense over the trailing `days`
+/// window ending today: what the downloads growth badges measure, by the same
+/// last-minus-first [`crate::series::growth`] as every other level. Each day
+/// adds what its assets gained, by [`asset_gains_cte`]'s arithmetic, which
+/// [`recent_changes`] shares.
+///
+/// Not [`dense_downloads_total`]'s movement: that total drops when a release
+/// leaves the repo, and growth measured across the drop read as minus every
+/// download the release ever had.
 ///
 /// The level starts at 0 on the first reading and carries across days with no
 /// reading. A day before the first reading is `None`, matching
@@ -980,18 +1012,13 @@ pub fn dense_downloads_gained(
     // Every reading day, oldest first, with what its assets gained. The level
     // is a running sum, so the days before the window are walked too: the
     // newest of them is the level the window opens on.
-    let mut stmt = conn.prepare(
-        "WITH obs AS (
-             SELECT date, download_count - LAG(download_count) OVER (
-                        PARTITION BY release_tag, asset_name ORDER BY date
-                    ) AS gained
-             FROM release_assets
-             WHERE repo_id = ?1
-         )
-         SELECT date, SUM(MAX(COALESCE(gained, 0), 0)) FROM obs
+    let mut stmt = conn.prepare(&format!(
+        "WITH {}
+         SELECT date, SUM(gained) FROM asset_gains
          GROUP BY date
          ORDER BY date",
-    )?;
+        asset_gains_cte("repo_id = ?1")
+    ))?;
     let days_gained = stmt.query_map(params![repo_id], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })?;
@@ -3040,27 +3067,71 @@ mod tests {
     }
 
     #[test]
-    fn download_moves_that_cancel_out_are_not_a_change() {
-        // Two assets, one up 5 and one down 5: nothing happened to the repo's
-        // downloads, so the day does not appear.
+    fn a_download_count_that_falls_adds_nothing_rather_than_cancelling_a_gain() {
+        // GitHub's counter never falls, so "mac" down 5 is an asset deleted
+        // and uploaded again under the same name. Nobody un-downloaded
+        // anything: the day gained linux's 5, and the fall must not erase it.
         let c = test_conn();
         seed_tracked_repo(&c, 1);
         let before = days_ago(2);
         let after = days_ago(1);
-        // Seeded directly: `upsert_release_assets` is monotonic and would
-        // refuse to record the fall this test needs.
         for (date, linux, mac) in [(&before, 10, 20), (&after, 15, 15)] {
             for (name, n) in [("linux", linux), ("mac", mac)] {
-                c.execute(
-                    "INSERT INTO release_assets (repo_id, date, release_tag, asset_name, download_count)
-                     VALUES (1, ?1, 'v1', ?2, ?3)",
-                    params![date, name, n],
-                )
-                .unwrap();
+                seed_release_asset(&c, date, "v1", name, n);
             }
         }
 
+        let rows = recent_changes(&c, 7, 20).unwrap();
+        assert_eq!(deltas_on(&rows, &after), vec![(ChangeMetric::Downloads, 5)]);
+    }
+
+    #[test]
+    fn a_day_whose_assets_gained_nothing_is_not_a_change() {
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        for date in [days_ago(2), days_ago(1)] {
+            seed_release_asset(&c, &date, "v1", "linux", 10);
+            seed_release_asset(&c, &date, "v1", "mac", 20);
+        }
+
         assert!(recent_changes(&c, 7, 20).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_feed_and_the_growth_badges_count_the_same_downloads() {
+        // One arithmetic, two surfaces: every day's feed delta is the step in
+        // the badges' running level, whatever the assets did that day — grew,
+        // fell after a re-upload, left, or first appeared.
+        let c = test_conn();
+        seed_tracked_repo(&c, 1);
+        let rows = [
+            (6, "v1", "a.bin", 10),
+            (5, "v1", "a.bin", 14),
+            (4, "v1", "a.bin", 3),
+            (4, "v2", "b.bin", 7),
+            (3, "v1", "a.bin", 9),
+            (3, "v2", "b.bin", 12),
+            (2, "v2", "b.bin", 20),
+            (1, "v2", "b.bin", 21),
+            (1, "v3", "c.bin", 4),
+        ];
+        for (ago, tag, name, n) in rows {
+            seed_release_asset(&c, &days_ago(ago), tag, name, n);
+        }
+
+        let feed = recent_changes(&c, 7, 20).unwrap();
+        let level = dense_downloads_gained(&c, 1, 7).unwrap();
+        for pair in level.windows(2) {
+            let ((_, before), (date, after)) = (&pair[0], &pair[1]);
+            let step = after.unwrap_or(0) - before.unwrap_or(0);
+            let delta = deltas_on(&feed, date)
+                .iter()
+                .find(|(m, _)| *m == ChangeMetric::Downloads)
+                .map_or(0, |(_, d)| *d);
+            assert_eq!(delta, step, "on {date}: feed {feed:?}, level {level:?}");
+        }
+        // And the arithmetic is not vacuous: +4, +0 (fall), +5 and +6, +8, +1.
+        assert_eq!(values(&level)[6], Some(24));
     }
 
     #[test]
