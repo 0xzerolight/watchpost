@@ -849,6 +849,59 @@ async fn discovery_missing_all_tracked_never_hides() {
 }
 
 #[tokio::test]
+async fn a_renamed_repo_whose_old_name_is_reused_keeps_syncing_under_its_new_name() {
+    // A was renamed and a new repo B created under A's old name. GitHub sorts
+    // the listing by name, so B arrives while A's row still holds that name.
+    let renamed = "octo/aaa-old";
+    let server = MockServer::start().await;
+    mount_discovery(
+        &server,
+        vec![repo_json(ID_B, REPO_A), repo_json(ID_A, renamed)],
+    )
+    .await;
+    mount_full_repo(&server, ID_B, REPO_A).await;
+    mount_full_repo(&server, ID_A, renamed).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    let report = run_cycle(state.clone()).await;
+
+    assert_eq!((report.repos_ok, report.repos_failed), (1, 0));
+    assert_eq!(repo_field::<String>(&state, ID_A, "name").await, renamed);
+    assert_eq!(stars_on(&state, ID_A, &today()).await, Some(10));
+    // The history stays with the id; the newcomer starts untracked.
+    assert_eq!(repo_field::<String>(&state, ID_B, "name").await, REPO_A);
+    assert_eq!(repo_field::<i64>(&state, ID_B, "tracked").await, 0);
+}
+
+#[tokio::test]
+async fn a_sync_that_finds_another_repo_at_the_name_writes_nothing() {
+    // Discovery failing leaves A's row on its old name, which GitHub now gives
+    // to B. Every endpoint at that name answers for B, so none of it is A's.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    mount_full_repo(&server, ID_B, REPO_A).await;
+
+    let state = state_for(&server);
+    seed_tracked(&state, ID_A, REPO_A).await;
+
+    let report = run_cycle(state.clone()).await;
+
+    assert_eq!((report.repos_ok, report.repos_failed), (0, 1));
+    assert_eq!(count(&state, "repo_stats").await, 0);
+    assert_eq!(count(&state, "repo_referrers").await, 0);
+    assert_eq!(count(&state, "release_assets").await, 0);
+    assert_eq!(count(&state, "repos").await, 1);
+    let error: String = repo_field(&state, ID_A, "last_error").await;
+    assert!(error.contains("another repository"), "{error}");
+}
+
+#[tokio::test]
 async fn gate_blocked_skips_cycle() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

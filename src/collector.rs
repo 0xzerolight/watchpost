@@ -290,6 +290,18 @@ async fn sync_one_repo(
     // Always per-repo: the discovery listing omits `subscribers_count`, so
     // this is the single source of the metadata snapshot.
     let meta = fetch!("meta", gh.repo(name));
+    // Every call goes by name, so a name GitHub has given to another repo
+    // answers for that repo. Writing it under this id would splice a stranger's
+    // numbers into this history; the next discovery moves this row to its new
+    // name instead.
+    if let Some(m) = &meta
+        && m.id != repo.id
+    {
+        return Err(AppError::Gh(GhError::NameReused {
+            name: name.to_owned(),
+            id: m.id,
+        }));
+    }
     let pulls = fetch!("pulls", gh.open_pull_count(name));
     let views = fetch!("views", gh.traffic_views(name));
     let clones = fetch!("clones", gh.traffic_clones(name));

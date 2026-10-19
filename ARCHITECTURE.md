@@ -36,6 +36,9 @@ file, the WAL sidecars beside it, and whatever pre-migration backups it has take
   (`github.com/{owner}/{repo}/pkgs/container/{name}`) unauthenticated and reads the container pull
   count off it — no API exposes that number. A 404 means the repo ships no such package and is
   skipped; the package must be named after the repo for this to find it.
+- A repo is its GitHub id; its name is only the address the calls use. When a renamed repo's old
+  name goes to a new repo, discovery moves the history to the new name with the id, and a sync
+  that finds another repo's id at the stored name writes nothing.
 - A per-repo failure records `last_error` and an exponential `backoff_until` and the loop moves on;
   one broken repo does not cost the others their pass. Partial success still writes what it got.
 - A rate-limit response is different: it closes the rate gate and aborts the whole cycle, because

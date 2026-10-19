@@ -25,6 +25,8 @@ pub enum GhError {
     Network(#[from] reqwest::Error),
     #[error("decode {url}: {msg}")]
     Decode { url: String, msg: String },
+    #[error("{name} now belongs to another repository (id {id})")]
+    NameReused { name: String, id: i64 },
 }
 
 impl GhError {
@@ -50,6 +52,9 @@ impl GhError {
             GhError::Status { status, .. } => format!("GitHub returned an error ({status})."),
             GhError::Network(_) => "Could not reach GitHub.".to_owned(),
             GhError::Decode { .. } => "GitHub returned an unexpected response.".to_owned(),
+            GhError::NameReused { .. } => "This name now belongs to another repository on GitHub; \
+                 the next sync follows the rename."
+                .to_owned(),
         }
     }
 }
@@ -305,6 +310,10 @@ mod tests {
             GhError::Decode {
                 url,
                 msg: "boom".to_owned(),
+            },
+            GhError::NameReused {
+                name: "octo/secret".to_owned(),
+                id: 7,
             },
         ];
         for err in errors {

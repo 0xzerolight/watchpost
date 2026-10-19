@@ -101,7 +101,19 @@ fn null_safe_max_clause(col: &str) -> String {
 /// discovery": a repo hidden by a truncated upstream listing comes back on the
 /// next listing that includes it, instead of being invisible forever with no
 /// recovery path but a sqlite shell.
+///
+/// The id is the repo; the name is only where GitHub serves it, and a name
+/// can pass to another id: rename a repo and create a new one under the old
+/// name, and the listing hands that name to the newcomer while the renamed
+/// repo's row still holds it. That row is the stale one, so it is parked under
+/// a name no GitHub repo can have (they never contain a space) rather than
+/// failing the whole listing on `UNIQUE(name)`. When the renamed repo is listed
+/// too, its own upsert writes its new name in the same transaction.
 pub fn upsert_repo(conn: &Connection, repo: &GhRepo) -> Result<(), DbError> {
+    conn.execute(
+        "UPDATE repos SET name = name || ' (id ' || id || ')' WHERE name = ?1 AND id <> ?2",
+        params![repo.full_name, repo.id],
+    )?;
     conn.execute(
         "INSERT INTO repos (id, name, description, homepage, archived, fork)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -2168,6 +2180,55 @@ mod tests {
         // Un-hiding never touches the user's own `tracked` flag.
         assert!(known[0].tracked);
         assert_eq!(tracked_repos(&c).unwrap().len(), 1);
+    }
+
+    fn named(id: i64, full_name: &str) -> GhRepo {
+        GhRepo {
+            id,
+            full_name: full_name.into(),
+            description: None,
+            homepage: None,
+            archived: false,
+            fork: false,
+            stargazers_count: 0,
+            forks_count: 0,
+            subscribers_count: None,
+            open_issues_count: 0,
+        }
+    }
+
+    fn name_of(conn: &Connection, id: i64) -> String {
+        conn.query_row("SELECT name FROM repos WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn upsert_repo_takes_a_name_from_the_row_that_held_it() {
+        let c = test_conn();
+        upsert_repo(&c, &named(1, "owner/app")).unwrap();
+
+        // Repo 1 was renamed and a new repo 2 took its old name; the listing
+        // happens to bring the new repo first.
+        upsert_repo(&c, &named(2, "owner/app")).unwrap();
+        assert_eq!(name_of(&c, 2), "owner/app");
+        assert_eq!(name_of(&c, 1), "owner/app (id 1)");
+
+        upsert_repo(&c, &named(1, "owner/app-old")).unwrap();
+        assert_eq!(name_of(&c, 1), "owner/app-old");
+        assert_eq!(count_rows(&c, "repos"), 2);
+    }
+
+    #[test]
+    fn upsert_repo_lets_two_repos_swap_names() {
+        let c = test_conn();
+        upsert_repo(&c, &named(1, "owner/a")).unwrap();
+        upsert_repo(&c, &named(2, "owner/b")).unwrap();
+
+        upsert_repo(&c, &named(1, "owner/b")).unwrap();
+        upsert_repo(&c, &named(2, "owner/a")).unwrap();
+
+        assert_eq!(name_of(&c, 1), "owner/b");
+        assert_eq!(name_of(&c, 2), "owner/a");
     }
 
     #[test]
