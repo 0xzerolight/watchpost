@@ -9,6 +9,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A repo keeps syncing after its old name goes to a new repo.** Renaming a repo and creating a
+  new one under the old name stopped both discovery and that repo's sync. Every cycle and every
+  repo refresh in Settings failed with `UNIQUE constraint failed: repos.name`. The listing gives the
+  name to the new repo's id while the renamed repo's row still holds it, and the repo upsert
+  resolved conflicts on the id alone, so the whole listing rolled back. The row never learned its
+  new name, and its sync, which addresses GitHub by name, fetched the newcomer. The upsert now parks
+  the stale row under `owner/name (id N)`, a name GitHub cannot issue because its names never
+  contain a space. The renamed repo's own entry in the same listing then writes its real name, so
+  the history stays with the id under the new name, and the new repo arrives untracked. Dropping
+  `UNIQUE(name)` was the alternative, and it was rejected: it needs a table rebuild, and it would
+  let two rows claim one name. That constraint was also all that stopped a sync at a reused name
+  from writing the newcomer's traffic under the old id. A sync that gets a different id back from
+  the stored name now writes nothing and reports that the name belongs to another repository; the
+  next successful discovery moves the row to its new name.
 - **Download growth no longer goes negative when a release leaves the repo.** The growth badges
   measured the download total's movement, and that total is GitHub's own sum, the figure a
   downloads badge shows. Moving a repo's resource releases to a separate repo, where the
