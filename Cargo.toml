@@ -29,7 +29,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # `filter-by-regex`: it fixes the zone set at build time, which would defeat a
 # runtime setting.
 chrono-tz = "0.10"
-tower-http = { version = "0.6", features = ["catch-panic", "compression-gzip", "trace"] }
+tower-http = { version = "0.7", features = ["catch-panic", "compression-gzip", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-logfmt = "0.3"
