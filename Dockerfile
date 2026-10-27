@@ -3,7 +3,7 @@
 # architecture and merging the two into one manifest — see
 # .github/workflows/docker-publish.yml. Emulating a Rust build under QEMU is
 # the alternative, and it is many times slower.
-FROM rust:1.90-alpine3.22 AS builder
+FROM rust:1.99-alpine3.22 AS builder
 
 # musl-dev/gcc: rusqlite is built from bundled C sources.
 RUN apk add --no-cache musl-dev gcc
@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked \
  && cp /src/target/release/watchpost /usr/local/bin/watchpost
 
-FROM alpine:3.22
+FROM alpine:3.24
 
 # ca-certificates: the GitHub client speaks TLS. su-exec: the entrypoint starts
 # as root to fix bind-mount ownership, then drops to PUID:PGID. wget ships with
