@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-02
+
+### Added
+
+- **Release asset upload times in the JSON export (`created_at`).** Each `release_assets` row
+  carries GitHub's upload time for its asset, ISO 8601 UTC, and `schema_version` reads 5. It is
+  `null` on a reading made before watchpost recorded the time, for an asset GitHub no longer lists:
+  the first sync after the upgrade stamps it onto the earlier rows of every asset GitHub still
+  lists. The time is recorded for the first-day download counting under Fixed; the CSV export,
+  which is per-day chart data, is unchanged.
+
 ### Fixed
 
 - **A repo keeps syncing after its old name goes to a new repo.** Renaming a repo and creating a
@@ -50,6 +61,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now read one query, and the feed no longer shows a re-upload as negative downloads. The cost
   that remains: an asset first listed more than a reading day after its upload, such as a draft
   the token cannot see, still counts its first reading as a baseline.
+
+### Security
+
+- **Security updates for bundled crates (rustls, pulldown-cmark).** Twelve RustSec advisories, each
+  closed by a lockfile bump with no code change: rustls 0.23.45 → 0.23.46 (RUSTSEC-2026-0346 to
+  0349), rustls-webpki 0.103.14 → 0.103.16 (RUSTSEC-2026-0382), webpki-root-certs 1.0.9 → 1.0.11
+  (RUSTSEC-2026-0383), quinn-proto 0.11.16 → 0.11.19 (RUSTSEC-2026-0338 to 0342) and pulldown-cmark
+  0.13.4 → 0.13.6 (RUSTSEC-2026-0433). One reaches watchpost, which speaks TLS only to the
+  configured API base and the GHCR package page: rustls-webpki accepted chains through distrusted
+  emSign intermediates, whose private keys are now public, wherever the system trust store allowed
+  such a path, so an interceptor holding one of those keys could have posed as the API base and
+  received the token. The rustls advisories need ECH, the `brotli` feature, a custom session store
+  or post-quantum key exchange preferred over X25519, and the reqwest configuration here enables
+  none of them. pulldown-cmark renders event notes on the repo page, and its advisory, quadratic
+  parsing of nested image wikilinks, needs `ENABLE_WIKILINKS`, which watchpost leaves off.
+  quinn-proto, reqwest's HTTP/3 transport, and webpki-root-certs, a root list used only on wasm32,
+  sit in the lockfile but are not compiled into the binary. Every new version resolves under the
+  1.88 MSRV. Most RustSec advisories never reach Dependabot, so a daily workflow now audits the
+  lock and opens the relock as a pull request that merges itself once main's required checks pass;
+  Dependabot keeps the crates, the Docker base images and the workflow actions current alongside
+  it, merged the same way.
 
 ## [1.4.0] - 2026-10-02
 
@@ -632,6 +664,7 @@ never tagged.
 - `compose.yml` publishes to `127.0.0.1:8080` rather than every interface, so the default deployment
   is not reachable from the network.
 
+[1.5.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.5.0
 [1.4.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.4.0
 [1.3.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.3.0
 [1.2.0]: https://github.com/0xzerolight/watchpost/releases/tag/v1.2.0
