@@ -100,8 +100,12 @@ pub fn backup_before_migrate(
     };
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let backup_path = dir.join(format!("{BACKUP_PREFIX}{from_v}.{ts}{BACKUP_SUFFIX}"));
-    conn.backup(rusqlite::MAIN_DB, &backup_path, None)
-        .map_err(|e| DbError::Backup(e.to_string()))?;
+    conn.backup(
+        rusqlite::MAIN_DB,
+        &backup_path,
+        rusqlite::backup::NO_PROGRESS,
+    )
+    .map_err(|e| DbError::Backup(e.to_string()))?;
     tracing::info!(path = %backup_path.display(), "pre-migration backup created");
     prune_backups(dir)?;
     Ok(Some(backup_path))

@@ -4,7 +4,7 @@ Bug reports, feature requests and pull requests are all welcome.
 
 ## Setup
 
-Rust 1.88 or newer. No system dependencies beyond a C toolchain — SQLite is compiled in.
+Rust 1.89 or newer. No system dependencies beyond a C toolchain — SQLite is compiled in.
 
 ```bash
 git clone https://github.com/0xzerolight/watchpost.git
@@ -26,7 +26,7 @@ make ci      # both
 ```
 
 CI runs four jobs and all of them must be green: `make ci` on stable, a
-`cargo check --locked --all-targets` on 1.88 to hold the MSRV, a Docker build, and
+`cargo check --locked --all-targets` on 1.89 to hold the MSRV, a Docker build, and
 `rustsec/audit-check`. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Tests

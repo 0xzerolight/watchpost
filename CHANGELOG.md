@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Minimum supported Rust version is 1.89.** The SQLite fix under Security ships only in rusqlite
+  0.41, which declares Rust 1.89; rusqlite 0.40 has no patched release. Building from source now
+  needs 1.89 or newer. The Docker image already builds on a newer toolchain and is unaffected. The
+  CI MSRV job, the README badge and CONTRIBUTING.md moved with it.
+
+### Security
+
+- **Bundled SQLite 3.54.1 (rusqlite 0.41.1, libsqlite3-sys 0.39.1).** RUSTSEC-2026-0459
+  (CVE-2026-119375): SQLite before 3.54.0 can return uninitialised page-cache memory in query
+  results when it opens a database together with a `-wal` file whose page size differs from the
+  database's. watchpost opens only its own database at `WATCHPOST_DB_PATH`, so it is exposed only
+  when that file and its `-wal` were written by someone less trusted than the process, such as a
+  database copied in from elsewhere. The daily relock workflow could not close this one: rusqlite
+  0.40 requires `libsqlite3-sys ^0.38`, so `cargo update` cannot reach the patched 0.39, and its
+  pull request failed the audit job. The bump is in `Cargo.toml` instead. rusqlite 0.41 makes the
+  backup progress callback generic, so the pre-migration backup passes
+  `rusqlite::backup::NO_PROGRESS` where it passed `None`. The same change moves quinn-udp 0.5.15 →
+  0.5.16 (RUSTSEC-2026-0538), a receive loop a remote sender could keep spinning on Apple and some
+  BSD targets. quinn-udp is reqwest's HTTP/3 transport and sits in the lockfile without being
+  compiled into the binary.
+
 ## [1.5.0] - 2026-11-02
 
 ### Added

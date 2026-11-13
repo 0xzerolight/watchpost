@@ -2,7 +2,7 @@
 name = "watchpost"
 version = "1.5.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "Self-hosted GitHub repo metrics with a promo-event timeline"
 repository = "https://github.com/0xzerolight/watchpost"
 license = "AGPL-3.0-or-later"
@@ -13,7 +13,7 @@ categories = ["web-programming::http-server", "command-line-utilities"]
 [dependencies]
 axum = "0.8"
 maud = { version = "0.27", features = ["axum"] }
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
 reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
 tokio = { version = "1", features = ["full"] }
 tokio-cron-scheduler = "0.15"
