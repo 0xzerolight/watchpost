@@ -3,7 +3,7 @@
 # architecture and merging the two into one manifest — see
 # .github/workflows/docker-publish.yml. Emulating a Rust build under QEMU is
 # the alternative, and it is many times slower.
-FROM rust:1.99-alpine3.22 AS builder
+FROM rust:1.100-alpine3.22 AS builder
 
 # musl-dev/gcc: rusqlite is built from bundled C sources.
 RUN apk add --no-cache musl-dev gcc
