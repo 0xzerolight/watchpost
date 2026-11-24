@@ -51,13 +51,16 @@ jobs:
         run: |
           set -euo pipefail
           # name@version, not a bare name: a bare one is ambiguous when the lock
-          # holds two versions of the crate. Edition 2024's resolver keeps every
-          # move within rust-version, which the msrv job checks.
+          # holds two versions of the crate. --recursive also unlocks the crate's
+          # dependencies: without it a patched release that needs a newer one
+          # (url 2.5.9 needs form_urlencoded ^1.2.3) is skipped and nothing moves.
+          # Edition 2024's resolver keeps every move within rust-version, which
+          # the msrv job checks.
           update_args=()
           while IFS= read -r crate; do
             update_args+=(-p "$crate")
           done < "$RUNNER_TEMP/crates.txt"
-          cargo update "${update_args[@]}"
+          cargo update --recursive "${update_args[@]}"
           git diff --stat
 
       - name: Open the relock PR
